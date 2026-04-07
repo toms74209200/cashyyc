@@ -17,18 +17,6 @@ A module requires a responsibility, and responsibility means the module has veri
 
 Distinguish what has obvious consensus (e.g. devcontainer file paths defined by spec) from what requires discussion. External spec often provides obvious consensus, but not always — CLI options, error message wording, and similar decisions still require explicit judgment. Internal structure almost always requires discussion.
 
-### Separating pure logic from side effects
-
-Create a separate module or function only when there is pure logic worth testing as a small unit test. If the only operation is a side effect (file I/O, process execution), keep it in `run.rs` rather than wrapping it in a module.
-
-### External spec vs. internal structure
-
-The devcontainer spec determines behavior (e.g. which file paths are valid) and is not up for design discussion. Internal structure — how the code is organized — is where design decisions are made. Distinguish between the two so that design discussion focuses on what actually has flexibility.
-
-### Reference implementations
-
-When implementing behavior defined by an external spec, check the reference implementation for user-facing details such as error message wording, not just code patterns.
-
 ## Reference Implementations
 
 When implementing features related to devcontainer, consult the official implementation as a reference for spec behavior:
