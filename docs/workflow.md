@@ -7,6 +7,35 @@
 - **After merging PR**: The linked issue will automatically close
 - **When updating TODO.md**: Run `gh atat push` to sync changes to GitHub Issues
 
+## Design and Implementation Guidelines
+
+### Testing strategy
+
+A module requires a responsibility, and responsibility means the module has verifiable behavior that can be specified as a test. This project favors false positives over false negatives; mocks are avoided because they risk false negatives. Pure logic is isolated into independent modules tested as small unit tests, and side effects are concentrated in `run.rs` and verified through acceptance tests.
+
+### External spec vs. internal structure
+
+Distinguish what has obvious consensus (e.g. devcontainer file paths defined by spec) from what requires discussion. External spec often provides obvious consensus, but not always — CLI options, error message wording, and similar decisions still require explicit judgment. Internal structure almost always requires discussion.
+
+### Separating pure logic from side effects
+
+Create a separate module or function only when there is pure logic worth testing as a small unit test. If the only operation is a side effect (file I/O, process execution), keep it in `run.rs` rather than wrapping it in a module.
+
+### External spec vs. internal structure
+
+The devcontainer spec determines behavior (e.g. which file paths are valid) and is not up for design discussion. Internal structure — how the code is organized — is where design decisions are made. Distinguish between the two so that design discussion focuses on what actually has flexibility.
+
+### Reference implementations
+
+When implementing behavior defined by an external spec, check the reference implementation for user-facing details such as error message wording, not just code patterns.
+
+## Reference Implementations
+
+When implementing features related to devcontainer, consult the official implementation as a reference for spec behavior:
+
+- **devcontainer-cli** (`devcontainers/cli`)
+- **ATAT** (`toms74209200/ATAT`): Reference for Rust implementation patterns (error handling, test structure)
+
 ## Architecture Verification Workflow
 
 When using server-architecture guidelines or writing new code:
