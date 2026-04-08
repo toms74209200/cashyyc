@@ -1,4 +1,5 @@
 use crate::cli;
+use crate::devcontainer;
 use anyhow::{Result, anyhow};
 
 pub fn run(args: Vec<String>) -> Result<()> {
@@ -6,7 +7,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         cli::parser::Command::Shell { name: _ } => {
             let cwd = std::env::current_dir()?;
             let config_path = cwd.join(".devcontainer").join("devcontainer.json");
-            let _config = std::fs::read_to_string(&config_path).map_err(|e| {
+            let content = std::fs::read_to_string(&config_path).map_err(|e| {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     anyhow!(
                         "Dev container config ({}) not found.",
@@ -15,6 +16,12 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 } else {
                     anyhow!("Dev container config ({}): {e}", config_path.display())
                 }
+            })?;
+            let _config = devcontainer::parse_config(&content).ok_or_else(|| {
+                anyhow!(
+                    "Failed to parse dev container config ({}).",
+                    config_path.display()
+                )
             })?;
             Ok(())
         }
