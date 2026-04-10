@@ -1,5 +1,6 @@
 use crate::cli;
 use crate::devcontainer;
+use crate::docker;
 use anyhow::{Result, anyhow};
 
 pub fn run(args: Vec<String>) -> Result<()> {
@@ -23,6 +24,26 @@ pub fn run(args: Vec<String>) -> Result<()> {
                     config_path.display()
                 )
             })?;
+            let output = std::process::Command::new("docker")
+                .args([
+                    "ps",
+                    "--filter",
+                    &format!("label=devcontainer.local_folder={}", cwd.display()),
+                    "--format",
+                    "{{.ID}}",
+                ])
+                .output()
+                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(anyhow!(
+                    "`docker ps` failed with status {}: {}",
+                    output.status,
+                    stderr.trim()
+                ));
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let _container_id = docker::parse_container_id(&stdout);
             Ok(())
         }
         cli::parser::Command::Unknown(msg) => Err(anyhow!(msg)),
