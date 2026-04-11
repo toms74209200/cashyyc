@@ -44,7 +44,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 ));
             }
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let container_id = docker::parse_container_id(&stdout);
+            let mut container_id = docker::parse_container_id(&stdout);
             if container_id.is_none() {
                 match config {
                     devcontainer::DevcontainerConfig::Image(ref image_config) => {
@@ -87,6 +87,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
                             let stderr = String::from_utf8_lossy(&output.stderr);
                             return Err(anyhow!("`docker run` failed: {}", stderr.trim()));
                         }
+                        container_id =
+                            docker::parse_container_id(&String::from_utf8_lossy(&output.stdout));
                     }
                     devcontainer::DevcontainerConfig::Dockerfile(_)
                     | devcontainer::DevcontainerConfig::DockerfileBuild(_) => {
@@ -96,6 +98,29 @@ pub fn run(args: Vec<String>) -> Result<()> {
                         return Err(anyhow!("DockerComposeConfig: not yet implemented"));
                     }
                 }
+            }
+            let id = container_id.ok_or_else(|| anyhow!("Failed to get container ID"))?;
+            let remote_user = match &config {
+                devcontainer::DevcontainerConfig::Image(c) => c.common.remote_user.as_deref(),
+                devcontainer::DevcontainerConfig::Dockerfile(c) => c.common.remote_user.as_deref(),
+                devcontainer::DevcontainerConfig::DockerfileBuild(c) => {
+                    c.common.remote_user.as_deref()
+                }
+                devcontainer::DevcontainerConfig::DockerCompose(c) => {
+                    c.common.remote_user.as_deref()
+                }
+            };
+            let mut exec_args = vec!["exec".to_string(), "-it".to_string()];
+            if let Some(user) = remote_user {
+                exec_args.extend(["--user".to_string(), user.to_string()]);
+            }
+            exec_args.extend([id, "/bin/sh".to_string()]);
+            let status = std::process::Command::new("docker")
+                .args(&exec_args)
+                .status()
+                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+            if !status.success() {
+                return Err(anyhow!("`docker exec` failed"));
             }
             Ok(())
         }
