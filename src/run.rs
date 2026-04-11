@@ -47,8 +47,46 @@ pub fn run(args: Vec<String>) -> Result<()> {
             let container_id = docker::parse_container_id(&stdout);
             if container_id.is_none() {
                 match config {
-                    devcontainer::DevcontainerConfig::Image(_) => {
-                        return Err(anyhow!("ImageConfig: not yet implemented"));
+                    devcontainer::DevcontainerConfig::Image(ref image_config) => {
+                        let status = std::process::Command::new("docker")
+                            .args(["pull", &image_config.image])
+                            .status()
+                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        if !status.success() {
+                            return Err(anyhow!("`docker pull` failed"));
+                        }
+                        let container_workspace_folder = image_config
+                            .common
+                            .workspace_folder
+                            .clone()
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "/workspaces/{}",
+                                    cwd.file_name().unwrap_or_default().to_string_lossy()
+                                )
+                            });
+                        let workspace_mount = image_config.workspace_mount.as_deref().map(|m| {
+                            devcontainer::expand_variables(m, &cwd, &container_workspace_folder)
+                        });
+                        let mut run_args = devcontainer::container_run_options(
+                            &image_config.common,
+                            image_config.run_args.as_deref(),
+                            workspace_mount.as_deref(),
+                            &cwd,
+                        );
+                        run_args.push(image_config.image.clone());
+                        if image_config.common.override_command != Some(false) {
+                            run_args.extend(["sleep".to_string(), "infinity".to_string()]);
+                        }
+                        let output = std::process::Command::new("docker")
+                            .arg("run")
+                            .args(&run_args)
+                            .output()
+                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        if !output.status.success() {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            return Err(anyhow!("`docker run` failed: {}", stderr.trim()));
+                        }
                     }
                     devcontainer::DevcontainerConfig::Dockerfile(_)
                     | devcontainer::DevcontainerConfig::DockerfileBuild(_) => {
