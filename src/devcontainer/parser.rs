@@ -46,7 +46,40 @@ pub fn parse_config(content: &str) -> Option<DevcontainerConfig> {
         }
     }
 
-    let value: serde_json::Value = serde_json::from_str(&stripped).ok()?;
+    let mut clean = String::with_capacity(stripped.len());
+    let mut chars = stripped.chars().peekable();
+    let mut in_string = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if in_string => {
+                clean.push(c);
+                if let Some(next) = chars.next() {
+                    clean.push(next);
+                }
+            }
+            '"' => {
+                in_string = !in_string;
+                clean.push(c);
+            }
+            ',' if !in_string => {
+                let mut whitespace = String::new();
+                while let Some(&w) = chars.peek() {
+                    if w.is_ascii_whitespace() {
+                        whitespace.push(chars.next().unwrap());
+                    } else {
+                        break;
+                    }
+                }
+                if !matches!(chars.peek(), Some('}') | Some(']')) {
+                    clean.push(c);
+                }
+                clean.push_str(&whitespace);
+            }
+            _ => clean.push(c),
+        }
+    }
+
+    let value: serde_json::Value = serde_json::from_str(&clean).ok()?;
 
     match (
         value.get("dockerComposeFile"),
@@ -73,6 +106,35 @@ pub fn parse_config(content: &str) -> Option<DevcontainerConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn when_parse_config_with_trailing_comma_in_object_then_succeeds() {
+        assert!(matches!(
+            parse_config("{\"image\": \"rust:latest\",}"),
+            Some(DevcontainerConfig::Image(_))
+        ));
+    }
+
+    #[test]
+    fn when_parse_config_with_trailing_comma_in_array_then_succeeds() {
+        assert!(matches!(
+            parse_config(
+                r#"{"image": "rust:latest", "capAdd": ["SYS_PTRACE",]}"#
+            ),
+            Some(DevcontainerConfig::Image(ImageConfig {
+                common: CommonConfig { cap_add: Some(ref ca), .. },
+                ..
+            })) if ca == &vec!["SYS_PTRACE".to_string()]
+        ));
+    }
+
+    #[test]
+    fn when_parse_config_with_comma_in_string_value_then_preserves_value() {
+        assert!(matches!(
+            parse_config(r#"{"image": "registry.example.com,backup:latest"}"#),
+            Some(DevcontainerConfig::Image(ImageConfig { image: ref i, .. })) if i == "registry.example.com,backup:latest"
+        ));
+    }
 
     #[test]
     fn when_parse_config_with_double_slash_in_string_value_then_preserves_value() {
