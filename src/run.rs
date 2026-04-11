@@ -4,8 +4,8 @@ use crate::docker;
 use anyhow::{Result, anyhow};
 
 pub fn run(args: Vec<String>) -> Result<()> {
-    match cli::parser::parse_args(&args) {
-        cli::parser::Command::Shell { name: _ } => {
+    match cli::parse_args(&args) {
+        cli::Command::Shell { name: _ } => {
             let cwd = std::env::current_dir()?;
             let config_path = cwd.join(".devcontainer").join("devcontainer.json");
             let content = std::fs::read_to_string(&config_path).map_err(|e| {
@@ -46,6 +46,6 @@ pub fn run(args: Vec<String>) -> Result<()> {
             let _container_id = docker::parse_container_id(&stdout);
             Ok(())
         }
-        cli::parser::Command::Unknown(msg) => Err(anyhow!(msg)),
+        cli::Command::Unknown(msg) => Err(anyhow!(msg)),
     }
 }
