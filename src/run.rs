@@ -18,7 +18,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                     anyhow!("Dev container config ({}): {e}", config_path.display())
                 }
             })?;
-            let _config = devcontainer::parse_config(&content).ok_or_else(|| {
+            let config = devcontainer::parse_config(&content).ok_or_else(|| {
                 anyhow!(
                     "Failed to parse dev container config ({}).",
                     config_path.display()
@@ -27,6 +27,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             let output = std::process::Command::new("docker")
                 .args([
                     "ps",
+                    "-a",
                     "--filter",
                     &format!("label=devcontainer.local_folder={}", cwd.display()),
                     "--format",
@@ -43,7 +44,21 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 ));
             }
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let _container_id = docker::parse_container_id(&stdout);
+            let container_id = docker::parse_container_id(&stdout);
+            if container_id.is_none() {
+                match config {
+                    devcontainer::DevcontainerConfig::Image(_) => {
+                        return Err(anyhow!("ImageConfig: not yet implemented"));
+                    }
+                    devcontainer::DevcontainerConfig::Dockerfile(_)
+                    | devcontainer::DevcontainerConfig::DockerfileBuild(_) => {
+                        return Err(anyhow!("DockerfileConfig: not yet implemented"));
+                    }
+                    devcontainer::DevcontainerConfig::DockerCompose(_) => {
+                        return Err(anyhow!("DockerComposeConfig: not yet implemented"));
+                    }
+                }
+            }
             Ok(())
         }
         cli::Command::Unknown(msg) => Err(anyhow!(msg)),
