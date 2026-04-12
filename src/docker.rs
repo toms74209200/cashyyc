@@ -3,6 +3,7 @@ pub fn parse_remote_user_from_metadata(metadata: &str) -> Option<String> {
     arr.as_array()?.iter().find_map(|obj| {
         obj.get("remoteUser")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
     })
 }
@@ -42,6 +43,12 @@ mod tests {
     #[test]
     fn when_parse_remote_user_from_metadata_with_empty_string_then_returns_none() {
         assert_eq!(parse_remote_user_from_metadata(""), None);
+    }
+
+    #[test]
+    fn when_parse_remote_user_from_metadata_with_empty_remote_user_then_returns_none() {
+        let metadata = r#"[{"id":"feature:1"},{"remoteUser":""},{"id":"feature:2"}]"#;
+        assert_eq!(parse_remote_user_from_metadata(metadata), None);
     }
 
     #[test]
