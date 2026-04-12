@@ -100,21 +100,82 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 }
             }
             let id = container_id.ok_or_else(|| anyhow!("Failed to get container ID"))?;
-            let remote_user = match &config {
-                devcontainer::DevcontainerConfig::Image(c) => c.common.remote_user.as_deref(),
-                devcontainer::DevcontainerConfig::Dockerfile(c) => c.common.remote_user.as_deref(),
+            let remote_user_from_config = match &config {
+                devcontainer::DevcontainerConfig::Image(c) => c.common.remote_user.clone(),
+                devcontainer::DevcontainerConfig::Dockerfile(c) => c.common.remote_user.clone(),
                 devcontainer::DevcontainerConfig::DockerfileBuild(c) => {
-                    c.common.remote_user.as_deref()
+                    c.common.remote_user.clone()
                 }
-                devcontainer::DevcontainerConfig::DockerCompose(c) => {
-                    c.common.remote_user.as_deref()
-                }
+                devcontainer::DevcontainerConfig::DockerCompose(c) => c.common.remote_user.clone(),
+            };
+            let remote_user = {
+                let strategies: Vec<Box<dyn Fn() -> Option<String>>> = vec![
+                    Box::new(|| remote_user_from_config.clone()),
+                    Box::new(|| {
+                        std::process::Command::new("docker")
+                            .args([
+                                "inspect",
+                                "--format",
+                                "{{index .Config.Labels \"devcontainer.metadata\"}}",
+                                &id,
+                            ])
+                            .output()
+                            .ok()
+                            .and_then(|o| {
+                                docker::parse_remote_user_from_metadata(
+                                    String::from_utf8_lossy(&o.stdout).trim(),
+                                )
+                            })
+                    }),
+                    Box::new(|| {
+                        std::process::Command::new("docker")
+                            .args(["inspect", "--format", "{{.Config.User}}", &id])
+                            .output()
+                            .ok()
+                            .and_then(|o| {
+                                let user = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                                if user.is_empty() { None } else { Some(user) }
+                            })
+                    }),
+                ];
+                strategies.iter().find_map(|f| f())
+            };
+            let shell = {
+                let strategies: Vec<Box<dyn Fn() -> Option<String>>> = vec![
+                    Box::new(|| {
+                        std::process::Command::new("docker")
+                            .args(["exec", &id, "printenv", "SHELL"])
+                            .output()
+                            .ok()
+                            .and_then(|o| {
+                                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                                if s.is_empty() { None } else { Some(s) }
+                            })
+                    }),
+                    Box::new(|| {
+                        remote_user.as_deref().and_then(|user| {
+                            std::process::Command::new("docker")
+                                .args(["exec", &id, "getent", "passwd", user])
+                                .output()
+                                .ok()
+                                .and_then(|o| {
+                                    devcontainer::parse_shell_from_passwd(
+                                        String::from_utf8_lossy(&o.stdout).trim(),
+                                    )
+                                })
+                        })
+                    }),
+                ];
+                strategies
+                    .iter()
+                    .find_map(|f| f())
+                    .unwrap_or_else(|| "/bin/sh".to_string())
             };
             let mut exec_args = vec!["exec".to_string(), "-it".to_string()];
             if let Some(user) = remote_user {
-                exec_args.extend(["--user".to_string(), user.to_string()]);
+                exec_args.extend(["--user".to_string(), user]);
             }
-            exec_args.extend([id, "/bin/sh".to_string()]);
+            exec_args.extend([id, shell]);
             let status = std::process::Command::new("docker")
                 .args(&exec_args)
                 .status()
