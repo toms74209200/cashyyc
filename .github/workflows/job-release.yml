@@ -1,0 +1,25 @@
+name: Job - Release
+
+on:
+  workflow_call:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          path: ./artifacts
+      - name: Create release with GitHub CLI
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} --generate-notes \
+            ./artifacts/cashyyc-linux-x86_64-ubuntu22/cashyyc-linux-x86_64-ubuntu22 \
+            ./artifacts/cashyyc-linux-x86_64-ubuntu24/cashyyc-linux-x86_64-ubuntu24 \
+            ./artifacts/cashyyc-linux-aarch64/cashyyc-linux-aarch64 \
+            ./artifacts/cashyyc-macos-aarch64/cashyyc-macos-aarch64
