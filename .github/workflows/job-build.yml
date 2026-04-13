@@ -1,0 +1,45 @@
+name: Job - Build
+
+on:
+  workflow_call:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact-name: cashyyc-linux-x86_64-ubuntu22
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            artifact-name: cashyyc-linux-x86_64-ubuntu24
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact-name: cashyyc-linux-aarch64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact-name: cashyyc-macos-aarch64
+    steps:
+      - uses: actions/checkout@v6
+      - name: Update Rust toolchain
+        run: rustup update stable && rustup default stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Prepare artifact
+        run: cp target/${{ matrix.target }}/release/cashyyc ${{ matrix.artifact-name }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.artifact-name }}

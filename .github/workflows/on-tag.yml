@@ -1,0 +1,16 @@
+name: On tag push
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  build:
+    uses: ./.github/workflows/job-build.yml
+  release:
+    needs:
+      - build
+    permissions:
+      contents: write
+    uses: ./.github/workflows/job-release.yml
