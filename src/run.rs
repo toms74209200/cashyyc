@@ -24,15 +24,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
                     config_path.display()
                 )
             })?;
+            let ps_filter = format!("label=devcontainer.local_folder={}", cwd.display());
             let output = std::process::Command::new("docker")
-                .args([
-                    "ps",
-                    "-a",
-                    "--filter",
-                    &format!("label=devcontainer.local_folder={}", cwd.display()),
-                    "--format",
-                    "{{.ID}}",
-                ])
+                .args(["ps", "--filter", &ps_filter, "--format", "{{.ID}}"])
                 .output()
                 .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
             if !output.status.success() {
@@ -45,6 +39,31 @@ pub fn run(args: Vec<String>) -> Result<()> {
             }
             let stdout = String::from_utf8_lossy(&output.stdout);
             let mut container_id = docker::parse_container_id(&stdout);
+            if container_id.is_none() {
+                let output = std::process::Command::new("docker")
+                    .args(["ps", "-a", "--filter", &ps_filter, "--format", "{{.ID}}"])
+                    .output()
+                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Err(anyhow!(
+                        "`docker ps` failed with status {}: {}",
+                        output.status,
+                        stderr.trim()
+                    ));
+                }
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(id) = docker::parse_container_id(&stdout) {
+                    let status = std::process::Command::new("docker")
+                        .args(["start", &id])
+                        .status()
+                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                    if !status.success() {
+                        return Err(anyhow!("`docker start` failed"));
+                    }
+                    container_id = Some(id);
+                }
+            }
             if container_id.is_none() {
                 match config {
                     devcontainer::DevcontainerConfig::Image(ref image_config) => {
