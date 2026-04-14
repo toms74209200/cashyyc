@@ -12,16 +12,16 @@ jobs:
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            artifact-name: cashyyc-linux-x86_64-ubuntu22
+            artifact-name: cyyc-linux-x86_64-ubuntu22
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            artifact-name: cashyyc-linux-x86_64-ubuntu24
+            artifact-name: cyyc-linux-x86_64-ubuntu24
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            artifact-name: cashyyc-linux-aarch64
+            artifact-name: cyyc-linux-aarch64
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact-name: cashyyc-macos-aarch64
+            artifact-name: cyyc-macos-aarch64
     steps:
       - uses: actions/checkout@v6
       - name: Update Rust toolchain

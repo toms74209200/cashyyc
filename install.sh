@@ -19,13 +19,13 @@ case "$OS" in
           fi
         fi
         if [ "$UBUNTU_MAJOR" -ge 24 ] 2>/dev/null; then
-          ARTIFACT="cashyyc-linux-x86_64-ubuntu24"
+          ARTIFACT="cyyc-linux-x86_64-ubuntu24"
         else
-          ARTIFACT="cashyyc-linux-x86_64-ubuntu22"
+          ARTIFACT="cyyc-linux-x86_64-ubuntu22"
         fi
         ;;
       aarch64)
-        ARTIFACT="cashyyc-linux-aarch64"
+        ARTIFACT="cyyc-linux-aarch64"
         ;;
       *)
         echo "Unsupported architecture: $ARCH" >&2
@@ -36,7 +36,7 @@ case "$OS" in
   Darwin)
     case "$ARCH" in
       arm64)
-        ARTIFACT="cashyyc-macos-aarch64"
+        ARTIFACT="cyyc-macos-aarch64"
         ;;
       *)
         echo "Unsupported architecture: $ARCH" >&2
