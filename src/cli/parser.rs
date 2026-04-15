@@ -2,6 +2,7 @@
 pub enum Command {
     Shell { name: Option<String> },
     Help,
+    Version,
     Unknown(String),
 }
 
@@ -11,6 +12,7 @@ pub fn parse_args(args: &[String]) -> Command {
         2 => match args[1].as_str() {
             "shell" => Command::Shell { name: None },
             "help" | "--help" | "-h" => Command::Help,
+            "version" | "--version" | "-V" => Command::Version,
             cmd => Command::Unknown(cmd.to_string()),
         },
         _ => match args[1].as_str() {
@@ -18,6 +20,7 @@ pub fn parse_args(args: &[String]) -> Command {
                 name: Some(args[2].clone()),
             },
             "help" | "--help" | "-h" => Command::Help,
+            "version" | "--version" | "-V" => Command::Version,
             cmd => Command::Unknown(cmd.to_string()),
         },
     }
@@ -128,5 +131,33 @@ mod tests {
     fn when_parse_args_with_help_command_and_extra_arg_then_returns_help() {
         let args = vec!["cyyc".to_string(), "help".to_string(), "extra".to_string()];
         assert_eq!(parse_args(&args), Command::Help);
+    }
+
+    #[test]
+    fn when_parse_args_with_version_command_then_returns_version() {
+        let args = vec!["cyyc".to_string(), "version".to_string()];
+        assert_eq!(parse_args(&args), Command::Version);
+    }
+
+    #[test]
+    fn when_parse_args_with_version_flag_then_returns_version() {
+        let args = vec!["cyyc".to_string(), "--version".to_string()];
+        assert_eq!(parse_args(&args), Command::Version);
+    }
+
+    #[test]
+    fn when_parse_args_with_short_version_flag_then_returns_version() {
+        let args = vec!["cyyc".to_string(), "-V".to_string()];
+        assert_eq!(parse_args(&args), Command::Version);
+    }
+
+    #[test]
+    fn when_parse_args_with_version_command_and_extra_arg_then_returns_version() {
+        let args = vec![
+            "cyyc".to_string(),
+            "version".to_string(),
+            "extra".to_string(),
+        ];
+        assert_eq!(parse_args(&args), Command::Version);
     }
 }
