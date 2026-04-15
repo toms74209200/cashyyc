@@ -165,6 +165,30 @@ mod tests {
     }
 
     #[test]
+    fn when_expand_variables_with_root_path_as_local_workspace_folder_basename_then_returns_empty()
+    {
+        let result = expand_variables(
+            "${localWorkspaceFolderBasename}",
+            Path::new("/"),
+            "/workspaces/project",
+        );
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn when_expand_variables_with_root_path_as_container_workspace_folder_basename_then_returns_empty()
+     {
+        let name = random_name();
+        let local_folder = format!("/home/user/{}", name);
+        let result = expand_variables(
+            "${containerWorkspaceFolderBasename}",
+            Path::new(&local_folder),
+            "/",
+        );
+        assert_eq!(result, "");
+    }
+
+    #[test]
     fn when_expand_variables_with_multiple_variables_then_replaces_all() {
         let name = random_name();
         let local_folder = format!("/home/user/{}", name);
