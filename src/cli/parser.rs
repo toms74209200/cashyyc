@@ -1,6 +1,7 @@
 #[derive(Debug, PartialEq)]
 pub enum Command {
     Shell { name: Option<String> },
+    Help,
     Unknown(String),
 }
 
@@ -9,12 +10,14 @@ pub fn parse_args(args: &[String]) -> Command {
         0 | 1 => Command::Unknown("no command".to_string()),
         2 => match args[1].as_str() {
             "shell" => Command::Shell { name: None },
+            "help" | "--help" | "-h" => Command::Help,
             cmd => Command::Unknown(cmd.to_string()),
         },
         _ => match args[1].as_str() {
             "shell" => Command::Shell {
                 name: Some(args[2].clone()),
             },
+            "help" | "--help" | "-h" => Command::Help,
             cmd => Command::Unknown(cmd.to_string()),
         },
     }
@@ -101,5 +104,29 @@ mod tests {
             parse_args(&args),
             Command::Unknown("no command".to_string())
         );
+    }
+
+    #[test]
+    fn when_parse_args_with_help_command_then_returns_help() {
+        let args = vec!["cyyc".to_string(), "help".to_string()];
+        assert_eq!(parse_args(&args), Command::Help);
+    }
+
+    #[test]
+    fn when_parse_args_with_help_flag_then_returns_help() {
+        let args = vec!["cyyc".to_string(), "--help".to_string()];
+        assert_eq!(parse_args(&args), Command::Help);
+    }
+
+    #[test]
+    fn when_parse_args_with_short_help_flag_then_returns_help() {
+        let args = vec!["cyyc".to_string(), "-h".to_string()];
+        assert_eq!(parse_args(&args), Command::Help);
+    }
+
+    #[test]
+    fn when_parse_args_with_help_command_and_extra_arg_then_returns_help() {
+        let args = vec!["cyyc".to_string(), "help".to_string(), "extra".to_string()];
+        assert_eq!(parse_args(&args), Command::Help);
     }
 }

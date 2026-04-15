@@ -191,6 +191,21 @@ pub fn run(args: Vec<String>) -> Result<()> {
             }
             Ok(())
         }
+        cli::Command::Help => {
+            println!(
+                "Usage: cyyc <COMMAND>
+
+Commands:
+  shell [name]  Open a shell in the dev container
+  help          Print this message
+  version       Print version information
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version information"
+            );
+            Ok(())
+        }
         cli::Command::Unknown(msg) => Err(anyhow!(msg)),
     }
 }
