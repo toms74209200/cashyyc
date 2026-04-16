@@ -200,10 +200,29 @@ pub fn run(args: Vec<String>) -> Result<()> {
                     })
                 })
                 .unwrap_or_else(|| "/bin/sh".to_string());
+            let container_workspace_folder = match &config {
+                devcontainer::DevcontainerConfig::Image(c) => c.common.workspace_folder.clone(),
+                devcontainer::DevcontainerConfig::Dockerfile(c) => {
+                    c.common.workspace_folder.clone()
+                }
+                devcontainer::DevcontainerConfig::DockerfileBuild(c) => {
+                    c.common.workspace_folder.clone()
+                }
+                devcontainer::DevcontainerConfig::DockerCompose(c) => {
+                    Some(c.workspace_folder.clone())
+                }
+            }
+            .unwrap_or_else(|| {
+                format!(
+                    "/workspaces/{}",
+                    cwd.file_name().unwrap_or_default().to_string_lossy()
+                )
+            });
             let mut exec_args = vec!["exec".to_string(), "-it".to_string()];
             if let Some(user) = remote_user {
                 exec_args.extend(["--user".to_string(), user]);
             }
+            exec_args.extend(["--workdir".to_string(), container_workspace_folder]);
             exec_args.extend([id, shell]);
             let status = std::process::Command::new("docker")
                 .args(&exec_args)
