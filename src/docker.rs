@@ -1,3 +1,21 @@
+pub enum PathDomain {
+    Unix(std::path::PathBuf),
+    Wsl(String),
+}
+
+impl PathDomain {
+    pub fn filter_string(&self) -> String {
+        match self {
+            PathDomain::Unix(cwd) => {
+                format!("label=devcontainer.local_folder={}", cwd.display())
+            }
+            PathDomain::Wsl(wsl_path) => {
+                format!("label=devcontainer.local_folder={}", wsl_path)
+            }
+        }
+    }
+}
+
 pub fn parse_remote_user_from_metadata(metadata: &str) -> Option<String> {
     let arr = serde_json::from_str::<serde_json::Value>(metadata).ok()?;
     arr.as_array()?.iter().find_map(|obj| {
@@ -23,6 +41,26 @@ mod tests {
 
     fn urandom() -> File {
         File::open("/dev/urandom").unwrap()
+    }
+
+    #[test]
+    fn when_linux_domain_filter_string_then_returns_linux_path_label() {
+        let domain = PathDomain::Unix(std::path::PathBuf::from("/home/user/projects/cashyyc"));
+        assert_eq!(
+            domain.filter_string(),
+            "label=devcontainer.local_folder=/home/user/projects/cashyyc"
+        );
+    }
+
+    #[test]
+    fn when_wsl_domain_filter_string_then_returns_wsl_path_label() {
+        let domain = PathDomain::Wsl(
+            "\\\\wsl.localhost\\Ubuntu-20.04\\home\\user\\projects\\cashyyc".to_string(),
+        );
+        assert_eq!(
+            domain.filter_string(),
+            "label=devcontainer.local_folder=\\\\wsl.localhost\\Ubuntu-20.04\\home\\user\\projects\\cashyyc"
+        );
     }
 
     #[test]

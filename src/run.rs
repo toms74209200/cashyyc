@@ -24,24 +24,24 @@ pub fn run(args: Vec<String>) -> Result<()> {
                     config_path.display()
                 )
             })?;
-            let ps_filter = format!("label=devcontainer.local_folder={}", cwd.display());
-            let output = std::process::Command::new("docker")
-                .args(["ps", "--filter", &ps_filter, "--format", "{{.ID}}"])
+            let mut domains = vec![docker::PathDomain::Unix(cwd.to_path_buf())];
+            if let Some(wsl_path) = std::process::Command::new("wslpath")
+                .args(["-w", &cwd.display().to_string()])
                 .output()
-                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(anyhow!(
-                    "`docker ps` failed with status {}: {}",
-                    output.status,
-                    stderr.trim()
-                ));
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if s.is_empty() { None } else { Some(s) }
+                })
+            {
+                domains.push(docker::PathDomain::Wsl(wsl_path));
             }
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut container_id = docker::parse_container_id(&stdout);
-            if container_id.is_none() {
+            let mut container_id = None;
+            for domain in &domains {
+                let filter = domain.filter_string();
                 let output = std::process::Command::new("docker")
-                    .args(["ps", "-a", "--filter", &ps_filter, "--format", "{{.ID}}"])
+                    .args(["ps", "--filter", &filter, "--format", "{{.ID}}"])
                     .output()
                     .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
                 if !output.status.success() {
@@ -54,14 +54,37 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 }
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 if let Some(id) = docker::parse_container_id(&stdout) {
-                    let status = std::process::Command::new("docker")
-                        .args(["start", &id])
-                        .status()
-                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-                    if !status.success() {
-                        return Err(anyhow!("`docker start` failed"));
-                    }
                     container_id = Some(id);
+                    break;
+                }
+            }
+            if container_id.is_none() {
+                for domain in &domains {
+                    let filter = domain.filter_string();
+                    let output = std::process::Command::new("docker")
+                        .args(["ps", "-a", "--filter", &filter, "--format", "{{.ID}}"])
+                        .output()
+                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        return Err(anyhow!(
+                            "`docker ps` failed with status {}: {}",
+                            output.status,
+                            stderr.trim()
+                        ));
+                    }
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if let Some(id) = docker::parse_container_id(&stdout) {
+                        let status = std::process::Command::new("docker")
+                            .args(["start", &id])
+                            .status()
+                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        if !status.success() {
+                            return Err(anyhow!("`docker start` failed"));
+                        }
+                        container_id = Some(id);
+                        break;
+                    }
                 }
             }
             if container_id.is_none() {
