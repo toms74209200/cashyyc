@@ -17,6 +17,28 @@ export const hostFolderLabel = 'devcontainer.local_folder'; // used to label con
 
 WSL 環境で devcontainer CLI から起動した場合、値は Linux パス（例: `/home/user/project`）になる。
 
+### VS Code Remote と WSL の非互換
+
+VS Code が Windows 側から WSL フォルダを開いて devcontainer を作成した場合、`devcontainer.local_folder` ラベルの値は **Windows UNC パス**になる:
+
+```
+\\wsl.localhost\Ubuntu-20.04\home\user\project
+```
+
+これは devcontainer CLI が Windows 側（`process.platform === 'win32'`）で動作するため。
+
+一方、WSL 上で `devcontainer up` を実行した場合は Linux パスを直接フィルターとして使用し、フォールバックの `findDevContainerByNormalizedLabels` も `process.platform !== 'win32'` の場合は即 `return undefined` となる（`devcontainers/cli` `src/spec-node/utils.ts`）。
+
+結果として以下の非互換が生じる:
+
+| 作成元 | 検索元 | `devcontainer.local_folder` の値 | 結果 |
+|---|---|---|---|
+| VS Code (Windows) | devcontainer-cli (Windows) | Windows UNC パス | OK |
+| devcontainer-cli (WSL) | devcontainer-cli (WSL) | Linux パス | OK |
+| VS Code (Windows) | devcontainer-cli (WSL) | Windows UNC パス ≠ Linux パス | **コンテナを見つけられず新規作成** |
+
+VS Code (Windows) が作成したコンテナが存在する状態で WSL から `devcontainer up` を実行すると、既存コンテナを発見できずに**2つ目のコンテナが新規作成**される。
+
 実行中のコンテナの container ID は以下で取得できる:
 
 ```sh
