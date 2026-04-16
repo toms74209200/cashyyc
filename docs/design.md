@@ -108,6 +108,17 @@ Go's imperative error-check pattern.
 propagation). `tokio` is explicitly excluded — `docker exec` is a subprocess call that
 inherits stdin/stdout/stderr directly; there is nothing asynchronous to manage.
 
+## Implementation Conventions
+
+### Subprocess output control
+
+`std::process::Command` calls are split by purpose:
+
+- `.status()` — lets the subprocess output flow through to the terminal. Used for commands whose output is user-facing feedback (`docker start`, `docker pull`, `docker exec`).
+- `.output()` — captures output for internal processing. Used when the result must be parsed by cashyyc (`docker ps` container ID extraction, `docker run` container ID extraction).
+
+Capturing and re-emitting output from a `.status()` call distorts the native docker output. Passing it through unchanged is the more accurate user experience.
+
 ## Concerns
 
 **macOS and WSL2 only.** Docker socket paths, TTY behavior, and process inheritance differ
