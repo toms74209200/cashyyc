@@ -44,7 +44,7 @@ mod tests {
     }
 
     #[test]
-    fn when_linux_domain_filter_string_then_returns_linux_path_label() {
+    fn when_unix_domain_filter_string_then_returns_unix_path_label() {
         let domain = PathDomain::Unix(std::path::PathBuf::from("/home/user/projects/cashyyc"));
         assert_eq!(
             domain.filter_string(),
