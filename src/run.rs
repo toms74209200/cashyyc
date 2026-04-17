@@ -116,10 +116,19 @@ pub fn run(args: Vec<String>) -> Result<()> {
                             workspace_mount.as_deref(),
                             &cwd,
                         );
+                        run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
                         run_args.push(image_config.image.clone());
-                        if image_config.common.override_command != Some(false) {
-                            run_args.extend(["sleep".to_string(), "infinity".to_string()]);
-                        }
+                        let (image_entrypoint, image_cmd) =
+                            if image_config.common.override_command == Some(false) {
+                                inspect_image_entrypoint_cmd(&image_config.image)
+                            } else {
+                                (vec![], vec![])
+                            };
+                        run_args.extend(devcontainer::container_start_args(
+                            image_config.common.override_command,
+                            &image_entrypoint,
+                            &image_cmd,
+                        ));
                         let output = std::process::Command::new("docker")
                             .arg("run")
                             .args(&run_args)
@@ -132,9 +141,124 @@ pub fn run(args: Vec<String>) -> Result<()> {
                         container_id =
                             docker::parse_container_id(&String::from_utf8_lossy(&output.stdout));
                     }
-                    devcontainer::DevcontainerConfig::Dockerfile(_)
-                    | devcontainer::DevcontainerConfig::DockerfileBuild(_) => {
-                        return Err(anyhow!("DockerfileConfig: not yet implemented"));
+                    devcontainer::DevcontainerConfig::Dockerfile(ref dockerfile_config) => {
+                        let devcontainer_dir = config_path.parent().unwrap_or(cwd.as_path());
+                        let build = devcontainer::normalize_dockerfile_config(dockerfile_config);
+                        let tag = docker::image_tag(&cwd);
+                        let build_args =
+                            devcontainer::container_build_args(&build, devcontainer_dir, &tag);
+                        let status = std::process::Command::new("docker")
+                            .arg("build")
+                            .args(&build_args)
+                            .status()
+                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        if !status.success() {
+                            return Err(anyhow!("`docker build` failed"));
+                        }
+                        let container_workspace_folder = dockerfile_config
+                            .common
+                            .workspace_folder
+                            .clone()
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "/workspaces/{}",
+                                    cwd.file_name().unwrap_or_default().to_string_lossy()
+                                )
+                            });
+                        let workspace_mount =
+                            dockerfile_config.workspace_mount.as_deref().map(|m| {
+                                devcontainer::expand_variables(m, &cwd, &container_workspace_folder)
+                            });
+                        let mut run_args = devcontainer::container_run_options(
+                            &dockerfile_config.common,
+                            dockerfile_config.run_args.as_deref(),
+                            workspace_mount.as_deref(),
+                            &cwd,
+                        );
+                        run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
+                        run_args.push(tag.clone());
+                        let (image_entrypoint, image_cmd) =
+                            if dockerfile_config.common.override_command == Some(false) {
+                                inspect_image_entrypoint_cmd(&tag)
+                            } else {
+                                (vec![], vec![])
+                            };
+                        run_args.extend(devcontainer::container_start_args(
+                            dockerfile_config.common.override_command,
+                            &image_entrypoint,
+                            &image_cmd,
+                        ));
+                        let output = std::process::Command::new("docker")
+                            .arg("run")
+                            .args(&run_args)
+                            .output()
+                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        if !output.status.success() {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            return Err(anyhow!("`docker run` failed: {}", stderr.trim()));
+                        }
+                        container_id =
+                            docker::parse_container_id(&String::from_utf8_lossy(&output.stdout));
+                    }
+                    devcontainer::DevcontainerConfig::DockerfileBuild(ref build_config) => {
+                        let devcontainer_dir = config_path.parent().unwrap_or(cwd.as_path());
+                        let tag = docker::image_tag(&cwd);
+                        let build_args = devcontainer::container_build_args(
+                            &build_config.build,
+                            devcontainer_dir,
+                            &tag,
+                        );
+                        let status = std::process::Command::new("docker")
+                            .arg("build")
+                            .args(&build_args)
+                            .status()
+                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        if !status.success() {
+                            return Err(anyhow!("`docker build` failed"));
+                        }
+                        let container_workspace_folder = build_config
+                            .common
+                            .workspace_folder
+                            .clone()
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "/workspaces/{}",
+                                    cwd.file_name().unwrap_or_default().to_string_lossy()
+                                )
+                            });
+                        let workspace_mount = build_config.workspace_mount.as_deref().map(|m| {
+                            devcontainer::expand_variables(m, &cwd, &container_workspace_folder)
+                        });
+                        let mut run_args = devcontainer::container_run_options(
+                            &build_config.common,
+                            build_config.run_args.as_deref(),
+                            workspace_mount.as_deref(),
+                            &cwd,
+                        );
+                        run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
+                        run_args.push(tag.clone());
+                        let (image_entrypoint, image_cmd) =
+                            if build_config.common.override_command == Some(false) {
+                                inspect_image_entrypoint_cmd(&tag)
+                            } else {
+                                (vec![], vec![])
+                            };
+                        run_args.extend(devcontainer::container_start_args(
+                            build_config.common.override_command,
+                            &image_entrypoint,
+                            &image_cmd,
+                        ));
+                        let output = std::process::Command::new("docker")
+                            .arg("run")
+                            .args(&run_args)
+                            .output()
+                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        if !output.status.success() {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            return Err(anyhow!("`docker run` failed: {}", stderr.trim()));
+                        }
+                        container_id =
+                            docker::parse_container_id(&String::from_utf8_lossy(&output.stdout));
                     }
                     devcontainer::DevcontainerConfig::DockerCompose(_) => {
                         return Err(anyhow!("DockerComposeConfig: not yet implemented"));
@@ -254,4 +378,32 @@ Options:
         }
         cli::Command::Unknown(msg) => Err(anyhow!(msg)),
     }
+}
+
+fn inspect_image_entrypoint_cmd(image: &str) -> (Vec<String>, Vec<String>) {
+    let entrypoint = std::process::Command::new("docker")
+        .args([
+            "image",
+            "inspect",
+            "--format",
+            "{{json .Config.Entrypoint}}",
+            image,
+        ])
+        .output()
+        .ok()
+        .map(|o| docker::parse_image_config_json(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_default();
+    let cmd = std::process::Command::new("docker")
+        .args([
+            "image",
+            "inspect",
+            "--format",
+            "{{json .Config.Cmd}}",
+            image,
+        ])
+        .output()
+        .ok()
+        .map(|o| docker::parse_image_config_json(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_default();
+    (entrypoint, cmd)
 }
