@@ -6,11 +6,17 @@ fn fnv1a(s: &str) -> u64 {
 }
 
 pub fn image_tag(local_folder: &std::path::Path) -> String {
-    let name = local_folder
+    let raw = local_folder
         .file_name()
         .unwrap_or_default()
         .to_string_lossy()
         .to_lowercase();
+    let filtered: String = raw
+        .chars()
+        .filter(|c| matches!(c, 'a'..='z' | '0'..='9' | '.' | '_' | '-'))
+        .collect();
+    let name = filtered.trim_start_matches(['.', '-']);
+    let name = if name.is_empty() { "workspace" } else { name };
     let hash = fnv1a(&local_folder.display().to_string().to_lowercase());
     format!("vsc-{}-{:016x}", name, hash)
 }
@@ -191,5 +197,35 @@ mod tests {
     fn when_image_tag_with_uppercase_folder_name_then_lowercase_in_tag() {
         let tag = image_tag(std::path::Path::new("/home/user/MyProject"));
         assert!(tag.starts_with("vsc-myproject-"));
+    }
+
+    #[test]
+    fn when_image_tag_with_special_chars_in_folder_name_then_removed() {
+        let tag = image_tag(std::path::Path::new("/home/user/my@project"));
+        assert!(tag.starts_with("vsc-myproject-"));
+    }
+
+    #[test]
+    fn when_image_tag_with_spaces_in_folder_name_then_removed() {
+        let tag = image_tag(std::path::Path::new("/home/user/my project"));
+        assert!(tag.starts_with("vsc-myproject-"));
+    }
+
+    #[test]
+    fn when_image_tag_with_leading_hyphen_in_folder_name_then_trimmed() {
+        let tag = image_tag(std::path::Path::new("/home/user/-myproject"));
+        assert!(tag.starts_with("vsc-myproject-"));
+    }
+
+    #[test]
+    fn when_image_tag_with_leading_period_in_folder_name_then_trimmed() {
+        let tag = image_tag(std::path::Path::new("/home/user/.myproject"));
+        assert!(tag.starts_with("vsc-myproject-"));
+    }
+
+    #[test]
+    fn when_image_tag_with_only_invalid_chars_in_folder_name_then_workspace() {
+        let tag = image_tag(std::path::Path::new("/home/user/@@@"));
+        assert!(tag.starts_with("vsc-workspace-"));
     }
 }

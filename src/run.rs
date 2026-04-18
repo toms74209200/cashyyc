@@ -118,12 +118,14 @@ pub fn run(args: Vec<String>) -> Result<()> {
                         );
                         run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
                         run_args.push(image_config.image.clone());
-                        let (image_entrypoint, image_cmd) =
-                            if image_config.common.override_command == Some(false) {
-                                inspect_image_entrypoint_cmd(&image_config.image)
-                            } else {
-                                (vec![], vec![])
-                            };
+                        let (image_entrypoint, image_cmd) = if image_config.common.override_command
+                            == Some(false)
+                        {
+                            inspect_image_entrypoint_cmd(&image_config.image)
+                                        .map_err(|e| anyhow!("Failed to inspect image entrypoint (overrideCommand: false): {e}"))?
+                        } else {
+                            (vec![], vec![])
+                        };
                         run_args.extend(devcontainer::container_start_args(
                             image_config.common.override_command,
                             &image_entrypoint,
@@ -177,12 +179,17 @@ pub fn run(args: Vec<String>) -> Result<()> {
                         );
                         run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
                         run_args.push(tag.clone());
-                        let (image_entrypoint, image_cmd) =
-                            if dockerfile_config.common.override_command == Some(false) {
-                                inspect_image_entrypoint_cmd(&tag)
-                            } else {
-                                (vec![], vec![])
-                            };
+                        let (image_entrypoint, image_cmd) = if dockerfile_config
+                            .common
+                            .override_command
+                            == Some(false)
+                        {
+                            inspect_image_entrypoint_cmd(&tag).map_err(|e| {
+                                        anyhow!("Failed to inspect image entrypoint (overrideCommand: false): {e}")
+                                    })?
+                        } else {
+                            (vec![], vec![])
+                        };
                         run_args.extend(devcontainer::container_start_args(
                             dockerfile_config.common.override_command,
                             &image_entrypoint,
@@ -237,12 +244,15 @@ pub fn run(args: Vec<String>) -> Result<()> {
                         );
                         run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
                         run_args.push(tag.clone());
-                        let (image_entrypoint, image_cmd) =
-                            if build_config.common.override_command == Some(false) {
-                                inspect_image_entrypoint_cmd(&tag)
-                            } else {
-                                (vec![], vec![])
-                            };
+                        let (image_entrypoint, image_cmd) = if build_config.common.override_command
+                            == Some(false)
+                        {
+                            inspect_image_entrypoint_cmd(&tag).map_err(|e| {
+                                        anyhow!("Failed to inspect image entrypoint (overrideCommand: false): {e}")
+                                    })?
+                        } else {
+                            (vec![], vec![])
+                        };
                         run_args.extend(devcontainer::container_start_args(
                             build_config.common.override_command,
                             &image_entrypoint,
@@ -380,30 +390,38 @@ Options:
     }
 }
 
-fn inspect_image_entrypoint_cmd(image: &str) -> (Vec<String>, Vec<String>) {
-    let entrypoint = std::process::Command::new("docker")
-        .args([
-            "image",
-            "inspect",
-            "--format",
-            "{{json .Config.Entrypoint}}",
-            image,
-        ])
-        .output()
-        .ok()
-        .map(|o| docker::parse_image_config_json(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or_default();
-    let cmd = std::process::Command::new("docker")
-        .args([
-            "image",
-            "inspect",
-            "--format",
-            "{{json .Config.Cmd}}",
-            image,
-        ])
-        .output()
-        .ok()
-        .map(|o| docker::parse_image_config_json(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or_default();
-    (entrypoint, cmd)
+fn inspect_image_entrypoint_cmd(image: &str) -> Result<(Vec<String>, Vec<String>)> {
+    let entrypoint = {
+        let output = std::process::Command::new("docker")
+            .args([
+                "image",
+                "inspect",
+                "--format",
+                "{{json .Config.Entrypoint}}",
+                image,
+            ])
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("`docker image inspect` failed: {}", stderr.trim()));
+        }
+        docker::parse_image_config_json(&String::from_utf8_lossy(&output.stdout))
+    };
+    let cmd = {
+        let output = std::process::Command::new("docker")
+            .args([
+                "image",
+                "inspect",
+                "--format",
+                "{{json .Config.Cmd}}",
+                image,
+            ])
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("`docker image inspect` failed: {}", stderr.trim()));
+        }
+        docker::parse_image_config_json(&String::from_utf8_lossy(&output.stdout))
+    };
+    Ok((entrypoint, cmd))
 }
