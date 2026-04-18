@@ -79,7 +79,23 @@ ImageConfig に features がある場合は features を組み込んだ Dockerfi
 
 ### overrideCommand のデフォルト
 
-`overrideCommand` が未指定または `true` の場合、コンテナの起動コマンドを `sleep infinity` で上書きしてコンテナを維持する。`false` の場合はイメージのデフォルトコマンドをそのまま使用する。
+定義: `devcontainers/cli` `src/spec-node/singleContainer.ts`
+
+`docker run` 時は常に `--entrypoint /bin/sh` を指定し、以下のシェルスクリプトを起動コマンドとして渡す:
+
+```sh
+echo Container started
+trap "exit 0" 15
+exec "$@"
+while sleep 1 & wait $!; do :; done
+```
+
+`while sleep 1 & wait $!` は `sleep infinity` と異なり、SIGTERM（シグナル15）を `trap` で受け取れる。
+
+| `overrideCommand` | 動作 |
+|---|---|
+| 未指定 / `true` | `exec "$@"` は no-op → ループでコンテナを維持 |
+| `false` | `docker image inspect` でイメージの Entrypoint + Cmd を取得し `"$@"` として渡す → `exec` でイメージ本来のプロセスに置き換わる |
 
 ### workspaceFolder のデフォルト
 

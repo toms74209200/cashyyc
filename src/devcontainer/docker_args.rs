@@ -1,5 +1,83 @@
-use super::config::CommonConfig;
+use super::config::{BuildConfig, CommonConfig, DockerfileConfig};
 use std::path::Path;
+
+pub fn normalize_dockerfile_config(config: &DockerfileConfig) -> BuildConfig {
+    BuildConfig {
+        dockerfile: config
+            .build
+            .as_ref()
+            .and_then(|b| b.dockerfile.clone())
+            .or_else(|| Some(config.docker_file.clone())),
+        context: config
+            .build
+            .as_ref()
+            .and_then(|b| b.context.clone())
+            .or_else(|| config.context.clone()),
+        target: config.build.as_ref().and_then(|b| b.target.clone()),
+        args: config.build.as_ref().and_then(|b| b.args.clone()),
+        cache_from: config.build.as_ref().and_then(|b| b.cache_from.clone()),
+        options: config.build.as_ref().and_then(|b| b.options.clone()),
+    }
+}
+
+pub fn container_build_args(
+    build: &BuildConfig,
+    devcontainer_dir: &Path,
+    tag: &str,
+) -> Vec<String> {
+    let dockerfile = build.dockerfile.as_deref().unwrap_or("Dockerfile");
+    let context = build.context.as_deref().unwrap_or(".");
+
+    let dockerfile_abs = devcontainer_dir.join(dockerfile);
+    let context_abs = devcontainer_dir.join(context);
+
+    let mut args = vec![
+        "-t".to_string(),
+        tag.to_string(),
+        "-f".to_string(),
+        dockerfile_abs.display().to_string(),
+    ];
+
+    if let Some(target) = &build.target {
+        args.extend(["--target".to_string(), target.clone()]);
+    }
+    if let Some(build_args) = &build.args {
+        for (k, v) in build_args {
+            args.extend(["--build-arg".to_string(), format!("{}={}", k, v)]);
+        }
+    }
+    if let Some(cache_from) = &build.cache_from {
+        for c in cache_from {
+            args.extend(["--cache-from".to_string(), c.clone()]);
+        }
+    }
+    if let Some(options) = &build.options {
+        args.extend(options.iter().cloned());
+    }
+
+    args.push(context_abs.display().to_string());
+    args
+}
+
+const CONTAINER_LOOP_SCRIPT: &str =
+    "echo Container started\ntrap \"exit 0\" 15\nexec \"$@\"\nwhile sleep 1 & wait $!; do :; done";
+
+pub fn container_start_args(
+    override_command: Option<bool>,
+    image_entrypoint: &[String],
+    image_cmd: &[String],
+) -> Vec<String> {
+    let mut args = vec![
+        "-c".to_string(),
+        CONTAINER_LOOP_SCRIPT.to_string(),
+        "-".to_string(),
+    ];
+    if override_command == Some(false) {
+        args.extend_from_slice(image_entrypoint);
+        args.extend_from_slice(image_cmd);
+    }
+    args
+}
 
 pub fn container_run_options(
     common: &CommonConfig,
@@ -251,6 +329,187 @@ mod tests {
         let args =
             container_run_options(&empty_common(), Some(&extra), None, Path::new("/project"));
         assert!(args.contains(&"--network=host".to_string()));
+    }
+
+    #[test]
+    fn when_container_start_args_with_override_command_unset_then_returns_loop_script() {
+        let args = container_start_args(None, &[], &[]);
+        assert_eq!(args[0], "-c");
+        assert!(args[1].contains("while sleep 1"));
+        assert_eq!(args[2], "-");
+    }
+
+    #[test]
+    fn when_container_start_args_with_override_command_true_then_returns_loop_script() {
+        let args = container_start_args(Some(true), &[], &[]);
+        assert_eq!(args[0], "-c");
+        assert!(args[1].contains("while sleep 1"));
+        assert_eq!(args[2], "-");
+    }
+
+    #[test]
+    fn when_container_start_args_with_override_command_false_then_appends_image_entrypoint_and_cmd()
+    {
+        let entrypoint = vec!["/entrypoint.sh".to_string()];
+        let cmd = vec!["--flag".to_string()];
+        let args = container_start_args(Some(false), &entrypoint, &cmd);
+        assert_eq!(args[2], "-");
+        assert_eq!(args[3], "/entrypoint.sh");
+        assert_eq!(args[4], "--flag");
+    }
+
+    #[test]
+    fn when_container_start_args_with_override_command_true_then_does_not_append_image_cmd() {
+        let entrypoint = vec!["/entrypoint.sh".to_string()];
+        let cmd = vec!["--flag".to_string()];
+        let args = container_start_args(Some(true), &entrypoint, &cmd);
+        assert_eq!(args.len(), 3);
+    }
+
+    fn empty_dockerfile_config(docker_file: &str) -> DockerfileConfig {
+        DockerfileConfig {
+            docker_file: docker_file.to_string(),
+            context: None,
+            build: None,
+            app_port: None,
+            run_args: None,
+            workspace_mount: None,
+            shutdown_action: None,
+            common: empty_common(),
+        }
+    }
+
+    fn empty_build_config() -> BuildConfig {
+        BuildConfig {
+            dockerfile: None,
+            context: None,
+            target: None,
+            args: None,
+            cache_from: None,
+            options: None,
+        }
+    }
+
+    #[test]
+    fn when_normalize_dockerfile_config_with_only_docker_file_then_uses_it() {
+        let config = empty_dockerfile_config("Dockerfile.dev");
+        let result = normalize_dockerfile_config(&config);
+        assert_eq!(result.dockerfile, Some("Dockerfile.dev".to_string()));
+    }
+
+    #[test]
+    fn when_normalize_dockerfile_config_with_top_level_context_then_uses_it() {
+        let mut config = empty_dockerfile_config("Dockerfile");
+        config.context = Some("..".to_string());
+        let result = normalize_dockerfile_config(&config);
+        assert_eq!(result.context, Some("..".to_string()));
+    }
+
+    #[test]
+    fn when_normalize_dockerfile_config_with_build_dockerfile_then_uses_build_dockerfile() {
+        let mut config = empty_dockerfile_config("Dockerfile");
+        let mut build = empty_build_config();
+        build.dockerfile = Some("Dockerfile.prod".to_string());
+        config.build = Some(build);
+        let result = normalize_dockerfile_config(&config);
+        assert_eq!(result.dockerfile, Some("Dockerfile.prod".to_string()));
+    }
+
+    #[test]
+    fn when_normalize_dockerfile_config_with_build_context_then_uses_build_context() {
+        let mut config = empty_dockerfile_config("Dockerfile");
+        config.context = Some("..".to_string());
+        let mut build = empty_build_config();
+        build.context = Some(".".to_string());
+        config.build = Some(build);
+        let result = normalize_dockerfile_config(&config);
+        assert_eq!(result.context, Some(".".to_string()));
+    }
+
+    #[test]
+    fn when_normalize_dockerfile_config_with_build_but_no_build_dockerfile_then_falls_back_to_top_level()
+     {
+        let mut config = empty_dockerfile_config("Dockerfile.dev");
+        config.build = Some(empty_build_config());
+        let result = normalize_dockerfile_config(&config);
+        assert_eq!(result.dockerfile, Some("Dockerfile.dev".to_string()));
+    }
+
+    #[test]
+    fn when_container_build_args_then_includes_tag() {
+        let build = empty_build_config();
+        let args = container_build_args(&build, Path::new("/project/.devcontainer"), "vsc-myapp");
+        assert!(args.contains(&"vsc-myapp".to_string()));
+    }
+
+    #[test]
+    fn when_container_build_args_then_tag_follows_t_flag() {
+        let build = empty_build_config();
+        let args = container_build_args(&build, Path::new("/project/.devcontainer"), "vsc-myapp");
+        let t_idx = args.iter().position(|a| a == "-t").unwrap();
+        assert_eq!(args[t_idx + 1], "vsc-myapp");
+    }
+
+    #[test]
+    fn when_container_build_args_with_dockerfile_then_resolves_against_devcontainer_dir() {
+        let mut build = empty_build_config();
+        build.dockerfile = Some("Dockerfile".to_string());
+        let args = container_build_args(&build, Path::new("/project/.devcontainer"), "vsc-myapp");
+        let f_idx = args.iter().position(|a| a == "-f").unwrap();
+        assert_eq!(args[f_idx + 1], "/project/.devcontainer/Dockerfile");
+    }
+
+    #[test]
+    fn when_container_build_args_with_no_dockerfile_then_defaults_to_dockerfile() {
+        let build = empty_build_config();
+        let args = container_build_args(&build, Path::new("/project/.devcontainer"), "vsc-myapp");
+        let f_idx = args.iter().position(|a| a == "-f").unwrap();
+        assert_eq!(args[f_idx + 1], "/project/.devcontainer/Dockerfile");
+    }
+
+    #[test]
+    fn when_container_build_args_then_last_arg_is_context() {
+        let mut build = empty_build_config();
+        build.context = Some("..".to_string());
+        let args = container_build_args(&build, Path::new("/project/.devcontainer"), "vsc-myapp");
+        assert_eq!(args.last().unwrap(), "/project/.devcontainer/..");
+    }
+
+    #[test]
+    fn when_container_build_args_with_target_then_includes_target() {
+        let mut build = empty_build_config();
+        build.target = Some("dev".to_string());
+        let args = container_build_args(&build, Path::new("/project/.devcontainer"), "vsc-myapp");
+        let idx = args.iter().position(|a| a == "--target").unwrap();
+        assert_eq!(args[idx + 1], "dev");
+    }
+
+    #[test]
+    fn when_container_build_args_with_build_args_then_includes_build_arg_flags() {
+        let mut build = empty_build_config();
+        let mut map = HashMap::new();
+        map.insert("VERSION".to_string(), "1.0".to_string());
+        build.args = Some(map);
+        let args = container_build_args(&build, Path::new("/project/.devcontainer"), "vsc-myapp");
+        let idx = args.iter().position(|a| a == "--build-arg").unwrap();
+        assert_eq!(args[idx + 1], "VERSION=1.0");
+    }
+
+    #[test]
+    fn when_container_build_args_with_cache_from_then_includes_cache_from_flags() {
+        let mut build = empty_build_config();
+        build.cache_from = Some(vec!["myimage:latest".to_string()]);
+        let args = container_build_args(&build, Path::new("/project/.devcontainer"), "vsc-myapp");
+        let idx = args.iter().position(|a| a == "--cache-from").unwrap();
+        assert_eq!(args[idx + 1], "myimage:latest");
+    }
+
+    #[test]
+    fn when_container_build_args_with_options_then_includes_them() {
+        let mut build = empty_build_config();
+        build.options = Some(vec!["--no-cache".to_string()]);
+        let args = container_build_args(&build, Path::new("/project/.devcontainer"), "vsc-myapp");
+        assert!(args.contains(&"--no-cache".to_string()));
     }
 
     #[test]
