@@ -132,6 +132,45 @@ type=bind,source=${localWorkspaceFolder},target=/workspaces/<フォルダ名>
 [{"id": "feature:1"}, {"remoteUser": "vscode"}, {"id": "feature:2"}]
 ```
 
+### DockerCompose 固有の仕様
+
+#### コンテナの識別
+
+DockerCompose の場合は `devcontainer.local_folder` ラベルを使わず、Docker Compose が自動付与する以下の2ラベルで識別する:
+
+- `com.docker.compose.project=<project_name>`
+- `com.docker.compose.service=<service>`
+
+#### プロジェクト名の導出
+
+`--project-name` に渡すプロジェクト名は以下の規則で決定される:
+
+| devcontainer ディレクトリ | プロジェクト名 |
+|---|---|
+| `<cwd>/.devcontainer/` | `<cwdのフォルダ名>_devcontainer` |
+| それ以外 | devcontainer ディレクトリのフォルダ名 |
+
+いずれも小文字化し `[^a-z0-9\-_]` を除去する。
+
+定義: `devcontainers/cli` `src/spec-node/dockerCompose.ts` `getProjectName`
+
+#### ワークスペースマウントは注入しない
+
+ImageConfig / DockerfileConfig では CLI がワークスペースマウントを自動注入するが、DockerComposeConfig では `workspaceMount: undefined` が仕様であり CLI は一切注入しない。ユーザーが `docker-compose.yml` の `volumes:` に記述する必要がある。
+
+定義: `devcontainers/cli` `src/spec-common/utils.ts` `getWorkspaceConfiguration`
+
+#### キープアライブと containerUser はオーバーライドファイルで注入
+
+`docker run --entrypoint` ではなく、一時的な YAML オーバーライドファイルの `entrypoint:` フィールドでキープアライブスクリプトを注入する。`containerUser` が指定されている場合は同ファイルの `user:` フィールドで注入する。
+
+```yaml
+services:
+  '<service>':
+    entrypoint: ["/bin/sh", "-c", "<keepalive script>", "-"]
+    user: <containerUser>   # containerUser が指定された場合のみ
+```
+
 ### ログインシェルの解決
 
 `docker exec` で使用するシェルは以下の優先順位で決定される（`devcontainers/cli` `src/spec-common/injectHeadless.ts`）:
