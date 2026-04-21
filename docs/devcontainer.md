@@ -6,8 +6,12 @@
 
 ## コンテナの識別
 
-devcontainer CLI はコンテナ起動時に Docker ラベル `devcontainer.local_folder` を付与する。
-値は起動時の local folder の絶対パス。
+devcontainer CLI はコンテナ起動時に以下の Docker ラベルを付与する:
+
+- `devcontainer.local_folder`: local folder の絶対パス
+- `devcontainer.config_file`: 使用した `devcontainer.json` の絶対パス（同一プロジェクト内に複数 config がある場合の識別に使用）
+
+`devcontainer.local_folder` の値は起動時の local folder の絶対パス。
 
 定義: `devcontainers/cli` `src/spec-node/singleContainer.ts`
 
@@ -44,6 +48,20 @@ VS Code (Windows) が作成したコンテナが存在する状態で WSL から
 ```sh
 docker ps --filter "label=devcontainer.local_folder=$(pwd)" --format "{{.ID}}"
 ```
+
+## マルチ config（named config）
+
+`.devcontainer/{name}/devcontainer.json` という形式で複数の config を持つ機能は **VS Code 独自の規約**であり、公式 devcontainer spec には定義されていない。devcontainer CLI もこの形式をサポートするが、公式仕様ではなく VS Code との互換として実装されている。
+
+## image tag
+
+`docker build` 時のイメージタグは以下の形式:
+
+```
+vsc-{basename(cwd)}-{fnv1a(cwd)}
+```
+
+ハッシュは `cwd` のみから生成されるため、同一プロジェクト内に複数の Dockerfile ベース config があると同じタグになる（2回目のビルドが1回目を上書きする）。これは VS Code も同じ挙動であり、spec の設計による。
 
 ## devcontainer up の処理フロー
 
@@ -143,14 +161,15 @@ DockerCompose の場合は `devcontainer.local_folder` ラベルを使わず、D
 
 #### プロジェクト名の導出
 
-`--project-name` に渡すプロジェクト名は以下の規則で決定される:
+`--project-name` に渡すプロジェクト名は **最初の compose ファイルパスを解決した後の親ディレクトリ名** から決定される。`devcontainer_dir` 自体ではない点に注意。
 
-| devcontainer ディレクトリ | プロジェクト名 |
-|---|---|
-| `<cwd>/.devcontainer/` | `<cwdのフォルダ名>_devcontainer` |
-| それ以外 | devcontainer ディレクトリのフォルダ名 |
+1. `devcontainer_dir` と最初の `dockerComposeFile` を結合し `..` を解消して絶対パスに正規化する
+2. その親ディレクトリを取得する
+3. 親ディレクトリが `<cwd>/.devcontainer` と一致する場合は `<cwdのフォルダ名>_devcontainer`、それ以外はそのフォルダ名を使う
 
 いずれも小文字化し `[^a-z0-9\-_]` を除去する。
+
+例: named config `.devcontainer/server/` + `dockerComposeFile: ["../../docker-compose.yml"]` の場合、正規化後のパスは `<cwd>/docker-compose.yml` → 親ディレクトリは `<cwd>` → プロジェクト名は `<cwdのフォルダ名>`。
 
 定義: `devcontainers/cli` `src/spec-node/dockerCompose.ts` `getProjectName`
 
