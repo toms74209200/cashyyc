@@ -5,9 +5,12 @@ use anyhow::{Result, anyhow};
 
 pub fn run(args: Vec<String>) -> Result<()> {
     match cli::parse_args(&args) {
-        cli::Command::Shell { name: _ } => {
+        cli::Command::Shell { name } => {
             let cwd = std::env::current_dir()?;
-            let config_path = cwd.join(".devcontainer").join("devcontainer.json");
+            let config_path = match name {
+                Some(n) => cwd.join(".devcontainer").join(&n).join("devcontainer.json"),
+                None => cwd.join(".devcontainer").join("devcontainer.json"),
+            };
             let content = std::fs::read_to_string(&config_path).map_err(|e| {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     anyhow!(
@@ -66,10 +69,20 @@ pub fn run(args: Vec<String>) -> Result<()> {
                         docker::parse_container_id(&String::from_utf8_lossy(&output.stdout));
                 }
                 _ => {
+                    let config_filter =
+                        format!("label=devcontainer.config_file={}", config_path.display());
                     for domain in &domains {
                         let filter = domain.filter_string();
                         let output = std::process::Command::new("docker")
-                            .args(["ps", "--filter", &filter, "--format", "{{.ID}}"])
+                            .args([
+                                "ps",
+                                "--filter",
+                                &filter,
+                                "--filter",
+                                &config_filter,
+                                "--format",
+                                "{{.ID}}",
+                            ])
                             .output()
                             .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
                         if !output.status.success() {
@@ -90,7 +103,16 @@ pub fn run(args: Vec<String>) -> Result<()> {
                         for domain in &domains {
                             let filter = domain.filter_string();
                             let output = std::process::Command::new("docker")
-                                .args(["ps", "-a", "--filter", &filter, "--format", "{{.ID}}"])
+                                .args([
+                                    "ps",
+                                    "-a",
+                                    "--filter",
+                                    &filter,
+                                    "--filter",
+                                    &config_filter,
+                                    "--format",
+                                    "{{.ID}}",
+                                ])
                                 .output()
                                 .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
                             if !output.status.success() {
@@ -145,6 +167,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                             image_config.run_args.as_deref(),
                             workspace_mount.as_deref(),
                             &cwd,
+                            &config_path,
                         );
                         run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
                         run_args.push(image_config.image.clone());
@@ -206,6 +229,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                             dockerfile_config.run_args.as_deref(),
                             workspace_mount.as_deref(),
                             &cwd,
+                            &config_path,
                         );
                         run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
                         run_args.push(tag.clone());
@@ -271,6 +295,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                             build_config.run_args.as_deref(),
                             workspace_mount.as_deref(),
                             &cwd,
+                            &config_path,
                         );
                         run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
                         run_args.push(tag.clone());

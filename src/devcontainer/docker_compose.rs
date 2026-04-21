@@ -1,5 +1,5 @@
 use super::config::DockerComposeConfig;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct ComposeArgs {
     pub project_name: String,
@@ -15,13 +15,33 @@ pub fn compose_args(
     cwd: &Path,
     devcontainer_dir: &Path,
 ) -> ComposeArgs {
-    let raw = if devcontainer_dir == cwd.join(".devcontainer") {
+    let compose_working_dir = config
+        .docker_compose_file
+        .first()
+        .map(|f| {
+            let path = devcontainer_dir.join(f);
+            let mut parts = vec![];
+            for c in path.components() {
+                match c {
+                    std::path::Component::ParentDir => {
+                        parts.pop();
+                    }
+                    std::path::Component::CurDir => {}
+                    c => parts.push(c),
+                }
+            }
+            parts.iter().collect::<PathBuf>()
+        })
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| devcontainer_dir.to_path_buf());
+
+    let raw = if compose_working_dir == cwd.join(".devcontainer") {
         format!(
             "{}_devcontainer",
             cwd.file_name().unwrap_or_default().to_string_lossy()
         )
     } else {
-        devcontainer_dir
+        compose_working_dir
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
@@ -126,6 +146,16 @@ mod tests {
                 customizations: None,
             },
         }
+    }
+
+    #[test]
+    fn when_compose_args_with_named_config_and_parent_compose_file_then_project_name_is_workspace_name()
+     {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.docker_compose_file = vec!["../../docker-compose.yml".to_string()];
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer/server"));
+        assert_eq!(args.project_name, "myproject");
     }
 
     #[test]
