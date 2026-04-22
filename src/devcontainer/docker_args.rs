@@ -84,11 +84,14 @@ pub fn container_run_options(
     run_args: Option<&[String]>,
     workspace_mount: Option<&str>,
     local_folder: &Path,
+    config_file: &Path,
 ) -> Vec<String> {
     let mut args = vec![
         "-d".to_string(),
         "--label".to_string(),
         format!("devcontainer.local_folder={}", local_folder.display()),
+        "--label".to_string(),
+        format!("devcontainer.config_file={}", config_file.display()),
     ];
 
     let workspace_folder = common.workspace_folder.clone().unwrap_or_else(|| {
@@ -196,19 +199,50 @@ mod tests {
 
     #[test]
     fn when_container_run_options_then_includes_detach_flag() {
-        let args = container_run_options(&empty_common(), None, None, Path::new("/project"));
+        let args = container_run_options(
+            &empty_common(),
+            None,
+            None,
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+        );
         assert!(args.contains(&"-d".to_string()));
     }
 
     #[test]
     fn when_container_run_options_then_includes_local_folder_label() {
-        let args =
-            container_run_options(&empty_common(), None, None, Path::new("/home/user/project"));
+        let args = container_run_options(
+            &empty_common(),
+            None,
+            None,
+            Path::new("/home/user/project"),
+            Path::new("/home/user/project/.devcontainer/devcontainer.json"),
+        );
         let label_idx = args.iter().position(|a| a == "--label").unwrap();
         assert_eq!(
             args[label_idx + 1],
             "devcontainer.local_folder=/home/user/project"
         );
+    }
+
+    #[test]
+    fn when_container_run_options_then_includes_config_file_label() {
+        let args = container_run_options(
+            &empty_common(),
+            None,
+            None,
+            Path::new("/home/user/project"),
+            Path::new("/home/user/project/.devcontainer/server/devcontainer.json"),
+        );
+        let labels: Vec<_> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "--label")
+            .map(|(i, _)| &args[i + 1])
+            .collect();
+        assert!(labels
+            .iter()
+            .any(|l| *l == "devcontainer.config_file=/home/user/project/.devcontainer/server/devcontainer.json"));
     }
 
     #[test]
@@ -218,6 +252,7 @@ mod tests {
             None,
             None,
             Path::new("/home/user/myproject"),
+            Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
         );
         let w_idx = args.iter().position(|a| a == "-w").unwrap();
         assert_eq!(args[w_idx + 1], "/workspaces/myproject");
@@ -227,7 +262,13 @@ mod tests {
     fn when_container_run_options_with_workspace_folder_then_uses_it_as_workdir() {
         let mut common = empty_common();
         common.workspace_folder = Some("/workspace".to_string());
-        let args = container_run_options(&common, None, None, Path::new("/home/user/project"));
+        let args = container_run_options(
+            &common,
+            None,
+            None,
+            Path::new("/home/user/project"),
+            Path::new("/home/user/project/.devcontainer/devcontainer.json"),
+        );
         let w_idx = args.iter().position(|a| a == "-w").unwrap();
         assert_eq!(args[w_idx + 1], "/workspace");
     }
@@ -240,6 +281,7 @@ mod tests {
             None,
             None,
             Path::new("/home/user/myproject"),
+            Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
         );
         let mount_idx = args.iter().position(|a| a == "--mount").unwrap();
         assert_eq!(
@@ -256,6 +298,7 @@ mod tests {
             None,
             Some(custom_mount),
             Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
         );
         let mount_idx = args.iter().position(|a| a == "--mount").unwrap();
         assert_eq!(args[mount_idx + 1], custom_mount);
@@ -267,7 +310,13 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("RUST_LOG".to_string(), "debug".to_string());
         common.container_env = Some(env);
-        let args = container_run_options(&common, None, None, Path::new("/project"));
+        let args = container_run_options(
+            &common,
+            None,
+            None,
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+        );
         let env_idx = args.iter().position(|a| a == "--env").unwrap();
         assert_eq!(args[env_idx + 1], "RUST_LOG=debug");
     }
@@ -276,7 +325,13 @@ mod tests {
     fn when_container_run_options_with_container_user_then_includes_user_flag() {
         let mut common = empty_common();
         common.container_user = Some("vscode".to_string());
-        let args = container_run_options(&common, None, None, Path::new("/project"));
+        let args = container_run_options(
+            &common,
+            None,
+            None,
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+        );
         let user_idx = args.iter().position(|a| a == "--user").unwrap();
         assert_eq!(args[user_idx + 1], "vscode");
     }
@@ -285,7 +340,13 @@ mod tests {
     fn when_container_run_options_with_init_true_then_includes_init_flag() {
         let mut common = empty_common();
         common.init = Some(true);
-        let args = container_run_options(&common, None, None, Path::new("/project"));
+        let args = container_run_options(
+            &common,
+            None,
+            None,
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+        );
         assert!(args.contains(&"--init".to_string()));
     }
 
@@ -293,7 +354,13 @@ mod tests {
     fn when_container_run_options_with_init_false_then_excludes_init_flag() {
         let mut common = empty_common();
         common.init = Some(false);
-        let args = container_run_options(&common, None, None, Path::new("/project"));
+        let args = container_run_options(
+            &common,
+            None,
+            None,
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+        );
         assert!(!args.contains(&"--init".to_string()));
     }
 
@@ -301,7 +368,13 @@ mod tests {
     fn when_container_run_options_with_privileged_true_then_includes_privileged_flag() {
         let mut common = empty_common();
         common.privileged = Some(true);
-        let args = container_run_options(&common, None, None, Path::new("/project"));
+        let args = container_run_options(
+            &common,
+            None,
+            None,
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+        );
         assert!(args.contains(&"--privileged".to_string()));
     }
 
@@ -309,7 +382,13 @@ mod tests {
     fn when_container_run_options_with_cap_add_then_includes_cap_add_flags() {
         let mut common = empty_common();
         common.cap_add = Some(vec!["SYS_PTRACE".to_string()]);
-        let args = container_run_options(&common, None, None, Path::new("/project"));
+        let args = container_run_options(
+            &common,
+            None,
+            None,
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+        );
         let cap_idx = args.iter().position(|a| a == "--cap-add").unwrap();
         assert_eq!(args[cap_idx + 1], "SYS_PTRACE");
     }
@@ -318,7 +397,13 @@ mod tests {
     fn when_container_run_options_with_security_opt_then_includes_security_opt_flags() {
         let mut common = empty_common();
         common.security_opt = Some(vec!["seccomp=unconfined".to_string()]);
-        let args = container_run_options(&common, None, None, Path::new("/project"));
+        let args = container_run_options(
+            &common,
+            None,
+            None,
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+        );
         let opt_idx = args.iter().position(|a| a == "--security-opt").unwrap();
         assert_eq!(args[opt_idx + 1], "seccomp=unconfined");
     }
@@ -326,8 +411,13 @@ mod tests {
     #[test]
     fn when_container_run_options_with_run_args_then_includes_them() {
         let extra = vec!["--network=host".to_string()];
-        let args =
-            container_run_options(&empty_common(), Some(&extra), None, Path::new("/project"));
+        let args = container_run_options(
+            &empty_common(),
+            Some(&extra),
+            None,
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+        );
         assert!(args.contains(&"--network=host".to_string()));
     }
 
@@ -518,7 +608,13 @@ mod tests {
         common.mounts = Some(vec![serde_json::Value::String(
             "source=/host/data,target=/container/data,type=bind".to_string(),
         )]);
-        let args = container_run_options(&common, None, None, Path::new("/project"));
+        let args = container_run_options(
+            &common,
+            None,
+            None,
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+        );
         let mount_idx = args.iter().rposition(|a| a == "--mount").unwrap();
         assert_eq!(
             args[mount_idx + 1],

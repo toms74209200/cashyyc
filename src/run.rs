@@ -5,9 +5,59 @@ use anyhow::{Result, anyhow};
 
 pub fn run(args: Vec<String>) -> Result<()> {
     match cli::parse_args(&args) {
-        cli::Command::Shell { name: _ } => {
+        cli::Command::Shell { name } => {
             let cwd = std::env::current_dir()?;
-            let config_path = cwd.join(".devcontainer").join("devcontainer.json");
+            let devcontainer_dir = cwd.join(".devcontainer");
+            let mut configs = vec![];
+            let root = devcontainer_dir.join("devcontainer.json");
+            if root.is_file() {
+                configs.push(root);
+            }
+            if let Ok(entries) = std::fs::read_dir(&devcontainer_dir) {
+                let mut named: Vec<_> = entries
+                    .flatten()
+                    .filter(|e| e.path().is_dir())
+                    .filter_map(|e| {
+                        let p = e.path().join("devcontainer.json");
+                        p.is_file().then_some(p)
+                    })
+                    .collect();
+                named.sort();
+                configs.extend(named);
+            }
+            let (config_path, use_config_filter) = match (configs.as_slice(), name.as_deref()) {
+                ([], _) => {
+                    return Err(anyhow!(
+                        "No devcontainer.json found in {}",
+                        devcontainer_dir.display()
+                    ));
+                }
+                ([c], _) => (c.clone(), false),
+                (_, Some(n)) => {
+                    let path = devcontainer_dir.join(n).join("devcontainer.json");
+                    if !path.is_file() {
+                        return Err(anyhow!(
+                            "Dev container config ({}) not found.",
+                            path.display()
+                        ));
+                    }
+                    (path, true)
+                }
+                (cs, None) => {
+                    let names: Vec<_> = cs
+                        .iter()
+                        .filter_map(|p| {
+                            p.parent()
+                                .and_then(|d| d.file_name())
+                                .map(|n| n.to_string_lossy().to_string())
+                        })
+                        .collect();
+                    return Err(anyhow!(
+                        "Multiple devcontainer configs found. Specify a name: {}",
+                        names.join(", ")
+                    ));
+                }
+            };
             let content = std::fs::read_to_string(&config_path).map_err(|e| {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     anyhow!(
@@ -68,8 +118,16 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 _ => {
                     for domain in &domains {
                         let filter = domain.filter_string();
+                        let mut ps_args = vec!["ps", "--filter", &filter];
+                        let config_filter =
+                            format!("label=devcontainer.config_file={}", config_path.display());
+                        if use_config_filter {
+                            ps_args.extend(["--filter", &config_filter]);
+                        }
+                        ps_args.push("--format");
+                        ps_args.push("{{.ID}}");
                         let output = std::process::Command::new("docker")
-                            .args(["ps", "--filter", &filter, "--format", "{{.ID}}"])
+                            .args(&ps_args)
                             .output()
                             .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
                         if !output.status.success() {
@@ -89,8 +147,15 @@ pub fn run(args: Vec<String>) -> Result<()> {
                     if container_id.is_none() {
                         for domain in &domains {
                             let filter = domain.filter_string();
+                            let config_filter =
+                                format!("label=devcontainer.config_file={}", config_path.display());
+                            let mut ps_args = vec!["ps", "-a", "--filter", &filter];
+                            if use_config_filter {
+                                ps_args.extend(["--filter", &config_filter]);
+                            }
+                            ps_args.extend(["--format", "{{.ID}}"]);
                             let output = std::process::Command::new("docker")
-                                .args(["ps", "-a", "--filter", &filter, "--format", "{{.ID}}"])
+                                .args(&ps_args)
                                 .output()
                                 .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
                             if !output.status.success() {
@@ -145,6 +210,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                             image_config.run_args.as_deref(),
                             workspace_mount.as_deref(),
                             &cwd,
+                            &config_path,
                         );
                         run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
                         run_args.push(image_config.image.clone());
@@ -206,6 +272,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                             dockerfile_config.run_args.as_deref(),
                             workspace_mount.as_deref(),
                             &cwd,
+                            &config_path,
                         );
                         run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
                         run_args.push(tag.clone());
@@ -271,6 +338,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                             build_config.run_args.as_deref(),
                             workspace_mount.as_deref(),
                             &cwd,
+                            &config_path,
                         );
                         run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
                         run_args.push(tag.clone());
