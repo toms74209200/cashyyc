@@ -501,6 +501,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
                     cwd.file_name().unwrap_or_default().to_string_lossy()
                 )
             });
+            let container_workspace_folder =
+                devcontainer::expand_variables(&container_workspace_folder, &cwd, "");
             let mut exec_args = vec!["exec".to_string(), "-it".to_string()];
             if let Some(user) = remote_user {
                 exec_args.extend(["--user".to_string(), user]);
