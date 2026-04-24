@@ -25,14 +25,14 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 named.sort();
                 configs.extend(named);
             }
-            let (config_path, use_config_filter) = match (configs.as_slice(), name.as_deref()) {
+            let config_path = match (configs.as_slice(), name.as_deref()) {
                 ([], _) => {
                     return Err(anyhow!(
                         "No devcontainer.json found in {}",
                         devcontainer_dir.display()
                     ));
                 }
-                ([c], _) => (c.clone(), false),
+                ([c], _) => c.clone(),
                 (_, Some(n)) => {
                     let path = devcontainer_dir.join(n).join("devcontainer.json");
                     if !path.is_file() {
@@ -41,7 +41,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                             path.display()
                         ));
                     }
-                    (path, true)
+                    path
                 }
                 (cs, None) => {
                     let names: Vec<_> = cs
@@ -74,60 +74,21 @@ pub fn run(args: Vec<String>) -> Result<()> {
                     config_path.display()
                 )
             })?;
-            let mut domains = vec![docker::PathDomain::Unix(cwd.to_path_buf())];
-            if let Some(wsl_path) = std::process::Command::new("wslpath")
-                .args(["-w", &cwd.display().to_string()])
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .and_then(|o| {
-                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    if s.is_empty() { None } else { Some(s) }
-                })
-            {
-                domains.push(docker::PathDomain::Wsl(wsl_path));
-            }
             let compose = if let devcontainer::DevcontainerConfig::DockerCompose(ref c) = config {
                 let devcontainer_dir = config_path.parent().unwrap_or(cwd.as_path());
                 Some(devcontainer::compose_args(c, &cwd, devcontainer_dir))
             } else {
                 None
             };
-            let mut container_id = None;
-            match &config {
-                devcontainer::DevcontainerConfig::DockerCompose(_) => {
-                    let c = compose.as_ref().unwrap();
-                    let output = std::process::Command::new("docker")
-                        .args([
-                            "ps", "--filter", &c.filter1, "--filter", &c.filter2, "--format",
-                            "{{.ID}}",
-                        ])
-                        .output()
-                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        return Err(anyhow!(
-                            "`docker ps` failed with status {}: {}",
-                            output.status,
-                            stderr.trim()
-                        ));
-                    }
-                    container_id =
-                        docker::parse_container_id(&String::from_utf8_lossy(&output.stdout));
-                }
-                _ => {
-                    for domain in &domains {
-                        let filter = domain.filter_string();
-                        let mut ps_args = vec!["ps", "--filter", &filter];
-                        let config_filter =
-                            format!("label=devcontainer.config_file={}", config_path.display());
-                        if use_config_filter {
-                            ps_args.extend(["--filter", &config_filter]);
-                        }
-                        ps_args.push("--format");
-                        ps_args.push("{{.ID}}");
+            let (found_container, container_id): (Option<docker::Container>, Option<String>) =
+                match &config {
+                    devcontainer::DevcontainerConfig::DockerCompose(_) => {
+                        let c = compose.as_ref().unwrap();
                         let output = std::process::Command::new("docker")
-                            .args(&ps_args)
+                            .args([
+                                "ps", "--filter", &c.filter1, "--filter", &c.filter2, "--format",
+                                "{{.ID}}",
+                            ])
                             .output()
                             .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
                         if !output.status.success() {
@@ -138,24 +99,62 @@ pub fn run(args: Vec<String>) -> Result<()> {
                                 stderr.trim()
                             ));
                         }
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        if let Some(id) = docker::parse_container_id(&stdout) {
-                            container_id = Some(id);
-                            break;
-                        }
+                        (
+                            None,
+                            docker::parse_container_id(&String::from_utf8_lossy(&output.stdout)),
+                        )
                     }
-                    if container_id.is_none() {
-                        for domain in &domains {
-                            let filter = domain.filter_string();
-                            let config_filter =
-                                format!("label=devcontainer.config_file={}", config_path.display());
-                            let mut ps_args = vec!["ps", "-a", "--filter", &filter];
-                            if use_config_filter {
-                                ps_args.extend(["--filter", &config_filter]);
+                    _ => {
+                        let output = std::process::Command::new("docker")
+                            .args([
+                                "ps",
+                                "--filter",
+                                "label=devcontainer.config_file",
+                                "--format",
+                                "{{.ID}}",
+                            ])
+                            .output()
+                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        if !output.status.success() {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            return Err(anyhow!(
+                                "`docker ps` failed with status {}: {}",
+                                output.status,
+                                stderr.trim()
+                            ));
+                        }
+                        let ids =
+                            docker::parse_container_ids(&String::from_utf8_lossy(&output.stdout));
+                        let found_running = if !ids.is_empty() {
+                            let inspect = std::process::Command::new("docker")
+                                .arg("inspect")
+                                .args(&ids)
+                                .output()
+                                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                            if inspect.status.success() {
+                                docker::find_container(
+                                    String::from_utf8_lossy(&inspect.stdout).trim(),
+                                    &config_path,
+                                    &cwd,
+                                )
+                            } else {
+                                None
                             }
-                            ps_args.extend(["--format", "{{.ID}}"]);
+                        } else {
+                            None
+                        };
+                        let found = if found_running.is_some() {
+                            found_running
+                        } else {
                             let output = std::process::Command::new("docker")
-                                .args(&ps_args)
+                                .args([
+                                    "ps",
+                                    "-a",
+                                    "--filter",
+                                    "label=devcontainer.config_file",
+                                    "--format",
+                                    "{{.ID}}",
+                                ])
                                 .output()
                                 .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
                             if !output.status.success() {
@@ -166,25 +165,48 @@ pub fn run(args: Vec<String>) -> Result<()> {
                                     stderr.trim()
                                 ));
                             }
-                            let stdout = String::from_utf8_lossy(&output.stdout);
-                            if let Some(id) = docker::parse_container_id(&stdout) {
-                                let status = std::process::Command::new("docker")
-                                    .args(["start", &id])
-                                    .status()
+                            let ids = docker::parse_container_ids(&String::from_utf8_lossy(
+                                &output.stdout,
+                            ));
+                            if !ids.is_empty() {
+                                let inspect = std::process::Command::new("docker")
+                                    .arg("inspect")
+                                    .args(&ids)
+                                    .output()
                                     .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-                                if !status.success() {
-                                    return Err(anyhow!("`docker start` failed"));
+                                if inspect.status.success() {
+                                    if let Some(c) = docker::find_container(
+                                        String::from_utf8_lossy(&inspect.stdout).trim(),
+                                        &config_path,
+                                        &cwd,
+                                    ) {
+                                        let status = std::process::Command::new("docker")
+                                            .args(["start", &c.id])
+                                            .status()
+                                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                                        if !status.success() {
+                                            return Err(anyhow!("`docker start` failed"));
+                                        }
+                                        Some(c)
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
                                 }
-                                container_id = Some(id);
-                                break;
+                            } else {
+                                None
                             }
-                        }
+                        };
+                        let id = found.as_ref().map(|c| c.id.clone());
+                        (found, id)
                     }
-                }
-            }
-            if container_id.is_none() {
-                match config {
-                    devcontainer::DevcontainerConfig::Image(ref image_config) => {
+                };
+            let container_id = if container_id.is_some() {
+                container_id
+            } else {
+                match &config {
+                    devcontainer::DevcontainerConfig::Image(image_config) => {
                         let status = std::process::Command::new("docker")
                             .args(["pull", &image_config.image])
                             .status()
@@ -236,10 +258,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
                             let stderr = String::from_utf8_lossy(&output.stderr);
                             return Err(anyhow!("`docker run` failed: {}", stderr.trim()));
                         }
-                        container_id =
-                            docker::parse_container_id(&String::from_utf8_lossy(&output.stdout));
+                        docker::parse_container_id(&String::from_utf8_lossy(&output.stdout))
                     }
-                    devcontainer::DevcontainerConfig::Dockerfile(ref dockerfile_config) => {
+                    devcontainer::DevcontainerConfig::Dockerfile(dockerfile_config) => {
                         let devcontainer_dir = config_path.parent().unwrap_or(cwd.as_path());
                         let build = devcontainer::normalize_dockerfile_config(dockerfile_config);
                         let tag = docker::image_tag(&cwd);
@@ -301,10 +322,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
                             let stderr = String::from_utf8_lossy(&output.stderr);
                             return Err(anyhow!("`docker run` failed: {}", stderr.trim()));
                         }
-                        container_id =
-                            docker::parse_container_id(&String::from_utf8_lossy(&output.stdout));
+                        docker::parse_container_id(&String::from_utf8_lossy(&output.stdout))
                     }
-                    devcontainer::DevcontainerConfig::DockerfileBuild(ref build_config) => {
+                    devcontainer::DevcontainerConfig::DockerfileBuild(build_config) => {
                         let devcontainer_dir = config_path.parent().unwrap_or(cwd.as_path());
                         let tag = docker::image_tag(&cwd);
                         let build_args = devcontainer::container_build_args(
@@ -365,22 +385,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
                             let stderr = String::from_utf8_lossy(&output.stderr);
                             return Err(anyhow!("`docker run` failed: {}", stderr.trim()));
                         }
-                        container_id =
-                            docker::parse_container_id(&String::from_utf8_lossy(&output.stdout));
+                        docker::parse_container_id(&String::from_utf8_lossy(&output.stdout))
                     }
                     devcontainer::DevcontainerConfig::DockerCompose(_) => {
                         let c = compose.as_ref().unwrap();
-                        let mut build_args = c.global_args.clone();
-                        build_args.push("build".to_string());
-                        build_args.extend(c.services.iter().cloned());
-                        let status = std::process::Command::new("docker")
-                            .arg("compose")
-                            .args(&build_args)
-                            .status()
-                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-                        if !status.success() {
-                            return Err(anyhow!("`docker compose build` failed"));
-                        }
                         let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
                         let compose_dir = std::env::temp_dir()
                             .join(format!("cyyc-{}", username))
@@ -388,17 +396,79 @@ pub fn run(args: Vec<String>) -> Result<()> {
                         std::fs::create_dir_all(&compose_dir).map_err(|e| {
                             anyhow!("Failed to create compose override directory: {e}")
                         })?;
-                        let timestamp = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis();
-                        let override_path =
-                            compose_dir.join(format!("{}-{}.yml", c.project_name, timestamp));
-                        std::fs::write(&override_path, &c.override_content)
-                            .map_err(|e| anyhow!("Failed to write compose override file: {e}"))?;
+                        let existing_id = {
+                            let output = std::process::Command::new("docker")
+                                .args([
+                                    "ps", "-a", "--filter", &c.filter1, "--filter", &c.filter2,
+                                    "--format", "{{.ID}}",
+                                ])
+                                .output()
+                                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                            if !output.status.success() {
+                                let stderr = String::from_utf8_lossy(&output.stderr);
+                                return Err(anyhow!(
+                                    "`docker ps` failed with status {}: {}",
+                                    output.status,
+                                    stderr.trim()
+                                ));
+                            }
+                            docker::parse_container_id(&String::from_utf8_lossy(&output.stdout))
+                        };
+                        let persisted_override = existing_id.as_deref().and_then(|id| {
+                            let out = std::process::Command::new("docker")
+                                .args([
+                                    "inspect",
+                                    "--format",
+                                    "{{index .Config.Labels \"com.docker.compose.project.config_files\"}}",
+                                    id,
+                                ])
+                                .output()
+                                .ok()?;
+                            let config_files =
+                                String::from_utf8_lossy(&out.stdout).trim().to_string();
+                            config_files.split(',').find_map(|f| {
+                                let p = std::path::Path::new(f.trim());
+                                if p.starts_with(&compose_dir) && p.exists() {
+                                    Some(p.to_path_buf())
+                                } else {
+                                    None
+                                }
+                            })
+                        });
+                        let no_recreate = existing_id.is_some();
+                        let override_path = if let Some(p) = persisted_override {
+                            p
+                        } else {
+                            if !no_recreate {
+                                let mut build_args = c.global_args.clone();
+                                build_args.push("build".to_string());
+                                build_args.extend(c.services.iter().cloned());
+                                let status = std::process::Command::new("docker")
+                                    .arg("compose")
+                                    .args(&build_args)
+                                    .status()
+                                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                                if !status.success() {
+                                    return Err(anyhow!("`docker compose build` failed"));
+                                }
+                            }
+                            let timestamp = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis();
+                            let p =
+                                compose_dir.join(format!("{}-{}.yml", c.project_name, timestamp));
+                            std::fs::write(&p, &c.override_content).map_err(|e| {
+                                anyhow!("Failed to write compose override file: {e}")
+                            })?;
+                            p
+                        };
                         let mut up_args = c.global_args.clone();
                         up_args.extend(["-f".to_string(), override_path.display().to_string()]);
                         up_args.extend(["up".to_string(), "-d".to_string()]);
+                        if no_recreate {
+                            up_args.push("--no-recreate".to_string());
+                        }
                         up_args.extend(c.services.iter().cloned());
                         let status = std::process::Command::new("docker")
                             .arg("compose")
@@ -419,11 +489,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
                             let stderr = String::from_utf8_lossy(&output.stderr);
                             return Err(anyhow!("`docker ps` failed: {}", stderr.trim()));
                         }
-                        container_id =
-                            docker::parse_container_id(&String::from_utf8_lossy(&output.stdout));
+                        docker::parse_container_id(&String::from_utf8_lossy(&output.stdout))
                     }
                 }
-            }
+            };
             let id = container_id.ok_or_else(|| anyhow!("Failed to get container ID"))?;
             let remote_user_from_config = match &config {
                 devcontainer::DevcontainerConfig::Image(c) => c.common.remote_user.clone(),
@@ -433,34 +502,35 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 }
                 devcontainer::DevcontainerConfig::DockerCompose(c) => c.common.remote_user.clone(),
             };
-            let remote_user = remote_user_from_config
-                .clone()
-                .or_else(|| {
-                    std::process::Command::new("docker")
-                        .args([
-                            "inspect",
-                            "--format",
-                            "{{index .Config.Labels \"devcontainer.metadata\"}}",
-                            &id,
-                        ])
-                        .output()
-                        .ok()
-                        .and_then(|o| {
-                            docker::parse_remote_user_from_metadata(
-                                String::from_utf8_lossy(&o.stdout).trim(),
-                            )
-                        })
-                })
-                .or_else(|| {
-                    std::process::Command::new("docker")
-                        .args(["inspect", "--format", "{{.Config.User}}", &id])
-                        .output()
-                        .ok()
-                        .and_then(|o| {
-                            let user = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                            if user.is_empty() { None } else { Some(user) }
-                        })
-                });
+            let remote_user_from_container = if let Some(ref c) = found_container {
+                c.remote_user.clone()
+            } else {
+                std::process::Command::new("docker")
+                    .args([
+                        "inspect",
+                        "--format",
+                        "{{index .Config.Labels \"devcontainer.metadata\"}}",
+                        &id,
+                    ])
+                    .output()
+                    .ok()
+                    .and_then(|o| {
+                        docker::parse_remote_user_from_metadata(
+                            String::from_utf8_lossy(&o.stdout).trim(),
+                        )
+                    })
+                    .or_else(|| {
+                        std::process::Command::new("docker")
+                            .args(["inspect", "--format", "{{.Config.User}}", &id])
+                            .output()
+                            .ok()
+                            .and_then(|o| {
+                                let user = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                                if user.is_empty() { None } else { Some(user) }
+                            })
+                    })
+            };
+            let remote_user = remote_user_from_config.or(remote_user_from_container);
             let shell = std::process::Command::new("docker")
                 .args(["exec", &id, "printenv", "SHELL"])
                 .output()

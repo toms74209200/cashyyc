@@ -21,24 +21,6 @@ pub fn image_tag(local_folder: &std::path::Path) -> String {
     format!("vsc-{}-{:016x}", name, hash)
 }
 
-pub enum PathDomain {
-    Unix(std::path::PathBuf),
-    Wsl(String),
-}
-
-impl PathDomain {
-    pub fn filter_string(&self) -> String {
-        match self {
-            PathDomain::Unix(cwd) => {
-                format!("label=devcontainer.local_folder={}", cwd.display())
-            }
-            PathDomain::Wsl(wsl_path) => {
-                format!("label=devcontainer.local_folder={}", wsl_path)
-            }
-        }
-    }
-}
-
 pub fn parse_image_config_json(json: &str) -> Vec<String> {
     serde_json::from_str::<serde_json::Value>(json.trim())
         .ok()
@@ -73,34 +55,105 @@ pub fn parse_container_id(output: &str) -> Option<String> {
         .map(|line| line.trim().to_string())
 }
 
+pub fn parse_container_ids(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.trim().to_string())
+        .collect()
+}
+
+pub struct Container {
+    pub id: String,
+    pub remote_user: Option<String>,
+}
+
+pub fn find_container(
+    inspect_json: &str,
+    config_path: &std::path::Path,
+    cwd: &std::path::Path,
+) -> Option<Container> {
+    let arr = serde_json::from_str::<serde_json::Value>(inspect_json).ok()?;
+    let arr = arr.as_array()?;
+    let cwd_basename = cwd.file_name()?.to_string_lossy().to_string();
+    let rel = config_path.strip_prefix(cwd).ok()?;
+    let config_suffix = format!("/{}", rel.display());
+    for c in arr {
+        let id = match c.get("Id").and_then(|v| v.as_str()) {
+            Some(id) => id.to_string(),
+            None => continue,
+        };
+        let labels = match c.get("Config").and_then(|c| c.get("Labels")) {
+            Some(l) => l,
+            None => continue,
+        };
+        let local_folder = labels
+            .get("devcontainer.local_folder")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let config_file = labels
+            .get("devcontainer.config_file")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let norm_local = local_folder.replace('\\', "/");
+        let label_basename = norm_local
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or("");
+        if label_basename != cwd_basename {
+            continue;
+        }
+        let norm_config = config_file.replace('\\', "/");
+        if !norm_config.ends_with(&config_suffix) {
+            continue;
+        }
+        let metadata = labels
+            .get("devcontainer.metadata")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let config_user = c
+            .get("Config")
+            .and_then(|c| c.get("User"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let remote_user = parse_remote_user_from_metadata(metadata).or(config_user);
+        return Some(Container { id, remote_user });
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use random_string::{CharacterType, generate_random_string};
     use std::fs::File;
+    use std::path::Path;
 
     fn urandom() -> File {
         File::open("/dev/urandom").unwrap()
     }
 
-    #[test]
-    fn when_unix_domain_filter_string_then_returns_unix_path_label() {
-        let domain = PathDomain::Unix(std::path::PathBuf::from("/home/user/projects/cashyyc"));
-        assert_eq!(
-            domain.filter_string(),
-            "label=devcontainer.local_folder=/home/user/projects/cashyyc"
-        );
+    fn random_id() -> String {
+        generate_random_string(
+            12,
+            &[CharacterType::Lowercase, CharacterType::Numeric],
+            "",
+            &mut urandom(),
+        )
     }
 
-    #[test]
-    fn when_wsl_domain_filter_string_then_returns_wsl_path_label() {
-        let domain = PathDomain::Wsl(
-            "\\\\wsl.localhost\\Ubuntu-20.04\\home\\user\\projects\\cashyyc".to_string(),
-        );
-        assert_eq!(
-            domain.filter_string(),
-            "label=devcontainer.local_folder=\\\\wsl.localhost\\Ubuntu-20.04\\home\\user\\projects\\cashyyc"
-        );
+    fn make_inspect_json(
+        id: &str,
+        local_folder: &str,
+        config_file: &str,
+        metadata: &str,
+        user: &str,
+    ) -> String {
+        format!(
+            r#"[{{"Id":"{id}","Config":{{"User":"{user}","Labels":{{"devcontainer.local_folder":"{local_folder}","devcontainer.config_file":"{config_file}","devcontainer.metadata":"{metadata}"}}}}}}]"#,
+        )
     }
 
     #[test]
@@ -131,12 +184,7 @@ mod tests {
 
     #[test]
     fn when_parse_container_id_with_container_id_then_returns_some() {
-        let id = generate_random_string(
-            12,
-            &[CharacterType::Lowercase, CharacterType::Numeric],
-            "",
-            &mut urandom(),
-        );
+        let id = random_id();
         let output = format!("{}\n", id);
         assert_eq!(parse_container_id(&output), Some(id));
     }
@@ -149,6 +197,182 @@ mod tests {
     #[test]
     fn when_parse_container_id_with_newline_only_then_returns_none() {
         assert_eq!(parse_container_id("\n"), None);
+    }
+
+    #[test]
+    fn when_parse_container_ids_with_multiple_ids_then_returns_all() {
+        let id1 = random_id();
+        let id2 = random_id();
+        let output = format!("{}\n{}\n", id1, id2);
+        assert_eq!(parse_container_ids(&output), vec![id1, id2]);
+    }
+
+    #[test]
+    fn when_parse_container_ids_with_empty_string_then_returns_empty() {
+        assert_eq!(parse_container_ids(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn when_parse_container_ids_with_single_id_then_returns_vec_with_one() {
+        let id = random_id();
+        let output = format!("{}\n", id);
+        assert_eq!(parse_container_ids(&output), vec![id]);
+    }
+
+    #[test]
+    fn when_find_container_with_matching_linux_labels_then_returns_container() {
+        let id = random_id();
+        let json = make_inspect_json(
+            &id,
+            "/host/project",
+            "/host/project/.devcontainer/devcontainer.json",
+            "[]",
+            "",
+        );
+        let result = find_container(
+            &json,
+            Path::new("/cwd/project/.devcontainer/devcontainer.json"),
+            Path::new("/cwd/project"),
+        );
+        assert_eq!(result.map(|c| c.id), Some(id));
+    }
+
+    #[test]
+    fn when_find_container_with_matching_windows_labels_then_returns_container() {
+        let id = random_id();
+        let json = make_inspect_json(
+            &id,
+            "C:\\\\Users\\\\user\\\\project",
+            "C:\\\\Users\\\\user\\\\project\\\\.devcontainer\\\\devcontainer.json",
+            "[]",
+            "",
+        );
+        let result = find_container(
+            &json,
+            Path::new("/cwd/project/.devcontainer/devcontainer.json"),
+            Path::new("/cwd/project"),
+        );
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn when_find_container_with_matching_wsl_local_folder_then_returns_container() {
+        let id = random_id();
+        let json = make_inspect_json(
+            &id,
+            "\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\user\\\\project",
+            "/home/user/project/.devcontainer/devcontainer.json",
+            "[]",
+            "",
+        );
+        let result = find_container(
+            &json,
+            Path::new("/cwd/project/.devcontainer/devcontainer.json"),
+            Path::new("/cwd/project"),
+        );
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn when_find_container_with_different_basename_then_returns_none() {
+        let id = random_id();
+        let json = make_inspect_json(
+            &id,
+            "/host/other-project",
+            "/host/other-project/.devcontainer/devcontainer.json",
+            "[]",
+            "",
+        );
+        let result = find_container(
+            &json,
+            Path::new("/cwd/project/.devcontainer/devcontainer.json"),
+            Path::new("/cwd/project"),
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn when_find_container_with_different_config_file_then_returns_none() {
+        let id = random_id();
+        let json = make_inspect_json(
+            &id,
+            "/host/project",
+            "/host/project/.devcontainer/other/devcontainer.json",
+            "[]",
+            "",
+        );
+        let result = find_container(
+            &json,
+            Path::new("/cwd/project/.devcontainer/config1/devcontainer.json"),
+            Path::new("/cwd/project"),
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn when_find_container_with_remote_user_in_metadata_then_returns_it() {
+        let id = random_id();
+        let json = make_inspect_json(
+            &id,
+            "/host/project",
+            "/host/project/.devcontainer/devcontainer.json",
+            r#"[{\"remoteUser\":\"vscode\"}]"#,
+            "",
+        );
+        let result = find_container(
+            &json,
+            Path::new("/cwd/project/.devcontainer/devcontainer.json"),
+            Path::new("/cwd/project"),
+        );
+        assert_eq!(
+            result.and_then(|c| c.remote_user),
+            Some("vscode".to_string())
+        );
+    }
+
+    #[test]
+    fn when_find_container_with_remote_user_in_config_user_then_returns_it() {
+        let id = random_id();
+        let json = make_inspect_json(
+            &id,
+            "/host/project",
+            "/host/project/.devcontainer/devcontainer.json",
+            "[]",
+            "node",
+        );
+        let result = find_container(
+            &json,
+            Path::new("/cwd/project/.devcontainer/devcontainer.json"),
+            Path::new("/cwd/project"),
+        );
+        assert_eq!(result.and_then(|c| c.remote_user), Some("node".to_string()));
+    }
+
+    #[test]
+    fn when_find_container_with_empty_json_then_returns_none() {
+        assert!(
+            find_container(
+                "",
+                Path::new("/cwd/project/.devcontainer/devcontainer.json"),
+                Path::new("/cwd/project"),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn when_find_container_with_multiple_candidates_then_returns_first_match() {
+        let id1 = random_id();
+        let id2 = random_id();
+        let json = format!(
+            r#"[{{"Id":"{id1}","Config":{{"User":"","Labels":{{"devcontainer.local_folder":"/host/other","devcontainer.config_file":"/host/other/.devcontainer/devcontainer.json","devcontainer.metadata":"[]"}}}}}},{{"Id":"{id2}","Config":{{"User":"","Labels":{{"devcontainer.local_folder":"/host/project","devcontainer.config_file":"/host/project/.devcontainer/devcontainer.json","devcontainer.metadata":"[]"}}}}}}]"#
+        );
+        let result = find_container(
+            &json,
+            Path::new("/cwd/project/.devcontainer/devcontainer.json"),
+            Path::new("/cwd/project"),
+        );
+        assert_eq!(result.map(|c| c.id), Some(id2));
     }
 
     #[test]
