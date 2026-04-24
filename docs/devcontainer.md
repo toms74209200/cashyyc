@@ -49,6 +49,27 @@ VS Code (Windows) が作成したコンテナが存在する状態で WSL から
 docker ps --filter "label=devcontainer.local_folder=$(pwd)" --format "{{.ID}}"
 ```
 
+### `devcontainer.config_file` ラベルのパス形式
+
+`devcontainer.local_folder` が Windows UNC パスになる一方、`devcontainer.config_file` は **Linux/WSL パス**で設定される。VS Code (Windows) が作成したコンテナでも同様。
+
+| ラベル | VS Code (Windows) が設定する値 |
+|---|---|
+| `devcontainer.local_folder` | `\\wsl.localhost\Ubuntu-20.04\home\user\project` |
+| `devcontainer.config_file` | `/home/user/project/.devcontainer/server/devcontainer.json` |
+
+この非対称性により、`--filter label=devcontainer.local_folder=<値>` AND `--filter label=devcontainer.config_file=<値>` の組み合わせは VS Code 作成コンテナの検出に失敗する。
+
+### 既存コンテナの検出（非 Compose）
+
+`devcontainer.config_file` の値はパス形式が統一されているため、キーのみのフィルターで候補を収集し `docker inspect` 結果に対して部分一致で判定する:
+
+1. `docker ps --filter label=devcontainer.config_file --format "{{.ID}}"` で全候補の ID を取得
+2. `docker inspect <id>...` で一括取得
+3. 各コンテナについて以下の条件で一致判定:
+   - `devcontainer.local_folder` のパスを `/` に正規化し、末尾のフォルダ名が `cwd` のフォルダ名と一致するか
+   - `devcontainer.config_file` のパスを `/` に正規化し、`/<cwd からの相対パス>` で終わるか
+
 ## マルチ config（named config）
 
 `.devcontainer/{name}/devcontainer.json` という形式で複数の config を持つ機能は **VS Code 独自の規約**であり、公式 devcontainer spec には定義されていない。devcontainer CLI もこの形式をサポートするが、公式仕様ではなく VS Code との互換として実装されている。
@@ -178,6 +199,18 @@ DockerCompose の場合は `devcontainer.local_folder` ラベルを使わず、D
 ImageConfig / DockerfileConfig では CLI がワークスペースマウントを自動注入するが、DockerComposeConfig では `workspaceMount: undefined` が仕様であり CLI は一切注入しない。ユーザーが `docker-compose.yml` の `volumes:` に記述する必要がある。
 
 定義: `devcontainers/cli` `src/spec-common/utils.ts` `getWorkspaceConfiguration`
+
+#### 既存コンテナの再起動
+
+既存コンテナ（停止中を含む）が見つかった場合、devcontainer-cli はビルドをスキップし `docker compose up -d --no-recreate` で起動する。
+
+`--no-recreate` が Recreation を防ぐには Docker Compose のコンフィグハッシュが一致している必要がある。ハッシュは `com.docker.compose.project.config_files` ラベルに記録された全 compose ファイルのパスと内容から計算される。そのため devcontainer-cli は以下の手順でオーバーライドファイルを復元する:
+
+1. 既存コンテナの `com.docker.compose.project.config_files` ラベルを読み取る
+2. リスト内にオーバーライドファイル（`docker-compose.devcontainer.containerFeatures` プレフィックス）が存在し、かつディスク上に残っていれば再利用する
+3. 復元できなかった場合は新規生成し、それでも `--no-recreate` を付与して起動する（Recreation が発生し得る）
+
+定義: `devcontainers/cli` `src/spec-node/dockerCompose.ts` `startContainer`
 
 #### キープアライブと containerUser はオーバーライドファイルで注入
 
