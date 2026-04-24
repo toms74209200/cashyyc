@@ -428,7 +428,15 @@ pub fn run(args: Vec<String>) -> Result<()> {
                                 String::from_utf8_lossy(&out.stdout).trim().to_string();
                             config_files.split(',').find_map(|f| {
                                 let p = std::path::Path::new(f.trim());
-                                if p.starts_with(&compose_dir) && p.exists() {
+                                let is_features_override = p
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .map(|n| {
+                                        n.contains("docker-compose.devcontainer.containerFeatures")
+                                            || p.starts_with(&compose_dir)
+                                    })
+                                    .unwrap_or(false);
+                                if is_features_override && p.exists() {
                                     Some(p.to_path_buf())
                                 } else {
                                     None
