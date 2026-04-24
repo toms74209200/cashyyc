@@ -205,8 +205,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
             let container_id = if container_id.is_some() {
                 container_id
             } else {
-                match config {
-                    devcontainer::DevcontainerConfig::Image(ref image_config) => {
+                match &config {
+                    devcontainer::DevcontainerConfig::Image(image_config) => {
                         let status = std::process::Command::new("docker")
                             .args(["pull", &image_config.image])
                             .status()
@@ -260,7 +260,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                         }
                         docker::parse_container_id(&String::from_utf8_lossy(&output.stdout))
                     }
-                    devcontainer::DevcontainerConfig::Dockerfile(ref dockerfile_config) => {
+                    devcontainer::DevcontainerConfig::Dockerfile(dockerfile_config) => {
                         let devcontainer_dir = config_path.parent().unwrap_or(cwd.as_path());
                         let build = devcontainer::normalize_dockerfile_config(dockerfile_config);
                         let tag = docker::image_tag(&cwd);
@@ -324,7 +324,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                         }
                         docker::parse_container_id(&String::from_utf8_lossy(&output.stdout))
                     }
-                    devcontainer::DevcontainerConfig::DockerfileBuild(ref build_config) => {
+                    devcontainer::DevcontainerConfig::DockerfileBuild(build_config) => {
                         let devcontainer_dir = config_path.parent().unwrap_or(cwd.as_path());
                         let tag = docker::image_tag(&cwd);
                         let build_args = devcontainer::container_build_args(
