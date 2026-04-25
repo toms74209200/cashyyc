@@ -14,9 +14,17 @@ pub fn normalize_dockerfile_config(config: &DockerfileConfig) -> BuildConfig {
             .and_then(|b| b.context.clone())
             .or_else(|| config.context.clone()),
         target: config.build.as_ref().and_then(|b| b.target.clone()),
-        args: config.build.as_ref().and_then(|b| b.args.clone()),
+        args: config
+            .build
+            .as_ref()
+            .map(|b| b.args.clone())
+            .unwrap_or_default(),
         cache_from: config.build.as_ref().and_then(|b| b.cache_from.clone()),
-        options: config.build.as_ref().and_then(|b| b.options.clone()),
+        options: config
+            .build
+            .as_ref()
+            .map(|b| b.options.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -41,19 +49,15 @@ pub fn container_build_args(
     if let Some(target) = &build.target {
         args.extend(["--target".to_string(), target.clone()]);
     }
-    if let Some(build_args) = &build.args {
-        for (k, v) in build_args {
-            args.extend(["--build-arg".to_string(), format!("{}={}", k, v)]);
-        }
+    for (k, v) in &build.args {
+        args.extend(["--build-arg".to_string(), format!("{}={}", k, v)]);
     }
     if let Some(cache_from) = &build.cache_from {
         for c in cache_from {
             args.extend(["--cache-from".to_string(), c.clone()]);
         }
     }
-    if let Some(options) = &build.options {
-        args.extend(options.iter().cloned());
-    }
+    args.extend(build.options.iter().cloned());
 
     args.push(context_abs.display().to_string());
     args
@@ -81,7 +85,7 @@ pub fn container_start_args(
 
 pub fn container_run_options(
     common: &CommonConfig,
-    run_args: Option<&[String]>,
+    run_args: &[String],
     workspace_mount: Option<&str>,
     local_folder: &Path,
     config_file: &Path,
@@ -114,18 +118,14 @@ pub fn container_run_options(
     args.extend(["--mount".to_string(), mount]);
     args.extend(["-w".to_string(), workspace_folder]);
 
-    if let Some(mounts) = &common.mounts {
-        for mount in mounts {
-            if let Some(m) = mount.as_str() {
-                args.extend(["--mount".to_string(), m.to_string()]);
-            }
+    for mount in &common.mounts {
+        if let Some(m) = mount.as_str() {
+            args.extend(["--mount".to_string(), m.to_string()]);
         }
     }
 
-    if let Some(env) = &common.container_env {
-        for (key, value) in env {
-            args.extend(["--env".to_string(), format!("{}={}", key, value)]);
-        }
+    for (key, value) in &common.container_env {
+        args.extend(["--env".to_string(), format!("{}={}", key, value)]);
     }
 
     if let Some(user) = &common.container_user {
@@ -140,21 +140,15 @@ pub fn container_run_options(
         args.push("--privileged".to_string());
     }
 
-    if let Some(caps) = &common.cap_add {
-        for cap in caps {
-            args.extend(["--cap-add".to_string(), cap.clone()]);
-        }
+    for cap in &common.cap_add {
+        args.extend(["--cap-add".to_string(), cap.clone()]);
     }
 
-    if let Some(opts) = &common.security_opt {
-        for opt in opts {
-            args.extend(["--security-opt".to_string(), opt.clone()]);
-        }
+    for opt in &common.security_opt {
+        args.extend(["--security-opt".to_string(), opt.clone()]);
     }
 
-    if let Some(extra) = run_args {
-        args.extend(extra.iter().cloned());
-    }
+    args.extend(run_args.iter().cloned());
 
     args
 }
@@ -167,7 +161,7 @@ mod tests {
     fn empty_common() -> CommonConfig {
         CommonConfig {
             name: None,
-            forward_ports: None,
+            forward_ports: vec![],
             ports_attributes: None,
             other_ports_attributes: None,
             override_command: None,
@@ -179,21 +173,45 @@ mod tests {
             post_attach_command: None,
             wait_for: None,
             workspace_folder: None,
-            mounts: None,
-            container_env: None,
+            mounts: vec![],
+            container_env: HashMap::new(),
             container_user: None,
             init: None,
             privileged: None,
-            cap_add: None,
-            security_opt: None,
+            cap_add: vec![],
+            security_opt: vec![],
             remote_env: None,
             remote_user: None,
             update_remote_user_uid: None,
             user_env_probe: None,
-            features: None,
-            override_feature_install_order: None,
+            features: HashMap::new(),
+            override_feature_install_order: vec![],
             host_requirements: None,
-            customizations: None,
+            customizations: HashMap::new(),
+        }
+    }
+
+    fn empty_dockerfile_config(docker_file: &str) -> DockerfileConfig {
+        DockerfileConfig {
+            docker_file: docker_file.to_string(),
+            context: None,
+            build: None,
+            app_port: None,
+            run_args: vec![],
+            workspace_mount: None,
+            shutdown_action: None,
+            common: empty_common(),
+        }
+    }
+
+    fn empty_build_config() -> BuildConfig {
+        BuildConfig {
+            dockerfile: None,
+            context: None,
+            target: None,
+            args: HashMap::new(),
+            cache_from: None,
+            options: vec![],
         }
     }
 
@@ -201,7 +219,7 @@ mod tests {
     fn when_container_run_options_then_includes_detach_flag() {
         let args = container_run_options(
             &empty_common(),
-            None,
+            &[],
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -213,7 +231,7 @@ mod tests {
     fn when_container_run_options_then_includes_local_folder_label() {
         let args = container_run_options(
             &empty_common(),
-            None,
+            &[],
             None,
             Path::new("/home/user/project"),
             Path::new("/home/user/project/.devcontainer/devcontainer.json"),
@@ -229,7 +247,7 @@ mod tests {
     fn when_container_run_options_then_includes_config_file_label() {
         let args = container_run_options(
             &empty_common(),
-            None,
+            &[],
             None,
             Path::new("/home/user/project"),
             Path::new("/home/user/project/.devcontainer/server/devcontainer.json"),
@@ -249,7 +267,7 @@ mod tests {
     fn when_container_run_options_with_no_workspace_folder_then_uses_basename_as_default() {
         let args = container_run_options(
             &empty_common(),
-            None,
+            &[],
             None,
             Path::new("/home/user/myproject"),
             Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
@@ -264,7 +282,7 @@ mod tests {
         common.workspace_folder = Some("/workspace".to_string());
         let args = container_run_options(
             &common,
-            None,
+            &[],
             None,
             Path::new("/home/user/project"),
             Path::new("/home/user/project/.devcontainer/devcontainer.json"),
@@ -278,7 +296,7 @@ mod tests {
     {
         let args = container_run_options(
             &empty_common(),
-            None,
+            &[],
             None,
             Path::new("/home/user/myproject"),
             Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
@@ -295,7 +313,7 @@ mod tests {
         let custom_mount = "source=/custom,target=/workspace,type=bind";
         let args = container_run_options(
             &empty_common(),
-            None,
+            &[],
             Some(custom_mount),
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -309,10 +327,10 @@ mod tests {
         let mut common = empty_common();
         let mut env = HashMap::new();
         env.insert("RUST_LOG".to_string(), "debug".to_string());
-        common.container_env = Some(env);
+        common.container_env = env;
         let args = container_run_options(
             &common,
-            None,
+            &[],
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -327,7 +345,7 @@ mod tests {
         common.container_user = Some("vscode".to_string());
         let args = container_run_options(
             &common,
-            None,
+            &[],
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -342,7 +360,7 @@ mod tests {
         common.init = Some(true);
         let args = container_run_options(
             &common,
-            None,
+            &[],
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -356,7 +374,7 @@ mod tests {
         common.init = Some(false);
         let args = container_run_options(
             &common,
-            None,
+            &[],
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -370,7 +388,7 @@ mod tests {
         common.privileged = Some(true);
         let args = container_run_options(
             &common,
-            None,
+            &[],
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -381,10 +399,10 @@ mod tests {
     #[test]
     fn when_container_run_options_with_cap_add_then_includes_cap_add_flags() {
         let mut common = empty_common();
-        common.cap_add = Some(vec!["SYS_PTRACE".to_string()]);
+        common.cap_add = vec!["SYS_PTRACE".to_string()];
         let args = container_run_options(
             &common,
-            None,
+            &[],
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -396,10 +414,10 @@ mod tests {
     #[test]
     fn when_container_run_options_with_security_opt_then_includes_security_opt_flags() {
         let mut common = empty_common();
-        common.security_opt = Some(vec!["seccomp=unconfined".to_string()]);
+        common.security_opt = vec!["seccomp=unconfined".to_string()];
         let args = container_run_options(
             &common,
-            None,
+            &[],
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -413,7 +431,7 @@ mod tests {
         let extra = vec!["--network=host".to_string()];
         let args = container_run_options(
             &empty_common(),
-            Some(&extra),
+            &extra,
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -454,30 +472,6 @@ mod tests {
         let cmd = vec!["--flag".to_string()];
         let args = container_start_args(Some(true), &entrypoint, &cmd);
         assert_eq!(args.len(), 3);
-    }
-
-    fn empty_dockerfile_config(docker_file: &str) -> DockerfileConfig {
-        DockerfileConfig {
-            docker_file: docker_file.to_string(),
-            context: None,
-            build: None,
-            app_port: None,
-            run_args: None,
-            workspace_mount: None,
-            shutdown_action: None,
-            common: empty_common(),
-        }
-    }
-
-    fn empty_build_config() -> BuildConfig {
-        BuildConfig {
-            dockerfile: None,
-            context: None,
-            target: None,
-            args: None,
-            cache_from: None,
-            options: None,
-        }
     }
 
     #[test]
@@ -579,7 +573,7 @@ mod tests {
         let mut build = empty_build_config();
         let mut map = HashMap::new();
         map.insert("VERSION".to_string(), "1.0".to_string());
-        build.args = Some(map);
+        build.args = map;
         let args = container_build_args(&build, Path::new("/project/.devcontainer"), "vsc-myapp");
         let idx = args.iter().position(|a| a == "--build-arg").unwrap();
         assert_eq!(args[idx + 1], "VERSION=1.0");
@@ -597,7 +591,7 @@ mod tests {
     #[test]
     fn when_container_build_args_with_options_then_includes_them() {
         let mut build = empty_build_config();
-        build.options = Some(vec!["--no-cache".to_string()]);
+        build.options = vec!["--no-cache".to_string()];
         let args = container_build_args(&build, Path::new("/project/.devcontainer"), "vsc-myapp");
         assert!(args.contains(&"--no-cache".to_string()));
     }
@@ -605,12 +599,12 @@ mod tests {
     #[test]
     fn when_container_run_options_with_additional_mounts_then_includes_mount_flags() {
         let mut common = empty_common();
-        common.mounts = Some(vec![serde_json::Value::String(
+        common.mounts = vec![serde_json::Value::String(
             "source=/host/data,target=/container/data,type=bind".to_string(),
-        )]);
+        )];
         let args = container_run_options(
             &common,
-            None,
+            &[],
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),

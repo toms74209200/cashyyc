@@ -122,7 +122,7 @@ mod tests {
                 r#"{"image": "rust:latest", "capAdd": ["SYS_PTRACE",]}"#
             ),
             Some(DevcontainerConfig::Image(ImageConfig {
-                common: CommonConfig { cap_add: Some(ref ca), .. },
+                common: CommonConfig { cap_add: ref ca, .. },
                 ..
             })) if ca == &vec!["SYS_PTRACE".to_string()]
         ));
@@ -266,12 +266,12 @@ mod tests {
                     dockerfile: Some(ref d),
                     context: Some(ref ctx),
                     target: Some(ref t),
-                    options: Some(ref opts),
-                    args: Some(ref a),
+                    options: ref opts,
+                    args: ref a,
                     ..
                 },
                 app_port: Some(_),
-                run_args: Some(ref ra),
+                run_args: ref ra,
                 workspace_mount: Some(_),
                 shutdown_action: Some(ref sa),
                 ..
@@ -297,7 +297,7 @@ mod tests {
         assert!(matches!(
             parse_config(json),
             Some(DevcontainerConfig::DockerCompose(DockerComposeConfig {
-                run_services: Some(ref rs),
+                run_services: ref rs,
                 shutdown_action: Some(ref sa),
                 workspace_folder: ref wf,
                 ..
@@ -452,7 +452,7 @@ mod tests {
         assert!(matches!(
             parse_config(r#"{"image": "rust:latest", "containerEnv": {"RUST_LOG": "debug", "PORT": "8080"}}"#),
             Some(DevcontainerConfig::Image(ImageConfig {
-                common: CommonConfig { container_env: Some(ref e), .. },
+                common: CommonConfig { container_env: ref e, .. },
                 ..
             })) if e.get("RUST_LOG") == Some(&"debug".to_string())
                 && e.get("PORT") == Some(&"8080".to_string())
@@ -477,8 +477,8 @@ mod tests {
             parse_config(r#"{"image": "rust:latest", "capAdd": ["SYS_PTRACE"], "securityOpt": ["seccomp=unconfined"]}"#),
             Some(DevcontainerConfig::Image(ImageConfig {
                 common: CommonConfig {
-                    cap_add: Some(ref ca),
-                    security_opt: Some(ref so),
+                    cap_add: ref ca,
+                    security_opt: ref so,
                     ..
                 },
                 ..

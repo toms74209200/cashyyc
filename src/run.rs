@@ -229,7 +229,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                         });
                         let mut run_args = devcontainer::container_run_options(
                             &image_config.common,
-                            image_config.run_args.as_deref(),
+                            &image_config.run_args,
                             workspace_mount.as_deref(),
                             &cwd,
                             &config_path,
@@ -290,7 +290,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                             });
                         let mut run_args = devcontainer::container_run_options(
                             &dockerfile_config.common,
-                            dockerfile_config.run_args.as_deref(),
+                            &dockerfile_config.run_args,
                             workspace_mount.as_deref(),
                             &cwd,
                             &config_path,
@@ -355,7 +355,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                         });
                         let mut run_args = devcontainer::container_run_options(
                             &build_config.common,
-                            build_config.run_args.as_deref(),
+                            &build_config.run_args,
                             workspace_mount.as_deref(),
                             &cwd,
                             &config_path,

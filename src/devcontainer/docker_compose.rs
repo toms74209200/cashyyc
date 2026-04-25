@@ -60,7 +60,7 @@ pub fn compose_args(
         ]
     }));
     let services = {
-        let mut s = config.run_services.clone().unwrap_or_default();
+        let mut s = config.run_services.clone();
         if !s.contains(&config.service) {
             s.push(config.service.clone());
         }
@@ -107,17 +107,18 @@ services:
 mod tests {
     use super::*;
     use crate::devcontainer::config::CommonConfig;
+    use std::collections::HashMap;
 
     fn compose_config(service: &str) -> DockerComposeConfig {
         DockerComposeConfig {
             docker_compose_file: vec!["docker-compose.yml".to_string()],
             service: service.to_string(),
             workspace_folder: "/workspace".to_string(),
-            run_services: None,
+            run_services: vec![],
             shutdown_action: None,
             common: CommonConfig {
                 name: None,
-                forward_ports: None,
+                forward_ports: vec![],
                 ports_attributes: None,
                 other_ports_attributes: None,
                 override_command: None,
@@ -129,21 +130,21 @@ mod tests {
                 post_attach_command: None,
                 wait_for: None,
                 workspace_folder: None,
-                mounts: None,
-                container_env: None,
+                mounts: vec![],
+                container_env: HashMap::new(),
                 container_user: None,
                 init: None,
                 privileged: None,
-                cap_add: None,
-                security_opt: None,
+                cap_add: vec![],
+                security_opt: vec![],
                 remote_env: None,
                 remote_user: None,
                 update_remote_user_uid: None,
                 user_env_probe: None,
-                features: None,
-                override_feature_install_order: None,
+                features: HashMap::new(),
+                override_feature_install_order: vec![],
                 host_requirements: None,
-                customizations: None,
+                customizations: HashMap::new(),
             },
         }
     }
@@ -210,7 +211,7 @@ mod tests {
     fn when_compose_args_with_run_services_then_services_starts_with_run_services() {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
-        config.run_services = Some(vec!["db".to_string(), "cache".to_string()]);
+        config.run_services = vec!["db".to_string(), "cache".to_string()];
         let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
         assert_eq!(
             args.services,
@@ -222,7 +223,7 @@ mod tests {
     fn when_compose_args_with_run_services_including_service_then_no_duplicate() {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
-        config.run_services = Some(vec!["db".to_string(), "app".to_string()]);
+        config.run_services = vec!["db".to_string(), "app".to_string()];
         let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
         assert_eq!(args.services, vec!["db".to_string(), "app".to_string()]);
     }
