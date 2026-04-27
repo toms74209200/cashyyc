@@ -38,6 +38,31 @@ pub fn parse_image_config_json(json: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+pub struct ImageConfig {
+    pub entrypoint: Vec<String>,
+    pub cmd: Vec<String>,
+}
+
+impl ImageConfig {
+    pub fn parse(json: &str) -> Self {
+        let v: serde_json::Value = serde_json::from_str(json.trim()).unwrap_or_default();
+        let strings = |key: &str| -> Vec<String> {
+            v[key]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|e| e.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        Self {
+            entrypoint: strings("Entrypoint"),
+            cmd: strings("Cmd"),
+        }
+    }
+}
+
 pub fn parse_remote_user_from_metadata(metadata: &str) -> Option<String> {
     let arr = serde_json::from_str::<serde_json::Value>(metadata).ok()?;
     arr.as_array()?.iter().find_map(|obj| {
@@ -381,6 +406,29 @@ mod tests {
             parse_image_config_json(r#"["/entrypoint.sh","--flag"]"#),
             vec!["/entrypoint.sh".to_string(), "--flag".to_string()]
         );
+    }
+
+    #[test]
+    fn when_image_config_parse_with_entrypoint_and_cmd_then_returns_both() {
+        let json = r#"{"Entrypoint":["/entrypoint.sh"],"Cmd":["start"]}"#;
+        let c = ImageConfig::parse(json);
+        assert_eq!(c.entrypoint, vec!["/entrypoint.sh"]);
+        assert_eq!(c.cmd, vec!["start"]);
+    }
+
+    #[test]
+    fn when_image_config_parse_with_null_fields_then_returns_empty_vecs() {
+        let json = r#"{"Entrypoint":null,"Cmd":null}"#;
+        let c = ImageConfig::parse(json);
+        assert!(c.entrypoint.is_empty());
+        assert!(c.cmd.is_empty());
+    }
+
+    #[test]
+    fn when_image_config_parse_with_invalid_json_then_returns_empty_vecs() {
+        let c = ImageConfig::parse("");
+        assert!(c.entrypoint.is_empty());
+        assert!(c.cmd.is_empty());
     }
 
     #[test]
