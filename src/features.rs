@@ -2,20 +2,38 @@ use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub enum FeatureSource {
     Local(PathBuf),
-    Remote(String),
+    Tarball(String),
+    Oci {
+        registry: String,
+        path: String,
+        version: String,
+    },
 }
 
 impl FeatureSource {
-    pub fn parse(id: &str) -> Self {
+    pub fn parse(id: &str) -> Result<Self> {
         if id.starts_with("./") || id.starts_with('/') {
-            Self::Local(PathBuf::from(id))
-        } else {
-            Self::Remote(id.to_string())
+            return Ok(Self::Local(PathBuf::from(id)));
         }
+        if id.starts_with("https://") || id.starts_with("http://") {
+            return Ok(Self::Tarball(id.to_string()));
+        }
+        let (without_version, version) = id
+            .rsplit_once(':')
+            .map(|(a, b)| (a, b.to_string()))
+            .unwrap_or((id, "latest".to_string()));
+        let slash = without_version
+            .find('/')
+            .ok_or_else(|| anyhow!("invalid OCI feature ref: {id}"))?;
+        Ok(Self::Oci {
+            registry: without_version[..slash].to_string(),
+            path: without_version[slash + 1..].to_string(),
+            version,
+        })
     }
 }
 
@@ -110,7 +128,22 @@ pub fn feature_dockerfile(base_image: &str, plan: &InstallPlan) -> String {
             .to_string_lossy();
         let dest = format!("/tmp/dev-container-features/{}", feature.short_id);
         lines.push(format!("COPY ./{dir_name}/ {dest}/"));
-        let exports = options_as_exports(&feature.options);
+        let exports = match &feature.options {
+            Value::Object(map) => map
+                .iter()
+                .map(|(k, v)| {
+                    let val = match v {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    let env_key = k.to_uppercase().replace('-', "_");
+                    let quoted = format!("'{}'", val.replace('\'', r"'\''"));
+                    format!("export {env_key}={quoted}")
+                })
+                .collect::<Vec<_>>()
+                .join(" && "),
+            _ => String::new(),
+        };
         let run = if exports.is_empty() {
             format!(
                 "RUN chmod -R 0755 {dest} && cd {dest} && chmod +x ./install.sh && ./install.sh"
@@ -124,194 +157,6 @@ pub fn feature_dockerfile(base_image: &str, plan: &InstallPlan) -> String {
     }
 
     lines.join("\n")
-}
-
-fn options_as_exports(options: &Value) -> String {
-    let Value::Object(map) = options else {
-        return String::new();
-    };
-    map.iter()
-        .map(|(k, v)| {
-            let val = match v {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            format!("export {}={}", k.to_uppercase(), shell_quote(&val))
-        })
-        .collect::<Vec<_>>()
-        .join(" && ")
-}
-
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
-
-pub fn prepare(
-    base_image: &str,
-    features_map: &HashMap<String, Value>,
-    devcontainer_dir: &Path,
-    out_dir: &Path,
-) -> Result<Option<PathBuf>> {
-    if features_map.is_empty() {
-        return Ok(None);
-    }
-    let mut resolved = Vec::new();
-    for (idx, (id, options)) in features_map.iter().enumerate() {
-        let source = match FeatureSource::parse(id) {
-            FeatureSource::Local(p) if p.is_relative() => {
-                FeatureSource::Local(devcontainer_dir.join(p))
-            }
-            other => other,
-        };
-        let feature_dir = out_dir.join(idx.to_string());
-        std::fs::create_dir_all(&feature_dir)
-            .map_err(|e| anyhow!("failed to create feature dir: {e}"))?;
-        download_feature(&source, &feature_dir)?;
-        let manifest_content =
-            std::fs::read_to_string(feature_dir.join("devcontainer-feature.json"))
-                .map_err(|e| anyhow!("devcontainer-feature.json not found in feature {id}: {e}"))?;
-        let manifest = FeatureManifest::parse(&manifest_content)?;
-        resolved.push(Feature {
-            short_id: manifest.id,
-            dir: feature_dir,
-            options: options.clone(),
-            installs_after: manifest.installs_after,
-        });
-    }
-    let plan = InstallPlan::new(resolved)?;
-    let dockerfile_content = feature_dockerfile(base_image, &plan);
-    let dockerfile_path = out_dir.join("Dockerfile.features");
-    std::fs::write(&dockerfile_path, &dockerfile_content)
-        .map_err(|e| anyhow!("failed to write feature Dockerfile: {e}"))?;
-    Ok(Some(dockerfile_path))
-}
-
-pub fn download_feature(source: &FeatureSource, dest_dir: &Path) -> Result<()> {
-    match source {
-        FeatureSource::Local(path) => {
-            let status = std::process::Command::new("cp")
-                .args([
-                    "-r",
-                    &format!("{}/.", path.display()),
-                    &dest_dir.display().to_string(),
-                ])
-                .status()
-                .map_err(|e| anyhow!("failed to copy local feature: {e}"))?;
-            if !status.success() {
-                return Err(anyhow!(
-                    "failed to copy local feature from {}",
-                    path.display()
-                ));
-            }
-        }
-        FeatureSource::Remote(id) => {
-            let tarball = dest_dir.join("feature.tgz");
-            if id.starts_with("https://") || id.starts_with("http://") {
-                let status = std::process::Command::new("curl")
-                    .args(["-sfL", id, "-o", &tarball.display().to_string()])
-                    .status()
-                    .map_err(|e| anyhow!("failed to run curl: {e}"))?;
-                if !status.success() {
-                    return Err(anyhow!("failed to download feature from {id}"));
-                }
-            } else {
-                let (without_version, version) = id
-                    .rsplit_once(':')
-                    .map(|(a, b)| (a, b.to_string()))
-                    .unwrap_or((id.as_str(), "latest".to_string()));
-                let slash = without_version
-                    .find('/')
-                    .ok_or_else(|| anyhow!("invalid OCI feature ref: {id}"))?;
-                let registry = &without_version[..slash];
-                let path = &without_version[slash + 1..];
-                let token = fetch_oci_token(registry, path)?;
-                fetch_oci_blob(registry, path, &version, &token, &tarball)?;
-            }
-            extract_tarball(&tarball, dest_dir)?;
-        }
-    }
-    Ok(())
-}
-
-fn fetch_oci_token(registry: &str, path: &str) -> Result<String> {
-    let url = format!("https://{registry}/token?scope=repository:{path}:pull&service={registry}");
-    let output = std::process::Command::new("curl")
-        .args(["-sf", &url])
-        .output()
-        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
-    if !output.status.success() {
-        return Err(anyhow!("failed to fetch OCI token for {registry}/{path}"));
-    }
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|e| anyhow!("failed to parse OCI token response: {e}"))?;
-    json["token"]
-        .as_str()
-        .map(String::from)
-        .ok_or_else(|| anyhow!("OCI token response missing 'token' field"))
-}
-
-fn fetch_oci_blob(
-    registry: &str,
-    path: &str,
-    version: &str,
-    token: &str,
-    dest: &Path,
-) -> Result<()> {
-    let manifest_url = format!("https://{registry}/v2/{path}/manifests/{version}");
-    let output = std::process::Command::new("curl")
-        .args([
-            "-sf",
-            "-H",
-            &format!("Authorization: Bearer {token}"),
-            "-H",
-            "Accept: application/vnd.oci.image.manifest.v1+json",
-            &manifest_url,
-        ])
-        .output()
-        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "failed to fetch OCI manifest for {registry}/{path}:{version}"
-        ));
-    }
-    let manifest: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|e| anyhow!("failed to parse OCI manifest: {e}"))?;
-    let digest = manifest["layers"][0]["digest"]
-        .as_str()
-        .ok_or_else(|| anyhow!("OCI manifest missing layers[0].digest"))?;
-
-    let blob_url = format!("https://{registry}/v2/{path}/blobs/{digest}");
-    let status = std::process::Command::new("curl")
-        .args([
-            "-sfL",
-            "-H",
-            &format!("Authorization: Bearer {token}"),
-            "-o",
-            &dest.display().to_string(),
-            &blob_url,
-        ])
-        .status()
-        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
-    if !status.success() {
-        return Err(anyhow!("failed to download OCI blob for {registry}/{path}"));
-    }
-    Ok(())
-}
-
-fn extract_tarball(tarball: &Path, dest_dir: &Path) -> Result<()> {
-    let status = std::process::Command::new("tar")
-        .args([
-            "xzf",
-            &tarball.display().to_string(),
-            "-C",
-            &dest_dir.display().to_string(),
-        ])
-        .status()
-        .map_err(|e| anyhow!("failed to run tar: {e}"))?;
-    if !status.success() {
-        return Err(anyhow!("failed to extract {}", tarball.display()));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -333,7 +178,7 @@ mod tests {
     fn parse_remote_oci() {
         assert!(matches!(
             FeatureSource::parse("ghcr.io/devcontainers/features/git:1"),
-            FeatureSource::Remote(_)
+            Ok(FeatureSource::Oci { .. })
         ));
     }
 
@@ -341,7 +186,7 @@ mod tests {
     fn parse_remote_tarball() {
         assert!(matches!(
             FeatureSource::parse("https://example.com/feature.tgz"),
-            FeatureSource::Remote(_)
+            Ok(FeatureSource::Tarball(_))
         ));
     }
 
@@ -349,7 +194,7 @@ mod tests {
     fn parse_local() {
         assert!(matches!(
             FeatureSource::parse("./my-feature"),
-            FeatureSource::Local(_)
+            Ok(FeatureSource::Local(_))
         ));
     }
 

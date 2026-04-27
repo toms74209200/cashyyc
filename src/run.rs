@@ -3,6 +3,7 @@ use crate::devcontainer;
 use crate::docker;
 use crate::features;
 use crate::setup;
+use crate::setup::ContainerTarget;
 use anyhow::{Result, anyhow};
 
 pub fn run(args: Vec<String>) -> Result<()> {
@@ -100,17 +101,13 @@ fn shell(name: Option<String>) -> Result<()> {
             config_path.display()
         )
     })?;
-    let compose = if let devcontainer::DevcontainerConfig::DockerCompose(ref c) = config {
-        let devcontainer_dir = config_path.parent().unwrap_or(cwd.as_path());
-        Some(devcontainer::compose_args(c, &cwd, devcontainer_dir))
-    } else {
-        None
-    };
+    let config_dir = config_path.parent().unwrap_or(cwd.as_path());
 
-    let (found_container, container_id): (Option<docker::Container>, Option<String>) = match &config
+    let target = setup::from_config(&config, &cwd, &config_path, config_dir);
+
+    let (found_container, container_id): (Option<docker::Container>, Option<String>) = match &target
     {
-        devcontainer::DevcontainerConfig::DockerCompose(_) => {
-            let c = compose.as_ref().unwrap();
+        ContainerTarget::Compose(c) => {
             let output = std::process::Command::new("docker")
                 .args([
                     "ps", "--filter", &c.filter1, "--filter", &c.filter2, "--format", "{{.ID}}",
@@ -130,7 +127,7 @@ fn shell(name: Option<String>) -> Result<()> {
                 docker::parse_container_id(&String::from_utf8_lossy(&output.stdout)),
             )
         }
-        _ => {
+        ContainerTarget::Single(_) => {
             let output = std::process::Command::new("docker")
                 .args([
                     "ps",
@@ -230,59 +227,99 @@ fn shell(name: Option<String>) -> Result<()> {
         return exec_in_container(id, found_container, &config, &cwd);
     }
 
-    enum Setup {
-        Single(setup::ContainerSetup),
-        Compose(Option<String>),
-    }
-
     let features_map = match &config {
         devcontainer::DevcontainerConfig::Image(c) => &c.common.features,
         devcontainer::DevcontainerConfig::Dockerfile(c) => &c.common.features,
         devcontainer::DevcontainerConfig::DockerfileBuild(c) => &c.common.features,
         devcontainer::DevcontainerConfig::DockerCompose(c) => &c.common.features,
     };
-    let setup: Setup = match &config {
-        devcontainer::DevcontainerConfig::Image(c) => {
-            let status = std::process::Command::new("docker")
-                .args(["pull", &c.image])
-                .status()
-                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-            if !status.success() {
-                return Err(anyhow!("`docker pull` failed"));
+
+    let id: String = match target {
+        ContainerTarget::Single(s) => {
+            match &config {
+                devcontainer::DevcontainerConfig::Image(c) => {
+                    let status = std::process::Command::new("docker")
+                        .args(["pull", &c.image])
+                        .status()
+                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                    if !status.success() {
+                        return Err(anyhow!("`docker pull` failed"));
+                    }
+                }
+                devcontainer::DevcontainerConfig::Dockerfile(c) => {
+                    let build = devcontainer::normalize_dockerfile_config(c);
+                    let tag = docker::image_tag(&cwd);
+                    let build_args = devcontainer::container_build_args(&build, config_dir, &tag);
+                    let status = std::process::Command::new("docker")
+                        .arg("build")
+                        .args(&build_args)
+                        .status()
+                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                    if !status.success() {
+                        return Err(anyhow!("`docker build` failed"));
+                    }
+                }
+                devcontainer::DevcontainerConfig::DockerfileBuild(c) => {
+                    let tag = docker::image_tag(&cwd);
+                    let build_args = devcontainer::container_build_args(&c.build, config_dir, &tag);
+                    let status = std::process::Command::new("docker")
+                        .arg("build")
+                        .args(&build_args)
+                        .status()
+                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                    if !status.success() {
+                        return Err(anyhow!("`docker build` failed"));
+                    }
+                }
+                devcontainer::DevcontainerConfig::DockerCompose(_) => unreachable!(),
             }
-            Setup::Single(setup::from_image(c, &cwd, &config_path))
-        }
-        devcontainer::DevcontainerConfig::Dockerfile(c) => {
-            let devcontainer_dir = config_path.parent().unwrap_or(cwd.as_path());
-            let build = devcontainer::normalize_dockerfile_config(c);
-            let tag = docker::image_tag(&cwd);
-            let build_args = devcontainer::container_build_args(&build, devcontainer_dir, &tag);
-            let status = std::process::Command::new("docker")
-                .arg("build")
-                .args(&build_args)
-                .status()
+            let final_image = build_with_features(&s.base_image, features_map, config_dir, &cwd)?;
+            let mut run_args = s.run_args;
+            run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
+            run_args.push(final_image.clone());
+            let image_config = if s.override_command == Some(false) {
+                let output = std::process::Command::new("docker")
+                    .args([
+                        "image",
+                        "inspect",
+                        "--format",
+                        "{{json .Config}}",
+                        &final_image,
+                    ])
+                    .output()
+                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Err(anyhow!(
+                        "Failed to inspect image (overrideCommand: false): {}",
+                        stderr.trim()
+                    ));
+                }
+                docker::ImageConfig::parse(String::from_utf8_lossy(&output.stdout).trim())
+            } else {
+                docker::ImageConfig {
+                    entrypoint: vec![],
+                    cmd: vec![],
+                }
+            };
+            run_args.extend(devcontainer::container_start_args(
+                s.override_command,
+                &image_config.entrypoint,
+                &image_config.cmd,
+            ));
+            let output = std::process::Command::new("docker")
+                .arg("run")
+                .args(&run_args)
+                .output()
                 .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-            if !status.success() {
-                return Err(anyhow!("`docker build` failed"));
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(anyhow!("`docker run` failed: {}", stderr.trim()));
             }
-            Setup::Single(setup::from_dockerfile(c, &cwd, &config_path))
+            docker::parse_container_id(&String::from_utf8_lossy(&output.stdout))
+                .ok_or_else(|| anyhow!("Failed to get container ID from `docker run`"))?
         }
-        devcontainer::DevcontainerConfig::DockerfileBuild(c) => {
-            let devcontainer_dir = config_path.parent().unwrap_or(cwd.as_path());
-            let tag = docker::image_tag(&cwd);
-            let build_args = devcontainer::container_build_args(&c.build, devcontainer_dir, &tag);
-            let status = std::process::Command::new("docker")
-                .arg("build")
-                .args(&build_args)
-                .status()
-                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-            if !status.success() {
-                return Err(anyhow!("`docker build` failed"));
-            }
-            Setup::Single(setup::from_dockerfile_build(c, &cwd, &config_path))
-        }
-        devcontainer::DevcontainerConfig::DockerCompose(_) => {
-            let c = compose.as_ref().unwrap();
+        ContainerTarget::Compose(c) => {
             let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
             let compose_dir = std::env::temp_dir()
                 .join(format!("cyyc-{}", username))
@@ -386,46 +423,10 @@ fn shell(name: Option<String>) -> Result<()> {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Err(anyhow!("`docker ps` failed: {}", stderr.trim()));
             }
-            Setup::Compose(docker::parse_container_id(&String::from_utf8_lossy(
-                &output.stdout,
-            )))
-        }
-    };
-
-    let id = match setup {
-        Setup::Compose(id) => id,
-        Setup::Single(s) => {
-            let devcontainer_dir = config_path.parent().unwrap_or(cwd.as_path());
-            let final_image =
-                build_with_features(&s.base_image, features_map, devcontainer_dir, &cwd)?;
-            let mut run_args = s.run_args;
-            run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
-            run_args.push(final_image.clone());
-            let (image_entrypoint, image_cmd) = if s.override_command == Some(false) {
-                inspect_image_entrypoint_cmd(&final_image).map_err(|e| {
-                    anyhow!("Failed to inspect image entrypoint (overrideCommand: false): {e}")
-                })?
-            } else {
-                (vec![], vec![])
-            };
-            run_args.extend(devcontainer::container_start_args(
-                s.override_command,
-                &image_entrypoint,
-                &image_cmd,
-            ));
-            let output = std::process::Command::new("docker")
-                .arg("run")
-                .args(&run_args)
-                .output()
-                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(anyhow!("`docker run` failed: {}", stderr.trim()));
-            }
             docker::parse_container_id(&String::from_utf8_lossy(&output.stdout))
+                .ok_or_else(|| anyhow!("Failed to get container ID from `docker compose up`"))?
         }
     };
-    let id = id.ok_or_else(|| anyhow!("Failed to get container ID"))?;
     exec_in_container(id, None, &config, &cwd)
 }
 
@@ -526,6 +527,10 @@ fn build_with_features(
     devcontainer_dir: &std::path::Path,
     cwd: &std::path::Path,
 ) -> Result<String> {
+    if features_map.is_empty() {
+        return Ok(base_image.to_string());
+    }
+
     let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
     let features_dir = std::env::temp_dir()
         .join(format!("cyyc-{username}"))
@@ -534,11 +539,154 @@ fn build_with_features(
     std::fs::create_dir_all(&features_dir)
         .map_err(|e| anyhow!("failed to create features temp dir: {e}"))?;
 
-    let Some(dockerfile_path) =
-        features::prepare(base_image, features_map, devcontainer_dir, &features_dir)?
-    else {
-        return Ok(base_image.to_string());
-    };
+    let mut sorted: Vec<(&String, &serde_json::Value)> = features_map.iter().collect();
+    sorted.sort_by_key(|(k, _)| k.as_str());
+
+    let mut resolved = Vec::new();
+    for (idx, (id, options)) in sorted.iter().enumerate() {
+        let source = {
+            let raw = features::FeatureSource::parse(id)?;
+            match raw {
+                features::FeatureSource::Local(p) if p.is_relative() => {
+                    features::FeatureSource::Local(devcontainer_dir.join(&p))
+                }
+                other => other,
+            }
+        };
+        let feature_dir = features_dir.join(idx.to_string());
+        std::fs::create_dir_all(&feature_dir)
+            .map_err(|e| anyhow!("failed to create feature dir: {e}"))?;
+        match &source {
+            features::FeatureSource::Local(path) => {
+                let status = std::process::Command::new("cp")
+                    .args([
+                        "-r",
+                        &format!("{}/.", path.display()),
+                        &feature_dir.display().to_string(),
+                    ])
+                    .status()
+                    .map_err(|e| anyhow!("failed to copy local feature: {e}"))?;
+                if !status.success() {
+                    return Err(anyhow!(
+                        "failed to copy local feature from {}",
+                        path.display()
+                    ));
+                }
+            }
+            features::FeatureSource::Tarball(url) => {
+                let tarball = feature_dir.join("feature.tgz");
+                let status = std::process::Command::new("curl")
+                    .args(["-sfL", url, "-o", &tarball.display().to_string()])
+                    .status()
+                    .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+                if !status.success() {
+                    return Err(anyhow!("failed to download feature from {url}"));
+                }
+                let status = std::process::Command::new("tar")
+                    .args([
+                        "xzf",
+                        &tarball.display().to_string(),
+                        "-C",
+                        &feature_dir.display().to_string(),
+                    ])
+                    .status()
+                    .map_err(|e| anyhow!("failed to run tar: {e}"))?;
+                if !status.success() {
+                    return Err(anyhow!("failed to extract {}", tarball.display()));
+                }
+            }
+            features::FeatureSource::Oci {
+                registry,
+                path,
+                version,
+            } => {
+                let tarball = feature_dir.join("feature.tgz");
+                let token = {
+                    let url = format!(
+                        "https://{registry}/token?scope=repository:{path}:pull&service={registry}"
+                    );
+                    let output = std::process::Command::new("curl")
+                        .args(["-sf", &url])
+                        .output()
+                        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+                    if !output.status.success() {
+                        return Err(anyhow!("failed to fetch OCI token for {registry}/{path}"));
+                    }
+                    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+                        .map_err(|e| anyhow!("failed to parse OCI token response: {e}"))?;
+                    json["token"]
+                        .as_str()
+                        .map(String::from)
+                        .ok_or_else(|| anyhow!("OCI token response missing 'token' field"))?
+                };
+                let manifest_url = format!("https://{registry}/v2/{path}/manifests/{version}");
+                let output = std::process::Command::new("curl")
+                    .args([
+                        "-sf",
+                        "-H",
+                        &format!("Authorization: Bearer {token}"),
+                        "-H",
+                        "Accept: application/vnd.oci.image.manifest.v1+json",
+                        &manifest_url,
+                    ])
+                    .output()
+                    .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+                if !output.status.success() {
+                    return Err(anyhow!(
+                        "failed to fetch OCI manifest for {registry}/{path}:{version}"
+                    ));
+                }
+                let manifest: serde_json::Value = serde_json::from_slice(&output.stdout)
+                    .map_err(|e| anyhow!("failed to parse OCI manifest: {e}"))?;
+                let digest = manifest["layers"][0]["digest"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("OCI manifest missing layers[0].digest"))?;
+                let blob_url = format!("https://{registry}/v2/{path}/blobs/{digest}");
+                let status = std::process::Command::new("curl")
+                    .args([
+                        "-sfL",
+                        "-H",
+                        &format!("Authorization: Bearer {token}"),
+                        "-o",
+                        &tarball.display().to_string(),
+                        &blob_url,
+                    ])
+                    .status()
+                    .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+                if !status.success() {
+                    return Err(anyhow!("failed to download OCI blob for {registry}/{path}"));
+                }
+                let status = std::process::Command::new("tar")
+                    .args([
+                        "xzf",
+                        &tarball.display().to_string(),
+                        "-C",
+                        &feature_dir.display().to_string(),
+                    ])
+                    .status()
+                    .map_err(|e| anyhow!("failed to run tar: {e}"))?;
+                if !status.success() {
+                    return Err(anyhow!("failed to extract {}", tarball.display()));
+                }
+            }
+        }
+        let manifest_content =
+            std::fs::read_to_string(feature_dir.join("devcontainer-feature.json"))
+                .map_err(|e| anyhow!("devcontainer-feature.json not found in feature {id}: {e}"))?;
+        let manifest = features::FeatureManifest::parse(&manifest_content)?;
+        resolved.push(features::Feature {
+            short_id: manifest.id,
+            dir: feature_dir,
+            options: (*options).clone(),
+            installs_after: manifest.installs_after,
+        });
+    }
+
+    let plan = features::InstallPlan::new(resolved)?;
+    let dockerfile_content = features::feature_dockerfile(base_image, &plan);
+    let dockerfile_path = features_dir.join("Dockerfile.features");
+    std::fs::write(&dockerfile_path, &dockerfile_content)
+        .map_err(|e| anyhow!("failed to write feature Dockerfile: {e}"))?;
 
     let tag = format!("{}-features", docker::image_tag(cwd));
     let status = std::process::Command::new("docker")
@@ -557,40 +705,4 @@ fn build_with_features(
     }
 
     Ok(tag)
-}
-
-fn inspect_image_entrypoint_cmd(image: &str) -> Result<(Vec<String>, Vec<String>)> {
-    let entrypoint = {
-        let output = std::process::Command::new("docker")
-            .args([
-                "image",
-                "inspect",
-                "--format",
-                "{{json .Config.Entrypoint}}",
-                image,
-            ])
-            .output()?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("`docker image inspect` failed: {}", stderr.trim()));
-        }
-        docker::parse_image_config_json(&String::from_utf8_lossy(&output.stdout))
-    };
-    let cmd = {
-        let output = std::process::Command::new("docker")
-            .args([
-                "image",
-                "inspect",
-                "--format",
-                "{{json .Config.Cmd}}",
-                image,
-            ])
-            .output()?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("`docker image inspect` failed: {}", stderr.trim()));
-        }
-        docker::parse_image_config_json(&String::from_utf8_lossy(&output.stdout))
-    };
-    Ok((entrypoint, cmd))
 }

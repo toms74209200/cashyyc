@@ -1,6 +1,6 @@
 use crate::devcontainer::{
-    CommonConfig, DockerfileBuildConfig, DockerfileConfig, ImageConfig, container_run_options,
-    expand_variables,
+    CommonConfig, ComposeArgs, DevcontainerConfig, DockerfileBuildConfig, DockerfileConfig,
+    ImageConfig, compose_args, container_run_options, expand_variables,
 };
 use crate::docker;
 use std::path::Path;
@@ -9,6 +9,31 @@ pub struct ContainerSetup {
     pub base_image: String,
     pub run_args: Vec<String>,
     pub override_command: Option<bool>,
+}
+
+pub enum ContainerTarget {
+    Single(ContainerSetup),
+    Compose(ComposeArgs),
+}
+
+pub fn from_config(
+    config: &DevcontainerConfig,
+    cwd: &Path,
+    config_path: &Path,
+    config_dir: &Path,
+) -> ContainerTarget {
+    match config {
+        DevcontainerConfig::Image(c) => ContainerTarget::Single(from_image(c, cwd, config_path)),
+        DevcontainerConfig::Dockerfile(c) => {
+            ContainerTarget::Single(from_dockerfile(c, cwd, config_path))
+        }
+        DevcontainerConfig::DockerfileBuild(c) => {
+            ContainerTarget::Single(from_dockerfile_build(c, cwd, config_path))
+        }
+        DevcontainerConfig::DockerCompose(c) => {
+            ContainerTarget::Compose(compose_args(c, cwd, config_dir))
+        }
+    }
 }
 
 pub fn from_image(c: &ImageConfig, cwd: &Path, config_path: &Path) -> ContainerSetup {
@@ -223,6 +248,40 @@ mod tests {
             setup.run_args[mount_idx + 1],
             "type=bind,source=/home/user/myproject,target=/workspace"
         );
+    }
+
+    #[test]
+    fn when_from_config_with_image_then_returns_single() {
+        let c = empty_image_config("ubuntu:22.04");
+        let target = from_config(
+            &DevcontainerConfig::Image(c),
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+            Path::new("/project/.devcontainer"),
+        );
+        assert!(matches!(target, ContainerTarget::Single(_)));
+    }
+
+    #[test]
+    fn when_from_config_with_dockerfile_then_returns_single() {
+        let target = from_config(
+            &DevcontainerConfig::Dockerfile(empty_dockerfile_config()),
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+            Path::new("/project/.devcontainer"),
+        );
+        assert!(matches!(target, ContainerTarget::Single(_)));
+    }
+
+    #[test]
+    fn when_from_config_with_dockerfile_build_then_returns_single() {
+        let target = from_config(
+            &DevcontainerConfig::DockerfileBuild(empty_dockerfile_build_config()),
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+            Path::new("/project/.devcontainer"),
+        );
+        assert!(matches!(target, ContainerTarget::Single(_)));
     }
 
     #[test]
