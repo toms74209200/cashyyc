@@ -6,7 +6,8 @@ use crate::docker;
 use std::path::Path;
 
 pub struct ContainerSetup {
-    pub base_image: String,
+    pub image_tag: String,
+    pub dockerfile: Option<std::path::PathBuf>,
     pub run_args: Vec<String>,
     pub override_command: Option<bool>,
 }
@@ -38,7 +39,8 @@ pub fn from_config(
 
 pub fn from_image(c: &ImageConfig, cwd: &Path, config_path: &Path) -> ContainerSetup {
     ContainerSetup {
-        base_image: c.image.clone(),
+        image_tag: c.image.clone(),
+        dockerfile: None,
         run_args: run_args_for(
             &c.common,
             &c.run_args,
@@ -51,8 +53,10 @@ pub fn from_image(c: &ImageConfig, cwd: &Path, config_path: &Path) -> ContainerS
 }
 
 pub fn from_dockerfile(c: &DockerfileConfig, cwd: &Path, config_path: &Path) -> ContainerSetup {
+    let config_dir = config_path.parent().unwrap_or(cwd);
     ContainerSetup {
-        base_image: docker::image_tag(cwd),
+        image_tag: docker::image_tag(cwd),
+        dockerfile: Some(config_dir.join(&c.docker_file)),
         run_args: run_args_for(
             &c.common,
             &c.run_args,
@@ -69,8 +73,16 @@ pub fn from_dockerfile_build(
     cwd: &Path,
     config_path: &Path,
 ) -> ContainerSetup {
+    let config_dir = config_path.parent().unwrap_or(cwd);
+    let context = c
+        .build
+        .context
+        .as_deref()
+        .map(|ctx| config_dir.join(ctx))
+        .unwrap_or_else(|| config_dir.to_path_buf());
     ContainerSetup {
-        base_image: docker::image_tag(cwd),
+        image_tag: docker::image_tag(cwd),
+        dockerfile: Some(context.join(c.build.dockerfile.as_deref().unwrap_or("Dockerfile"))),
         run_args: run_args_for(
             &c.common,
             &c.run_args,
@@ -187,18 +199,18 @@ mod tests {
     }
 
     #[test]
-    fn when_from_image_then_base_image_is_image_field() {
+    fn when_from_image_then_image_tag_is_image_field() {
         let c = empty_image_config("ubuntu:22.04");
         let setup = from_image(
             &c,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
         );
-        assert_eq!(setup.base_image, "ubuntu:22.04");
+        assert_eq!(setup.image_tag, "ubuntu:22.04");
     }
 
     #[test]
-    fn when_from_dockerfile_then_base_image_is_image_tag() {
+    fn when_from_dockerfile_then_image_tag_is_computed_from_cwd() {
         let c = empty_dockerfile_config();
         let cwd = Path::new("/home/user/myproject");
         let setup = from_dockerfile(
@@ -206,11 +218,11 @@ mod tests {
             cwd,
             Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
         );
-        assert_eq!(setup.base_image, docker::image_tag(cwd));
+        assert_eq!(setup.image_tag, docker::image_tag(cwd));
     }
 
     #[test]
-    fn when_from_dockerfile_build_then_base_image_is_image_tag() {
+    fn when_from_dockerfile_build_then_image_tag_is_computed_from_cwd() {
         let c = empty_dockerfile_build_config();
         let cwd = Path::new("/home/user/myproject");
         let setup = from_dockerfile_build(
@@ -218,7 +230,69 @@ mod tests {
             cwd,
             Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
         );
-        assert_eq!(setup.base_image, docker::image_tag(cwd));
+        assert_eq!(setup.image_tag, docker::image_tag(cwd));
+    }
+
+    #[test]
+    fn when_from_image_then_dockerfile_is_none() {
+        let c = empty_image_config("ubuntu:22.04");
+        let setup = from_image(
+            &c,
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+        );
+        assert!(setup.dockerfile.is_none());
+    }
+
+    #[test]
+    fn when_from_dockerfile_then_dockerfile_is_resolved_against_config_dir() {
+        let mut c = empty_dockerfile_config();
+        c.docker_file = "Dockerfile.dev".to_string();
+        let setup = from_dockerfile(
+            &c,
+            Path::new("/home/user/myproject"),
+            Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
+        );
+        assert_eq!(
+            setup.dockerfile,
+            Some(std::path::PathBuf::from(
+                "/home/user/myproject/.devcontainer/Dockerfile.dev"
+            ))
+        );
+    }
+
+    #[test]
+    fn when_from_dockerfile_build_then_dockerfile_is_resolved_against_context() {
+        let mut c = empty_dockerfile_build_config();
+        c.build.context = Some("..".to_string());
+        c.build.dockerfile = Some("Dockerfile.dev".to_string());
+        let setup = from_dockerfile_build(
+            &c,
+            Path::new("/home/user/myproject"),
+            Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
+        );
+        assert_eq!(
+            setup.dockerfile,
+            Some(std::path::PathBuf::from(
+                "/home/user/myproject/.devcontainer/../Dockerfile.dev"
+            ))
+        );
+    }
+
+    #[test]
+    fn when_from_dockerfile_build_without_context_then_dockerfile_is_relative_to_config_dir() {
+        let c = empty_dockerfile_build_config();
+        let setup = from_dockerfile_build(
+            &c,
+            Path::new("/home/user/myproject"),
+            Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
+        );
+        assert_eq!(
+            setup.dockerfile,
+            Some(std::path::PathBuf::from(
+                "/home/user/myproject/.devcontainer/Dockerfile"
+            ))
+        );
     }
 
     #[test]
