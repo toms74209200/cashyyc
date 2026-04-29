@@ -25,7 +25,7 @@ Options:
             Ok(())
         }
         cli::Command::Version => {
-            println!("cyyc {}", env!("CARGO_PKG_VERSION"));
+            println!("cyyc {}", env!("GIT_VERSION"));
             Ok(())
         }
         cli::Command::Unknown(msg) => Err(anyhow!(msg)),
