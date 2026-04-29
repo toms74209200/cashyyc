@@ -234,49 +234,132 @@ fn shell(name: Option<String>) -> Result<()> {
         devcontainer::DevcontainerConfig::DockerCompose(c) => &c.common.features,
     };
 
+    let features_plan: Option<(features::InstallPlan, std::path::PathBuf)> =
+        if !features_map.is_empty() {
+            Some(download_features(features_map, config_dir, &cwd)?)
+        } else {
+            None
+        };
+
+    let target = if let Some((ref plan, ref fdir)) = features_plan {
+        match target {
+            ContainerTarget::Single(s) => {
+                let base = match &s.dockerfile {
+                    None => format!("FROM {}", s.image_tag),
+                    Some(p) => std::fs::read_to_string(p)
+                        .map_err(|e| anyhow!("failed to read Dockerfile: {e}"))?,
+                };
+                let content = features::feature_dockerfile(&base, plan);
+                let dockerfile_path = fdir.join("Dockerfile.features");
+                std::fs::write(&dockerfile_path, &content)
+                    .map_err(|e| anyhow!("failed to write feature Dockerfile: {e}"))?;
+                ContainerTarget::Single(setup::ContainerSetup {
+                    image_tag: format!("{}-features", docker::image_tag(&cwd)),
+                    dockerfile: Some(dockerfile_path),
+                    run_args: s.run_args,
+                    override_command: s.override_command,
+                })
+            }
+            ContainerTarget::Compose(c) => {
+                let base = (|| -> Option<String> {
+                    let out = std::process::Command::new("docker")
+                        .arg("compose")
+                        .args(&c.global_args)
+                        .args(["config", "--format", "json"])
+                        .output()
+                        .ok()?;
+                    if !out.status.success() {
+                        return None;
+                    }
+                    let cfg: devcontainer::ComposeResolved =
+                        serde_json::from_slice(&out.stdout).ok()?;
+                    match cfg.services.get(&c.service)?.feature_base_source() {
+                        devcontainer::FeatureBaseSource::Image(img) => Some(format!("FROM {img}")),
+                        devcontainer::FeatureBaseSource::DockerfilePath(p) => {
+                            std::fs::read_to_string(p).ok()
+                        }
+                    }
+                })()
+                .ok_or_else(|| anyhow!("failed to resolve compose service base for features"))?;
+                let content = features::feature_dockerfile(&base, plan);
+                let dockerfile_path = fdir.join("Dockerfile.features");
+                std::fs::write(&dockerfile_path, &content)
+                    .map_err(|e| anyhow!("failed to write feature Dockerfile: {e}"))?;
+                let override_content = format!(
+                    "{}    build:\n      dockerfile: {}\n      context: {}\n",
+                    c.override_content,
+                    dockerfile_path.display(),
+                    fdir.display()
+                );
+                ContainerTarget::Compose(devcontainer::ComposeArgs {
+                    override_content,
+                    ..c
+                })
+            }
+        }
+    } else {
+        target
+    };
+
     let id: String = match target {
         ContainerTarget::Single(s) => {
-            match &config {
-                devcontainer::DevcontainerConfig::Image(c) => {
-                    let status = std::process::Command::new("docker")
-                        .args(["pull", &c.image])
-                        .status()
-                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-                    if !status.success() {
-                        return Err(anyhow!("`docker pull` failed"));
-                    }
+            if let Some((_, ref fdir)) = features_plan {
+                let status = std::process::Command::new("docker")
+                    .args([
+                        "build",
+                        "-f",
+                        &s.dockerfile.as_ref().unwrap().display().to_string(),
+                        "-t",
+                        &s.image_tag,
+                        &fdir.display().to_string(),
+                    ])
+                    .status()
+                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                if !status.success() {
+                    return Err(anyhow!("`docker build` for features failed"));
                 }
-                devcontainer::DevcontainerConfig::Dockerfile(c) => {
-                    let build = devcontainer::normalize_dockerfile_config(c);
-                    let tag = docker::image_tag(&cwd);
-                    let build_args = devcontainer::container_build_args(&build, config_dir, &tag);
-                    let status = std::process::Command::new("docker")
-                        .arg("build")
-                        .args(&build_args)
-                        .status()
-                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-                    if !status.success() {
-                        return Err(anyhow!("`docker build` failed"));
+            } else {
+                match &config {
+                    devcontainer::DevcontainerConfig::Image(c) => {
+                        let status = std::process::Command::new("docker")
+                            .args(["pull", &c.image])
+                            .status()
+                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        if !status.success() {
+                            return Err(anyhow!("`docker pull` failed"));
+                        }
                     }
-                }
-                devcontainer::DevcontainerConfig::DockerfileBuild(c) => {
-                    let tag = docker::image_tag(&cwd);
-                    let build_args = devcontainer::container_build_args(&c.build, config_dir, &tag);
-                    let status = std::process::Command::new("docker")
-                        .arg("build")
-                        .args(&build_args)
-                        .status()
-                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-                    if !status.success() {
-                        return Err(anyhow!("`docker build` failed"));
+                    devcontainer::DevcontainerConfig::Dockerfile(c) => {
+                        let build = devcontainer::normalize_dockerfile_config(c);
+                        let build_args =
+                            devcontainer::container_build_args(&build, config_dir, &s.image_tag);
+                        let status = std::process::Command::new("docker")
+                            .arg("build")
+                            .args(&build_args)
+                            .status()
+                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        if !status.success() {
+                            return Err(anyhow!("`docker build` failed"));
+                        }
                     }
+                    devcontainer::DevcontainerConfig::DockerfileBuild(c) => {
+                        let build_args =
+                            devcontainer::container_build_args(&c.build, config_dir, &s.image_tag);
+                        let status = std::process::Command::new("docker")
+                            .arg("build")
+                            .args(&build_args)
+                            .status()
+                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        if !status.success() {
+                            return Err(anyhow!("`docker build` failed"));
+                        }
+                    }
+                    devcontainer::DevcontainerConfig::DockerCompose(_) => unreachable!(),
                 }
-                devcontainer::DevcontainerConfig::DockerCompose(_) => unreachable!(),
             }
-            let final_image = build_with_features(&s.base_image, features_map, config_dir, &cwd)?;
             let mut run_args = s.run_args;
             run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
-            run_args.push(final_image.clone());
+            run_args.push(s.image_tag.clone());
             let image_config = if s.override_command == Some(false) {
                 let output = std::process::Command::new("docker")
                     .args([
@@ -284,7 +367,7 @@ fn shell(name: Option<String>) -> Result<()> {
                         "inspect",
                         "--format",
                         "{{json .Config}}",
-                        &final_image,
+                        &s.image_tag,
                     ])
                     .output()
                     .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
@@ -376,8 +459,16 @@ fn shell(name: Option<String>) -> Result<()> {
             let override_path = if let Some(p) = persisted_override {
                 p
             } else {
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis();
+                let p = compose_dir.join(format!("{}-{}.yml", c.project_name, timestamp));
+                std::fs::write(&p, &c.override_content)
+                    .map_err(|e| anyhow!("Failed to write compose override file: {e}"))?;
                 if !no_recreate {
                     let mut build_args = c.global_args.clone();
+                    build_args.extend(["-f".to_string(), p.display().to_string()]);
                     build_args.push("build".to_string());
                     build_args.extend(c.services.iter().cloned());
                     let status = std::process::Command::new("docker")
@@ -389,13 +480,6 @@ fn shell(name: Option<String>) -> Result<()> {
                         return Err(anyhow!("`docker compose build` failed"));
                     }
                 }
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis();
-                let p = compose_dir.join(format!("{}-{}.yml", c.project_name, timestamp));
-                std::fs::write(&p, &c.override_content)
-                    .map_err(|e| anyhow!("Failed to write compose override file: {e}"))?;
                 p
             };
             let mut up_args = c.global_args.clone();
@@ -521,16 +605,11 @@ fn exec_in_container(
     Ok(())
 }
 
-fn build_with_features(
-    base_image: &str,
+fn download_features(
     features_map: &std::collections::HashMap<String, serde_json::Value>,
     devcontainer_dir: &std::path::Path,
     cwd: &std::path::Path,
-) -> Result<String> {
-    if features_map.is_empty() {
-        return Ok(base_image.to_string());
-    }
-
+) -> Result<(features::InstallPlan, std::path::PathBuf)> {
     let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
     let features_dir = std::env::temp_dir()
         .join(format!("cyyc-{username}"))
@@ -683,26 +762,5 @@ fn build_with_features(
     }
 
     let plan = features::InstallPlan::new(resolved)?;
-    let dockerfile_content = features::feature_dockerfile(base_image, &plan);
-    let dockerfile_path = features_dir.join("Dockerfile.features");
-    std::fs::write(&dockerfile_path, &dockerfile_content)
-        .map_err(|e| anyhow!("failed to write feature Dockerfile: {e}"))?;
-
-    let tag = format!("{}-features", docker::image_tag(cwd));
-    let status = std::process::Command::new("docker")
-        .args([
-            "build",
-            "-f",
-            &dockerfile_path.display().to_string(),
-            "-t",
-            &tag,
-            &features_dir.display().to_string(),
-        ])
-        .status()
-        .map_err(|e| anyhow!("failed to run docker: {e}"))?;
-    if !status.success() {
-        return Err(anyhow!("`docker build` for features failed"));
-    }
-
-    Ok(tag)
+    Ok((plan, features_dir))
 }

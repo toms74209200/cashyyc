@@ -1,13 +1,50 @@
 use super::config::DockerComposeConfig;
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub struct ComposeArgs {
     pub project_name: String,
     pub global_args: Vec<String>,
     pub services: Vec<String>,
+    pub service: String,
     pub filter1: String,
     pub filter2: String,
     pub override_content: String,
+}
+
+#[derive(Deserialize)]
+pub struct ComposeResolved {
+    pub services: HashMap<String, ServiceResolved>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum ServiceResolved {
+    Build { build: BuildResolved },
+    Image { image: String },
+}
+
+#[derive(Deserialize)]
+pub struct BuildResolved {
+    pub dockerfile: String,
+    pub context: String,
+}
+
+pub enum FeatureBaseSource {
+    Image(String),
+    DockerfilePath(PathBuf),
+}
+
+impl ServiceResolved {
+    pub fn feature_base_source(&self) -> FeatureBaseSource {
+        match self {
+            Self::Image { image } => FeatureBaseSource::Image(image.clone()),
+            Self::Build { build } => {
+                FeatureBaseSource::DockerfilePath(Path::new(&build.context).join(&build.dockerfile))
+            }
+        }
+    }
 }
 
 pub fn compose_args(
@@ -97,6 +134,7 @@ services:
         project_name,
         global_args,
         services,
+        service: config.service.clone(),
         filter1,
         filter2,
         override_content,
@@ -254,5 +292,55 @@ mod tests {
         config.common.container_user = Some("vscode".to_string());
         let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
         assert!(args.override_content.contains("user: vscode"));
+    }
+
+    #[test]
+    fn when_service_resolved_image_then_feature_base_source_is_image() {
+        let svc: ServiceResolved = serde_json::from_str(r#"{"image":"ubuntu:22.04"}"#).unwrap();
+        match svc.feature_base_source() {
+            FeatureBaseSource::Image(s) => assert_eq!(s, "ubuntu:22.04"),
+            FeatureBaseSource::DockerfilePath(_) => panic!("expected Image"),
+        }
+    }
+
+    #[test]
+    fn when_service_resolved_build_then_feature_base_source_is_dockerfile_path() {
+        let svc: ServiceResolved = serde_json::from_str(
+            r#"{"build":{"dockerfile":"Dockerfile.dev","context":"/abs/ctx"}}"#,
+        )
+        .unwrap();
+        match svc.feature_base_source() {
+            FeatureBaseSource::DockerfilePath(p) => {
+                assert_eq!(p, PathBuf::from("/abs/ctx/Dockerfile.dev"));
+            }
+            FeatureBaseSource::Image(_) => panic!("expected DockerfilePath"),
+        }
+    }
+
+    #[test]
+    fn when_service_resolved_has_both_build_and_image_then_build_is_chosen() {
+        let svc: ServiceResolved = serde_json::from_str(
+            r#"{"image":"ignored:1","build":{"dockerfile":"D","context":"/c"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            svc.feature_base_source(),
+            FeatureBaseSource::DockerfilePath(_)
+        ));
+    }
+
+    #[test]
+    fn when_compose_resolved_then_services_are_keyed_by_name() {
+        let cfg: ComposeResolved =
+            serde_json::from_str(r#"{"services":{"app":{"image":"a:1"},"db":{"image":"b:2"}}}"#)
+                .unwrap();
+        assert!(cfg.services.contains_key("app"));
+        assert!(cfg.services.contains_key("db"));
+    }
+
+    #[test]
+    fn when_service_resolved_has_neither_then_deserialize_fails() {
+        let result: Result<ServiceResolved, _> = serde_json::from_str(r#"{}"#);
+        assert!(result.is_err());
     }
 }

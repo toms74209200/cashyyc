@@ -112,9 +112,51 @@ vsc-{basename(cwd)}-{fnv1a(cwd)}
 
 ### features の処理
 
-features の**依存関係解決**（`dependsOn`, `installsAfter` によるトポロジカルソート）と**インストール実行**（OCI レジストリからのダウンロード + `install.sh` 実行）は独立した処理。
+features の**依存関係解決**（`installsAfter` によるトポロジカルソート）と**インストール実行**（OCI レジストリからのダウンロード + `install.sh` 実行）は独立した処理。
 
-ImageConfig に features がある場合は features を組み込んだ Dockerfile を生成してビルドが必要。
+#### Dockerfile への組み込み
+
+features は **build の前に Dockerfile へ追記** される。build は1回のみ実行され、中間イメージは生成しない。
+
+定義: `devcontainers/cli` `src/spec-node/containerFeatures.ts` `getFeaturesBuildOptions`、`src/spec-node/singleContainer.ts` `buildAndExtendImage`、`src/spec-node/dockerCompose.ts` `buildAndExtendDockerCompose`
+
+| 設定タイプ | base となる Dockerfile 内容 | build コマンド |
+|---|---|---|
+| ImageConfig | `FROM <image> AS dev_containers_target_stage` を新規生成 | `docker build` 1回 |
+| DockerfileConfig / DockerfileBuildConfig | ユーザの Dockerfile 内容を読んで末尾に追記 | `docker build` 1回 |
+| DockerComposeConfig（`image:`） | `FROM <image> AS <stage>` を新規生成 | `docker compose build` 1回 |
+| DockerComposeConfig（`build:`） | サービスの Dockerfile を読んで末尾に追記 | `docker compose build` 1回 |
+
+Compose の場合は features を組み込んだ Dockerfile を compose override の `build.dockerfile` に指定してから `docker compose build` を呼ぶ。
+
+#### 追記される内容の構造
+
+```dockerfile
+# （ここまでがユーザの Dockerfile または FROM <image>）
+USER root
+COPY ./<feature-dir>/ /tmp/dev-container-features/<feature-id>/
+RUN chmod -R 0755 /tmp/dev-container-features/<feature-id> \
+    && cd /tmp/dev-container-features/<feature-id> \
+    && chmod +x ./install.sh && ./install.sh
+# （features が複数あれば COPY/RUN を繰り返す）
+```
+
+features ファイルの COPY は `features_dir` をビルドコンテキストとして使用する。ユーザの Dockerfile と同一コンテキストには置かない。
+
+#### Compose の override ファイル
+
+features を適用する場合、compose override の `build:` セクションに以下を追加する:
+
+```yaml
+services:
+  '<service>':
+    entrypoint: [...]
+    build:
+      dockerfile: /tmp/.../Dockerfile-with-features
+      context: <features_dir>
+```
+
+features がない場合は `build:` は追加されない。
 
 ### overrideCommand のデフォルト
 

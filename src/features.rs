@@ -117,46 +117,46 @@ impl InstallPlan {
     }
 }
 
-pub fn feature_dockerfile(base_image: &str, plan: &InstallPlan) -> String {
-    let mut lines = vec![format!("FROM {base_image}"), "USER root".to_string()];
+pub fn feature_dockerfile(base_content: &str, plan: &InstallPlan) -> String {
+    let lines: Vec<String> = std::iter::once("USER root".to_string())
+        .chain(plan.features().iter().flat_map(|feature| {
+            let dir_name = feature
+                .dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            let dest = format!("/tmp/dev-container-features/{}", feature.short_id);
+            let copy = format!("COPY ./{dir_name}/ {dest}/");
+            let exports = match &feature.options {
+                Value::Object(map) => map
+                    .iter()
+                    .map(|(k, v)| {
+                        let val = match v {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        let env_key = k.to_uppercase().replace('-', "_");
+                        let quoted = format!("'{}'", val.replace('\'', r"'\''"));
+                        format!("export {env_key}={quoted}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" && "),
+                _ => String::new(),
+            };
+            let run = if exports.is_empty() {
+                format!(
+                    "RUN chmod -R 0755 {dest} && cd {dest} && chmod +x ./install.sh && ./install.sh"
+                )
+            } else {
+                format!(
+                    "RUN {exports} && chmod -R 0755 {dest} && cd {dest} && chmod +x ./install.sh && ./install.sh"
+                )
+            };
+            [copy, run]
+        }))
+        .collect();
 
-    for feature in plan.features() {
-        let dir_name = feature
-            .dir
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy();
-        let dest = format!("/tmp/dev-container-features/{}", feature.short_id);
-        lines.push(format!("COPY ./{dir_name}/ {dest}/"));
-        let exports = match &feature.options {
-            Value::Object(map) => map
-                .iter()
-                .map(|(k, v)| {
-                    let val = match v {
-                        Value::String(s) => s.clone(),
-                        other => other.to_string(),
-                    };
-                    let env_key = k.to_uppercase().replace('-', "_");
-                    let quoted = format!("'{}'", val.replace('\'', r"'\''"));
-                    format!("export {env_key}={quoted}")
-                })
-                .collect::<Vec<_>>()
-                .join(" && "),
-            _ => String::new(),
-        };
-        let run = if exports.is_empty() {
-            format!(
-                "RUN chmod -R 0755 {dest} && cd {dest} && chmod +x ./install.sh && ./install.sh"
-            )
-        } else {
-            format!(
-                "RUN {exports} && chmod -R 0755 {dest} && cd {dest} && chmod +x ./install.sh && ./install.sh"
-            )
-        };
-        lines.push(run);
-    }
-
-    lines.join("\n")
+    format!("{base_content}\n{}", lines.join("\n"))
 }
 
 #[cfg(test)]
@@ -253,7 +253,7 @@ mod tests {
             installs_after: vec![],
         }];
         let plan = InstallPlan::new(features).unwrap();
-        let df = feature_dockerfile("rust:latest", &plan);
+        let df = feature_dockerfile("FROM rust:latest", &plan);
         assert!(df.contains("FROM rust:latest"));
         assert!(df.contains("COPY ./0/ /tmp/dev-container-features/git/"));
         assert!(df.contains("./install.sh"));
@@ -268,7 +268,7 @@ mod tests {
             installs_after: vec![],
         }];
         let plan = InstallPlan::new(features).unwrap();
-        let df = feature_dockerfile("ubuntu:22.04", &plan);
+        let df = feature_dockerfile("FROM ubuntu:22.04", &plan);
         assert!(df.contains("export VERSION='18'"));
     }
 
