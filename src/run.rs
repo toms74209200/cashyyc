@@ -122,10 +122,43 @@ fn shell(name: Option<String>) -> Result<()> {
                     stderr.trim()
                 ));
             }
-            (
-                None,
-                docker::parse_container_id(&String::from_utf8_lossy(&output.stdout)),
-            )
+            let running_id = docker::parse_container_id(&String::from_utf8_lossy(&output.stdout));
+            let container_id = if running_id.is_some() {
+                running_id
+            } else {
+                let all_output = std::process::Command::new("docker")
+                    .args([
+                        "ps", "-a", "--filter", &c.filter1, "--filter", &c.filter2, "--format",
+                        "{{.ID}}",
+                    ])
+                    .output()
+                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                if !all_output.status.success() {
+                    let stderr = String::from_utf8_lossy(&all_output.stderr);
+                    return Err(anyhow!(
+                        "`docker ps` failed with status {}: {}",
+                        all_output.status,
+                        stderr.trim()
+                    ));
+                }
+                let stopped_id =
+                    docker::parse_container_id(&String::from_utf8_lossy(&all_output.stdout));
+                if stopped_id.is_some() {
+                    let mut start_args = c.global_args.clone();
+                    start_args.push("start".to_string());
+                    start_args.extend(c.services.iter().cloned());
+                    let status = std::process::Command::new("docker")
+                        .arg("compose")
+                        .args(&start_args)
+                        .status()
+                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                    if !status.success() {
+                        return Err(anyhow!("`docker compose start` failed"));
+                    }
+                }
+                stopped_id
+            };
+            (None, container_id)
         }
         ContainerTarget::Single(_) => {
             let output = std::process::Command::new("docker")
