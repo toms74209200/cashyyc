@@ -621,12 +621,53 @@ fn exec_in_container(
         )
     });
     let container_workspace_folder =
-        devcontainer::expand_variables(&container_workspace_folder, cwd, "");
+        devcontainer::expand_variables(&container_workspace_folder, cwd, "", &Default::default());
+    let container_env: std::collections::HashMap<String, String> =
+        std::process::Command::new("docker")
+            .args(["exec", &id, "printenv"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter_map(|line| {
+                        let mut parts = line.splitn(2, '=');
+                        Some((
+                            parts.next()?.to_string(),
+                            parts.next().unwrap_or("").to_string(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    let remote_env = match config {
+        devcontainer::DevcontainerConfig::Image(c) => c.common.remote_env.as_ref(),
+        devcontainer::DevcontainerConfig::Dockerfile(c) => c.common.remote_env.as_ref(),
+        devcontainer::DevcontainerConfig::DockerfileBuild(c) => c.common.remote_env.as_ref(),
+        devcontainer::DevcontainerConfig::DockerCompose(c) => c.common.remote_env.as_ref(),
+    };
     let mut exec_args = vec!["exec".to_string(), "-it".to_string()];
     if let Some(user) = remote_user {
         exec_args.extend(["--user".to_string(), user]);
     }
-    exec_args.extend(["--workdir".to_string(), container_workspace_folder]);
+    exec_args.extend(["--workdir".to_string(), container_workspace_folder.clone()]);
+    if let Some(env) = remote_env {
+        let mut pairs: Vec<(&String, &String)> = env
+            .iter()
+            .filter_map(|(k, v)| v.as_ref().map(|val| (k, val)))
+            .collect();
+        pairs.sort_by_key(|(k, _)| k.as_str());
+        for (key, value) in pairs {
+            let expanded = devcontainer::expand_variables(
+                value,
+                cwd,
+                &container_workspace_folder,
+                &container_env,
+            );
+            exec_args.extend(["--env".to_string(), format!("{}={}", key, expanded)]);
+        }
+    }
     exec_args.extend([id, shell]);
     let status = std::process::Command::new("docker")
         .args(&exec_args)
