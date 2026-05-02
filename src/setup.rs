@@ -107,7 +107,8 @@ fn run_args_for(
             cwd.file_name().unwrap_or_default().to_string_lossy()
         )
     });
-    let workspace_mount = raw_workspace_mount.map(|m| expand_variables(m, cwd, &workspace_folder));
+    let workspace_mount = raw_workspace_mount
+        .map(|m| expand_variables(m, cwd, &workspace_folder, &Default::default()));
     container_run_options(
         common,
         run_args,
