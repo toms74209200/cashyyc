@@ -737,7 +737,7 @@ fn download_features(
                 }
                 let status = std::process::Command::new("tar")
                     .args([
-                        "xzf",
+                        "xf",
                         &tarball.display().to_string(),
                         "-C",
                         &feature_dir.display().to_string(),
@@ -811,7 +811,7 @@ fn download_features(
                 }
                 let status = std::process::Command::new("tar")
                     .args([
-                        "xzf",
+                        "xf",
                         &tarball.display().to_string(),
                         "-C",
                         &feature_dir.display().to_string(),
@@ -832,6 +832,7 @@ fn download_features(
             dir: feature_dir,
             options: (*options).clone(),
             installs_after: manifest.installs_after,
+            container_env: manifest.container_env,
         });
     }
 
