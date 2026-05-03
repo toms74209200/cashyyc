@@ -42,6 +42,8 @@ pub struct FeatureManifest {
     pub id: String,
     #[serde(rename = "installsAfter", default)]
     pub installs_after: Vec<String>,
+    #[serde(rename = "containerEnv", default)]
+    pub container_env: HashMap<String, String>,
 }
 
 impl FeatureManifest {
@@ -56,6 +58,7 @@ pub struct Feature {
     pub dir: PathBuf,
     pub options: Value,
     pub installs_after: Vec<String>,
+    pub container_env: HashMap<String, String>,
 }
 
 pub struct InstallPlan(Vec<Feature>);
@@ -152,7 +155,14 @@ pub fn feature_dockerfile(base_content: &str, plan: &InstallPlan) -> String {
                     "RUN {exports} && chmod -R 0755 {dest} && cd {dest} && chmod +x ./install.sh && ./install.sh"
                 )
             };
-            [copy, run]
+            let mut steps = vec![copy, run];
+            let mut env_keys: Vec<&String> = feature.container_env.keys().collect();
+            env_keys.sort();
+            for key in env_keys {
+                let value = &feature.container_env[key];
+                steps.push(format!("ENV {key}={value}"));
+            }
+            steps
         }))
         .collect();
 
@@ -171,6 +181,7 @@ mod tests {
             dir: PathBuf::from(format!("/{short_id}")),
             options: json!({}),
             installs_after: installs_after.into_iter().map(String::from).collect(),
+            container_env: HashMap::new(),
         }
     }
 
@@ -251,6 +262,7 @@ mod tests {
             dir: PathBuf::from("/tmp/0"),
             options: json!({}),
             installs_after: vec![],
+            container_env: HashMap::new(),
         }];
         let plan = InstallPlan::new(features).unwrap();
         let df = feature_dockerfile("FROM rust:latest", &plan);
@@ -266,6 +278,7 @@ mod tests {
             dir: PathBuf::from("/tmp/0"),
             options: json!({ "version": "18" }),
             installs_after: vec![],
+            container_env: HashMap::new(),
         }];
         let plan = InstallPlan::new(features).unwrap();
         let df = feature_dockerfile("FROM ubuntu:22.04", &plan);
