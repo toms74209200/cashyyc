@@ -1,0 +1,36 @@
+name: Job - Test Large
+
+on:
+  workflow_call:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/job-test-large.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: tests/acceptance
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build cyyc
+        working-directory: .
+        run: cargo build --bin cyyc
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+      - name: Sync dependencies
+        run: uv sync
+      - name: Run acceptance tests
+        run: uv run pytest -vv
