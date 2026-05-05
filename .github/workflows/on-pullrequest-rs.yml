@@ -6,7 +6,7 @@ on:
     paths:
       - '**/*.rs'
       - 'Cargo.toml'
-      - '.github/workflows/on-pullrequest.yml'
+      - '.github/workflows/on-pullrequest-rs.yml'
 
 jobs:
   lint:
@@ -17,8 +17,12 @@ jobs:
     uses: ./.github/workflows/job-test-small.yml
     with:
       with-coverage: true
+  large-test:
+    needs:
+      - small-test
+    uses: ./.github/workflows/job-test-large.yml
   coverage:
-    needs: 
+    needs:
       - small-test
     uses: ./.github/workflows/job-coverage.yml
     with:

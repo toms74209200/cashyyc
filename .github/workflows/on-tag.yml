@@ -6,7 +6,11 @@ on:
       - '*'
 
 jobs:
+  large-test:
+    uses: ./.github/workflows/job-test-large.yml
   build:
+    needs:
+      - large-test
     uses: ./.github/workflows/job-build.yml
   release:
     needs:
