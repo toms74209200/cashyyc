@@ -1,6 +1,7 @@
 #[derive(Debug, PartialEq)]
 pub enum Command {
     Shell { name: Option<String> },
+    Stop { name: Option<String> },
     Help,
     Version,
     Unknown(String),
@@ -11,12 +12,16 @@ pub fn parse_args(args: &[String]) -> Command {
         0 | 1 => Command::Unknown("no command".to_string()),
         2 => match args[1].as_str() {
             "shell" => Command::Shell { name: None },
+            "stop" => Command::Stop { name: None },
             "help" | "--help" | "-h" => Command::Help,
             "version" | "--version" | "-V" => Command::Version,
             cmd => Command::Unknown(cmd.to_string()),
         },
         _ => match args[1].as_str() {
             "shell" => Command::Shell {
+                name: Some(args[2].clone()),
+            },
+            "stop" => Command::Stop {
                 name: Some(args[2].clone()),
             },
             "help" | "--help" | "-h" => Command::Help,
@@ -56,6 +61,28 @@ mod tests {
         );
         let args = vec!["cyyc".to_string(), "shell".to_string(), name.clone()];
         assert_eq!(parse_args(&args), Command::Shell { name: Some(name) });
+    }
+
+    #[test]
+    fn when_parse_args_with_stop_command_then_returns_stop_with_none() {
+        let args = vec!["cyyc".to_string(), "stop".to_string()];
+        assert_eq!(parse_args(&args), Command::Stop { name: None });
+    }
+
+    #[test]
+    fn when_parse_args_with_stop_and_environment_name_then_returns_stop_with_name() {
+        let name = generate_random_string(
+            8,
+            &[
+                CharacterType::Lowercase,
+                CharacterType::Uppercase,
+                CharacterType::Numeric,
+            ],
+            "",
+            &mut urandom(),
+        );
+        let args = vec!["cyyc".to_string(), "stop".to_string(), name.clone()];
+        assert_eq!(parse_args(&args), Command::Stop { name: Some(name) });
     }
 
     #[test]
