@@ -9,12 +9,14 @@ use anyhow::{Result, anyhow};
 pub fn run(args: Vec<String>) -> Result<()> {
     match cli::parse_args(&args) {
         cli::Command::Shell { name } => shell(name),
+        cli::Command::Stop { name } => stop(name),
         cli::Command::Help => {
             println!(
                 "Usage: cyyc <COMMAND>
 
 Commands:
   shell [name]  Open a shell in the dev container
+  stop [name]   Stop the dev container (keeps it for reuse)
   help          Print this message
   version       Print version information
 
@@ -34,227 +36,20 @@ Options:
 
 fn shell(name: Option<String>) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let devcontainer_dir = cwd.join(".devcontainer");
-    let mut configs = vec![];
-    let root = devcontainer_dir.join("devcontainer.json");
-    if root.is_file() {
-        configs.push(root);
-    }
-    if let Ok(entries) = std::fs::read_dir(&devcontainer_dir) {
-        let mut named: Vec<_> = entries
-            .flatten()
-            .filter(|e| e.path().is_dir())
-            .filter_map(|e| {
-                let p = e.path().join("devcontainer.json");
-                p.is_file().then_some(p)
-            })
-            .collect();
-        named.sort();
-        configs.extend(named);
-    }
-    let config_path = match (configs.as_slice(), name.as_deref()) {
-        ([], _) => {
-            return Err(anyhow!(
-                "No devcontainer.json found in {}",
-                devcontainer_dir.display()
-            ));
-        }
-        ([c], _) => c.clone(),
-        (_, Some(n)) => {
-            let path = devcontainer_dir.join(n).join("devcontainer.json");
-            if !path.is_file() {
-                return Err(anyhow!(
-                    "Dev container config ({}) not found.",
-                    path.display()
-                ));
-            }
-            path
-        }
-        (cs, None) => {
-            let names: Vec<_> = cs
-                .iter()
-                .filter_map(|p| {
-                    p.parent()
-                        .and_then(|d| d.file_name())
-                        .map(|n| n.to_string_lossy().to_string())
-                })
-                .collect();
-            return Err(anyhow!(
-                "Multiple devcontainer configs found. Specify a name: {}",
-                names.join(", ")
-            ));
-        }
-    };
-    let content = std::fs::read_to_string(&config_path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            anyhow!(
-                "Dev container config ({}) not found.",
-                config_path.display()
-            )
-        } else {
-            anyhow!("Dev container config ({}): {e}", config_path.display())
-        }
-    })?;
-    let config = devcontainer::parse_config(&content).ok_or_else(|| {
-        anyhow!(
-            "Failed to parse dev container config ({}).",
-            config_path.display()
-        )
-    })?;
+    let (config_path, config) = open_config(&cwd, name.as_deref())?;
     let config_dir = config_path.parent().unwrap_or(cwd.as_path());
 
     let target = setup::from_config(&config, &cwd, &config_path, config_dir);
 
-    let (found_container, container_id): (Option<docker::Container>, Option<String>) = match &target
-    {
-        ContainerTarget::Compose(c) => {
-            let output = std::process::Command::new("docker")
-                .args([
-                    "ps", "--filter", &c.filter1, "--filter", &c.filter2, "--format", "{{.ID}}",
-                ])
-                .output()
-                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(anyhow!(
-                    "`docker ps` failed with status {}: {}",
-                    output.status,
-                    stderr.trim()
-                ));
+    let (found_container, container_id): (Option<docker::Container>, Option<String>) =
+        match lookup_existing(&target, &config_path, &cwd)? {
+            Existing::Running { id, meta } => (meta, Some(id)),
+            Existing::Stopped { id, meta } => {
+                start_existing(&target, &id)?;
+                (meta, Some(id))
             }
-            let running_id = docker::parse_container_id(&String::from_utf8_lossy(&output.stdout));
-            let container_id = if running_id.is_some() {
-                running_id
-            } else {
-                let all_output = std::process::Command::new("docker")
-                    .args([
-                        "ps", "-a", "--filter", &c.filter1, "--filter", &c.filter2, "--format",
-                        "{{.ID}}",
-                    ])
-                    .output()
-                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-                if !all_output.status.success() {
-                    let stderr = String::from_utf8_lossy(&all_output.stderr);
-                    return Err(anyhow!(
-                        "`docker ps` failed with status {}: {}",
-                        all_output.status,
-                        stderr.trim()
-                    ));
-                }
-                let stopped_id =
-                    docker::parse_container_id(&String::from_utf8_lossy(&all_output.stdout));
-                if stopped_id.is_some() {
-                    let mut start_args = c.global_args.clone();
-                    start_args.push("start".to_string());
-                    start_args.extend(c.services.iter().cloned());
-                    let status = std::process::Command::new("docker")
-                        .arg("compose")
-                        .args(&start_args)
-                        .status()
-                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-                    if !status.success() {
-                        return Err(anyhow!("`docker compose start` failed"));
-                    }
-                }
-                stopped_id
-            };
-            (None, container_id)
-        }
-        ContainerTarget::Single(_) => {
-            let output = std::process::Command::new("docker")
-                .args([
-                    "ps",
-                    "--filter",
-                    "label=devcontainer.config_file",
-                    "--format",
-                    "{{.ID}}",
-                ])
-                .output()
-                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(anyhow!(
-                    "`docker ps` failed with status {}: {}",
-                    output.status,
-                    stderr.trim()
-                ));
-            }
-            let ids = docker::parse_container_ids(&String::from_utf8_lossy(&output.stdout));
-            let found_running = if !ids.is_empty() {
-                let inspect = std::process::Command::new("docker")
-                    .arg("inspect")
-                    .args(&ids)
-                    .output()
-                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-                if inspect.status.success() {
-                    docker::find_container(
-                        String::from_utf8_lossy(&inspect.stdout).trim(),
-                        &config_path,
-                        &cwd,
-                    )
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            let found = if found_running.is_some() {
-                found_running
-            } else {
-                let output = std::process::Command::new("docker")
-                    .args([
-                        "ps",
-                        "-a",
-                        "--filter",
-                        "label=devcontainer.config_file",
-                        "--format",
-                        "{{.ID}}",
-                    ])
-                    .output()
-                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    return Err(anyhow!(
-                        "`docker ps` failed with status {}: {}",
-                        output.status,
-                        stderr.trim()
-                    ));
-                }
-                let ids = docker::parse_container_ids(&String::from_utf8_lossy(&output.stdout));
-                if !ids.is_empty() {
-                    let inspect = std::process::Command::new("docker")
-                        .arg("inspect")
-                        .args(&ids)
-                        .output()
-                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-                    if inspect.status.success() {
-                        if let Some(c) = docker::find_container(
-                            String::from_utf8_lossy(&inspect.stdout).trim(),
-                            &config_path,
-                            &cwd,
-                        ) {
-                            let status = std::process::Command::new("docker")
-                                .args(["start", &c.id])
-                                .status()
-                                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-                            if !status.success() {
-                                return Err(anyhow!("`docker start` failed"));
-                            }
-                            Some(c)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            };
-            let id = found.as_ref().map(|c| c.id.clone());
-            (found, id)
-        }
-    };
+            Existing::None => (None, None),
+        };
 
     if let Some(id) = container_id {
         return exec_in_container(id, found_container, &config, &cwd);
@@ -545,6 +340,24 @@ fn shell(name: Option<String>) -> Result<()> {
         }
     };
     exec_in_container(id, None, &config, &cwd)
+}
+
+fn stop(name: Option<String>) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let (config_path, config) = open_config(&cwd, name.as_deref())?;
+    let config_dir = config_path.parent().unwrap_or(cwd.as_path());
+    let target = setup::from_config(&config, &cwd, &config_path, config_dir);
+
+    if let Existing::Running { id, .. } = lookup_existing(&target, &config_path, &cwd)? {
+        let status = std::process::Command::new("docker")
+            .args(["stop", &id])
+            .status()
+            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+        if !status.success() {
+            return Err(anyhow!("`docker stop` failed"));
+        }
+    }
+    Ok(())
 }
 
 fn exec_in_container(
@@ -838,4 +651,234 @@ fn download_features(
 
     let plan = features::InstallPlan::new(resolved)?;
     Ok((plan, features_dir))
+}
+
+enum Existing {
+    Running {
+        id: String,
+        meta: Option<docker::Container>,
+    },
+    Stopped {
+        id: String,
+        meta: Option<docker::Container>,
+    },
+    None,
+}
+
+fn open_config(
+    cwd: &std::path::Path,
+    name: Option<&str>,
+) -> Result<(std::path::PathBuf, devcontainer::DevcontainerConfig)> {
+    let devcontainer_dir = cwd.join(".devcontainer");
+    let configs = discover_configs(&devcontainer_dir);
+    let config_path = select_config(&configs, &devcontainer_dir, name)?;
+    let content = std::fs::read_to_string(&config_path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            anyhow!(
+                "Dev container config ({}) not found.",
+                config_path.display()
+            )
+        } else {
+            anyhow!("Dev container config ({}): {e}", config_path.display())
+        }
+    })?;
+    let config = devcontainer::parse_config(&content).ok_or_else(|| {
+        anyhow!(
+            "Failed to parse dev container config ({}).",
+            config_path.display()
+        )
+    })?;
+    Ok((config_path, config))
+}
+
+fn discover_configs(devcontainer_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut configs = vec![];
+    let root = devcontainer_dir.join("devcontainer.json");
+    if root.is_file() {
+        configs.push(root);
+    }
+    if let Ok(entries) = std::fs::read_dir(devcontainer_dir) {
+        let mut named: Vec<_> = entries
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| {
+                let p = e.path().join("devcontainer.json");
+                p.is_file().then_some(p)
+            })
+            .collect();
+        named.sort();
+        configs.extend(named);
+    }
+    configs
+}
+
+fn select_config(
+    configs: &[std::path::PathBuf],
+    devcontainer_dir: &std::path::Path,
+    name: Option<&str>,
+) -> Result<std::path::PathBuf> {
+    match (configs, name) {
+        ([], _) => Err(anyhow!(
+            "No devcontainer.json found in {}",
+            devcontainer_dir.display()
+        )),
+        ([c], _) => Ok(c.clone()),
+        (cs, Some(n)) => {
+            let path = devcontainer_dir.join(n).join("devcontainer.json");
+            if cs.iter().any(|c| c == &path) {
+                Ok(path)
+            } else {
+                Err(anyhow!(
+                    "Dev container config ({}) not found.",
+                    path.display()
+                ))
+            }
+        }
+        (cs, None) => {
+            let names: Vec<_> = cs
+                .iter()
+                .filter_map(|p| {
+                    p.parent()
+                        .and_then(|d| d.file_name())
+                        .map(|n| n.to_string_lossy().to_string())
+                })
+                .collect();
+            Err(anyhow!(
+                "Multiple devcontainer configs found. Specify a name: {}",
+                names.join(", ")
+            ))
+        }
+    }
+}
+
+fn lookup_existing(
+    target: &ContainerTarget,
+    config_path: &std::path::Path,
+    cwd: &std::path::Path,
+) -> Result<Existing> {
+    match target {
+        ContainerTarget::Compose(c) => {
+            if let Some(id) = compose_ps(c, false)? {
+                return Ok(Existing::Running { id, meta: None });
+            }
+            if let Some(id) = compose_ps(c, true)? {
+                return Ok(Existing::Stopped { id, meta: None });
+            }
+            Ok(Existing::None)
+        }
+        ContainerTarget::Single(_) => {
+            if let Some(c) = single_lookup(false, config_path, cwd)? {
+                return Ok(Existing::Running {
+                    id: c.id.clone(),
+                    meta: Some(c),
+                });
+            }
+            if let Some(c) = single_lookup(true, config_path, cwd)? {
+                return Ok(Existing::Stopped {
+                    id: c.id.clone(),
+                    meta: Some(c),
+                });
+            }
+            Ok(Existing::None)
+        }
+    }
+}
+
+fn compose_ps(c: &devcontainer::ComposeArgs, all_states: bool) -> Result<Option<String>> {
+    let mut args: Vec<&str> = vec!["ps"];
+    if all_states {
+        args.push("-a");
+    }
+    args.extend([
+        "--filter", &c.filter1, "--filter", &c.filter2, "--format", "{{.ID}}",
+    ]);
+    let output = std::process::Command::new("docker")
+        .args(&args)
+        .output()
+        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "`docker ps` failed with status {}: {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+    Ok(docker::parse_container_id(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+fn single_lookup(
+    all_states: bool,
+    config_path: &std::path::Path,
+    cwd: &std::path::Path,
+) -> Result<Option<docker::Container>> {
+    let mut args: Vec<&str> = vec!["ps"];
+    if all_states {
+        args.push("-a");
+    }
+    args.extend([
+        "--filter",
+        "label=devcontainer.config_file",
+        "--format",
+        "{{.ID}}",
+    ]);
+    let output = std::process::Command::new("docker")
+        .args(&args)
+        .output()
+        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "`docker ps` failed with status {}: {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+    let ids = docker::parse_container_ids(&String::from_utf8_lossy(&output.stdout));
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let inspect = std::process::Command::new("docker")
+        .arg("inspect")
+        .args(&ids)
+        .output()
+        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+    if !inspect.status.success() {
+        return Ok(None);
+    }
+    Ok(docker::find_container(
+        String::from_utf8_lossy(&inspect.stdout).trim(),
+        config_path,
+        cwd,
+    ))
+}
+
+fn start_existing(target: &ContainerTarget, id: &str) -> Result<()> {
+    match target {
+        ContainerTarget::Single(_) => {
+            let status = std::process::Command::new("docker")
+                .args(["start", id])
+                .status()
+                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+            if !status.success() {
+                return Err(anyhow!("`docker start` failed"));
+            }
+        }
+        ContainerTarget::Compose(c) => {
+            let mut start_args = c.global_args.clone();
+            start_args.push("start".to_string());
+            start_args.extend(c.services.iter().cloned());
+            let status = std::process::Command::new("docker")
+                .arg("compose")
+                .args(&start_args)
+                .status()
+                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+            if !status.success() {
+                return Err(anyhow!("`docker compose start` failed"));
+            }
+        }
+    }
+    Ok(())
 }
