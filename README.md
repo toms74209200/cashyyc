@@ -1,6 +1,6 @@
 # cashyyc
 
-cashyyc is a DevContainer CLI.
+cashyyc(Container Access Shell Helper Yielding Your Container) is a DevContainer CLI.
 
 cashyyc provides a simple way to enter a dev container from the terminal.
 
@@ -18,10 +18,36 @@ The binary is installed to `~/.local/bin/cyyc`. Make sure `~/.local/bin` is in y
 
 ## Usage
 
-Start or attach to the dev container and open a shell:
+Open a shell in the dev container. The container keeps running after you exit the shell:
 
 ```bash
 cyyc shell
+```
+
+Stop the running container without removing it:
+
+```bash
+cyyc stop
+```
+
+### Multiple environments
+
+If multiple devcontainer configs exist under `.devcontainer/`, specify the environment name:
+
+```
+.devcontainer/
+├── python/
+│   └── devcontainer.json
+└── rust/
+    └── devcontainer.json
+```
+
+```bash
+cyyc shell python
+```
+
+```bash
+cyyc stop python
 ```
 
 ## License
