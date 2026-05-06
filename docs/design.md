@@ -61,6 +61,7 @@ how VS Code and the official CLI identify containers.
 
 ```
 cyyc shell [name]   # Enter environment; start it first if not running
+cyyc stop [name]    # Stop environment (keeps container for reuse)
 cyyc down [name]    # Stop and remove environment
 cyyc ps             # List all environments and running status
 ```
