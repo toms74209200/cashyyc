@@ -2,6 +2,7 @@
 pub enum Command {
     Shell { name: Option<String> },
     Stop { name: Option<String> },
+    Down { name: Option<String> },
     Help,
     Version,
     Unknown(String),
@@ -13,6 +14,7 @@ pub fn parse_args(args: &[String]) -> Command {
         2 => match args[1].as_str() {
             "shell" => Command::Shell { name: None },
             "stop" => Command::Stop { name: None },
+            "down" => Command::Down { name: None },
             "help" | "--help" | "-h" => Command::Help,
             "version" | "--version" | "-V" => Command::Version,
             cmd => Command::Unknown(cmd.to_string()),
@@ -22,6 +24,9 @@ pub fn parse_args(args: &[String]) -> Command {
                 name: Some(args[2].clone()),
             },
             "stop" => Command::Stop {
+                name: Some(args[2].clone()),
+            },
+            "down" => Command::Down {
                 name: Some(args[2].clone()),
             },
             "help" | "--help" | "-h" => Command::Help,
@@ -83,6 +88,28 @@ mod tests {
         );
         let args = vec!["cyyc".to_string(), "stop".to_string(), name.clone()];
         assert_eq!(parse_args(&args), Command::Stop { name: Some(name) });
+    }
+
+    #[test]
+    fn when_parse_args_with_down_command_then_returns_down_with_none() {
+        let args = vec!["cyyc".to_string(), "down".to_string()];
+        assert_eq!(parse_args(&args), Command::Down { name: None });
+    }
+
+    #[test]
+    fn when_parse_args_with_down_and_environment_name_then_returns_down_with_name() {
+        let name = generate_random_string(
+            8,
+            &[
+                CharacterType::Lowercase,
+                CharacterType::Uppercase,
+                CharacterType::Numeric,
+            ],
+            "",
+            &mut urandom(),
+        );
+        let args = vec!["cyyc".to_string(), "down".to_string(), name.clone()];
+        assert_eq!(parse_args(&args), Command::Down { name: Some(name) });
     }
 
     #[test]
