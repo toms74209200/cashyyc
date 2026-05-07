@@ -10,6 +10,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     match cli::parse_args(&args) {
         cli::Command::Shell { name } => shell(name),
         cli::Command::Stop { name } => stop(name),
+        cli::Command::Down { name } => down(name),
         cli::Command::Help => {
             println!(
                 "Usage: cyyc <COMMAND>
@@ -17,6 +18,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
 Commands:
   shell [name]  Open a shell in the dev container
   stop [name]   Stop the dev container (keeps it for reuse)
+  down [name]   Remove the dev container
   help          Print this message
   version       Print version information
 
@@ -355,6 +357,41 @@ fn stop(name: Option<String>) -> Result<()> {
             .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
         if !status.success() {
             return Err(anyhow!("`docker stop` failed"));
+        }
+    }
+    Ok(())
+}
+
+fn down(name: Option<String>) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let (config_path, config) = open_config(&cwd, name.as_deref())?;
+    let config_dir = config_path.parent().unwrap_or(cwd.as_path());
+    let target = setup::from_config(&config, &cwd, &config_path, config_dir);
+
+    match &target {
+        ContainerTarget::Single(_) => match lookup_existing(&target, &config_path, &cwd)? {
+            Existing::Running { id, .. } | Existing::Stopped { id, .. } => {
+                let status = std::process::Command::new("docker")
+                    .args(["rm", "-f", &id])
+                    .status()
+                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                if !status.success() {
+                    return Err(anyhow!("`docker rm` failed"));
+                }
+            }
+            Existing::None => {}
+        },
+        ContainerTarget::Compose(c) => {
+            let mut down_args = c.global_args.clone();
+            down_args.push("down".to_string());
+            let status = std::process::Command::new("docker")
+                .arg("compose")
+                .args(&down_args)
+                .status()
+                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+            if !status.success() {
+                return Err(anyhow!("`docker compose down` failed"));
+            }
         }
     }
     Ok(())
