@@ -4,6 +4,7 @@ import subprocess
 from pytest_bdd import given, parsers, scenarios, then
 
 from conftest import (
+    _container_id,
     container_id_by_compose,
     container_id_by_devcontainer,
 )
@@ -50,6 +51,30 @@ def then_new_session_in_existing(workspace, config, container_id_before):
     assert cid_now == container_id_before[0], (
         f"expected reused {container_id_before[0]}, got {cid_now}"
     )
+
+
+@given(
+    parsers.parse("the config has postCreateCommand {cmd_json}"),
+    target_fixture="config",
+)
+def given_post_create_command(workspace, config, cmd_json):
+    cmd = json.loads(cmd_json)
+    new_config = {**config, "postCreateCommand": cmd}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@then(parsers.parse('the file "{path}" exists in the container'))
+def then_file_exists_in_container(workspace, config, path):
+    container_id = _container_id(workspace, config)
+    assert container_id, "no running container found"
+    result = subprocess.run(
+        ["docker", "exec", container_id, "test", "-f", path],
+        capture_output=True,
+    )
+    assert result.returncode == 0, f"file {path!r} not found in container"
 
 
 @then(parsers.parse('the command "{cmd}" succeeds in the resulting shell'))
