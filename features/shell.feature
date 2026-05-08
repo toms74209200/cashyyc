@@ -130,3 +130,18 @@ Feature: cyyc shell
     Given no devcontainer config exists
     When running "cyyc shell"
     Then the command exits with a non-zero status
+
+  Scenario: Execute postCreateCommand as string on new container
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has postCreateCommand "touch /tmp/post-create-ran"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/post-create-ran" exists in the container
+
+  Scenario: Execute postCreateCommand as array on new container
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has postCreateCommand ["touch", "/tmp/post-create-array-ran"]
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/post-create-array-ran" exists in the container
+
