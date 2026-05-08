@@ -2,6 +2,7 @@ use crate::cli;
 use crate::devcontainer;
 use crate::docker;
 use crate::features;
+use crate::lifecycle::LifecycleCmd;
 use crate::setup;
 use crate::setup::ContainerTarget;
 use anyhow::{Result, anyhow};
@@ -43,26 +44,20 @@ fn shell(name: Option<String>) -> Result<()> {
 
     let target = setup::from_config(&config, &cwd, &config_path, config_dir);
 
-    let (found_container, container_id): (Option<docker::Container>, Option<String>) =
-        match lookup_existing(&target, &config_path, &cwd)? {
-            Existing::Running { id, meta } => (meta, Some(id)),
-            Existing::Stopped { id, meta } => {
-                start_existing(&target, &id)?;
-                (meta, Some(id))
-            }
-            Existing::None => (None, None),
-        };
+    let (found_container, container_id) = match lookup_existing(&target, &config_path, &cwd)? {
+        Existing::Running { id, meta } => (meta, Some(id)),
+        Existing::Stopped { id, meta } => {
+            start_existing(&target, &id)?;
+            (meta, Some(id))
+        }
+        Existing::None => (None, None),
+    };
 
     if let Some(id) = container_id {
         return exec_in_container(id, found_container, &config, &cwd);
     }
 
-    let features_map = match &config {
-        devcontainer::DevcontainerConfig::Image(c) => &c.common.features,
-        devcontainer::DevcontainerConfig::Dockerfile(c) => &c.common.features,
-        devcontainer::DevcontainerConfig::DockerfileBuild(c) => &c.common.features,
-        devcontainer::DevcontainerConfig::DockerCompose(c) => &c.common.features,
-    };
+    let features_map = &config.common().features;
 
     let features_plan: Option<(features::InstallPlan, std::path::PathBuf)> =
         if !features_map.is_empty() {
@@ -341,6 +336,53 @@ fn shell(name: Option<String>) -> Result<()> {
                 .ok_or_else(|| anyhow!("Failed to get container ID from `docker compose up`"))?
         }
     };
+    if let Some(value) = config.common().post_create_command.as_ref()
+        && let Ok(cmd) = LifecycleCmd::try_from(value)
+    {
+        let workdir = config.workspace_folder(&cwd);
+        let mut children: Vec<std::process::Child> = match &cmd {
+            LifecycleCmd::Shell(s) => vec![
+                std::process::Command::new("docker")
+                    .args(["exec", "--workdir", &workdir, &id, "sh", "-c", s])
+                    .spawn()
+                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?,
+            ],
+            LifecycleCmd::Exec(args) => vec![
+                std::process::Command::new("docker")
+                    .args(["exec", "--workdir", &workdir, &id])
+                    .args(args)
+                    .spawn()
+                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?,
+            ],
+            LifecycleCmd::Parallel(cmds) => cmds
+                .iter()
+                .map(|c| {
+                    let mut proc = std::process::Command::new("docker");
+                    proc.args(["exec", "--workdir", &workdir, &id]);
+                    match c {
+                        LifecycleCmd::Shell(s) => {
+                            proc.args(["sh", "-c", s]);
+                        }
+                        LifecycleCmd::Exec(args) => {
+                            proc.args(args);
+                        }
+                        LifecycleCmd::Parallel(_) => {}
+                    }
+                    proc.spawn()
+                        .map_err(|e| anyhow!("Failed to run docker: {e}"))
+                })
+                .collect::<Result<_>>()?,
+        };
+        for child in &mut children {
+            if !child
+                .wait()
+                .map_err(|e| anyhow!("Failed to wait for postCreateCommand: {e}"))?
+                .success()
+            {
+                return Err(anyhow!("postCreateCommand failed"));
+            }
+        }
+    }
     exec_in_container(id, None, &config, &cwd)
 }
 
@@ -403,12 +445,7 @@ fn exec_in_container(
     config: &devcontainer::DevcontainerConfig,
     cwd: &std::path::Path,
 ) -> Result<()> {
-    let remote_user_from_config = match config {
-        devcontainer::DevcontainerConfig::Image(c) => c.common.remote_user.clone(),
-        devcontainer::DevcontainerConfig::Dockerfile(c) => c.common.remote_user.clone(),
-        devcontainer::DevcontainerConfig::DockerfileBuild(c) => c.common.remote_user.clone(),
-        devcontainer::DevcontainerConfig::DockerCompose(c) => c.common.remote_user.clone(),
-    };
+    let remote_user_from_config = config.common().remote_user.clone();
     let remote_user_from_container = if let Some(ref c) = found_container {
         c.remote_user.clone()
     } else {
@@ -458,20 +495,7 @@ fn exec_in_container(
             })
         })
         .unwrap_or_else(|| "/bin/sh".to_string());
-    let container_workspace_folder = match config {
-        devcontainer::DevcontainerConfig::Image(c) => c.common.workspace_folder.clone(),
-        devcontainer::DevcontainerConfig::Dockerfile(c) => c.common.workspace_folder.clone(),
-        devcontainer::DevcontainerConfig::DockerfileBuild(c) => c.common.workspace_folder.clone(),
-        devcontainer::DevcontainerConfig::DockerCompose(c) => Some(c.workspace_folder.clone()),
-    }
-    .unwrap_or_else(|| {
-        format!(
-            "/workspaces/{}",
-            cwd.file_name().unwrap_or_default().to_string_lossy()
-        )
-    });
-    let container_workspace_folder =
-        devcontainer::expand_variables(&container_workspace_folder, cwd, "", &Default::default());
+    let container_workspace_folder = config.workspace_folder(cwd);
     let container_env: std::collections::HashMap<String, String> =
         std::process::Command::new("docker")
             .args(["exec", &id, "printenv"])
@@ -491,12 +515,7 @@ fn exec_in_container(
                     .collect()
             })
             .unwrap_or_default();
-    let remote_env = match config {
-        devcontainer::DevcontainerConfig::Image(c) => c.common.remote_env.as_ref(),
-        devcontainer::DevcontainerConfig::Dockerfile(c) => c.common.remote_env.as_ref(),
-        devcontainer::DevcontainerConfig::DockerfileBuild(c) => c.common.remote_env.as_ref(),
-        devcontainer::DevcontainerConfig::DockerCompose(c) => c.common.remote_env.as_ref(),
-    };
+    let remote_env = config.common().remote_env.as_ref();
     let mut exec_args = vec!["exec".to_string(), "-it".to_string()];
     if let Some(user) = remote_user {
         exec_args.extend(["--user".to_string(), user]);
