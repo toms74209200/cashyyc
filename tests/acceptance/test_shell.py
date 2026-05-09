@@ -54,12 +54,12 @@ def then_new_session_in_existing(workspace, config, container_id_before):
 
 
 @given(
-    parsers.parse("the config has postCreateCommand {cmd_json}"),
+    parsers.re(r"the config has (?P<field>\w+Command) (?P<cmd_json>.+)"),
     target_fixture="config",
 )
-def given_post_create_command(workspace, config, cmd_json):
+def given_lifecycle_command(workspace, config, field, cmd_json):
     cmd = json.loads(cmd_json)
-    new_config = {**config, "postCreateCommand": cmd}
+    new_config = {**config, field: cmd}
     (workspace / ".devcontainer" / "devcontainer.json").write_text(
         json.dumps(new_config)
     )
