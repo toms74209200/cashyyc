@@ -145,3 +145,17 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the file "/tmp/post-create-array-ran" exists in the container
 
+  Scenario: Execute postStartCommand as string on new container
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has postStartCommand "touch /tmp/post-start-ran"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/post-start-ran" exists in the container
+
+  Scenario: Execute postStartCommand as string on container restart
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And a stopped container exists for this config
+    And the config has postStartCommand "touch /tmp/post-start-restart-ran"
+    When running "cyyc shell"
+    Then the file "/tmp/post-start-restart-ran" exists in the container
+
