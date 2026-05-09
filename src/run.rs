@@ -48,6 +48,12 @@ fn shell(name: Option<String>) -> Result<()> {
         Existing::Running { id, meta } => (meta, Some(id)),
         Existing::Stopped { id, meta } => {
             start_existing(&target, &id)?;
+            if let Some(value) = config.common().post_start_command.as_ref()
+                && let Ok(cmd) = LifecycleCmd::try_from(value)
+            {
+                let workdir = config.workspace_folder(&cwd);
+                run_lifecycle_in_container(&cmd, &id, &workdir, "postStartCommand")?;
+            }
             (meta, Some(id))
         }
         Existing::None => (None, None),
@@ -382,6 +388,12 @@ fn shell(name: Option<String>) -> Result<()> {
                 return Err(anyhow!("postCreateCommand failed"));
             }
         }
+    }
+    if let Some(value) = config.common().post_start_command.as_ref()
+        && let Ok(cmd) = LifecycleCmd::try_from(value)
+    {
+        let workdir = config.workspace_folder(&cwd);
+        run_lifecycle_in_container(&cmd, &id, &workdir, "postStartCommand")?;
     }
     exec_in_container(id, None, &config, &cwd)
 }
@@ -909,6 +921,57 @@ fn single_lookup(
         config_path,
         cwd,
     ))
+}
+
+fn run_lifecycle_in_container(
+    cmd: &LifecycleCmd,
+    container_id: &str,
+    workdir: &str,
+    name: &str,
+) -> Result<()> {
+    let mut children: Vec<std::process::Child> = match cmd {
+        LifecycleCmd::Shell(s) => vec![
+            std::process::Command::new("docker")
+                .args(["exec", "--workdir", workdir, container_id, "sh", "-c", s])
+                .spawn()
+                .map_err(|e| anyhow!("Failed to run docker: {e}"))?,
+        ],
+        LifecycleCmd::Exec(args) => vec![
+            std::process::Command::new("docker")
+                .args(["exec", "--workdir", workdir, container_id])
+                .args(args)
+                .spawn()
+                .map_err(|e| anyhow!("Failed to run docker: {e}"))?,
+        ],
+        LifecycleCmd::Parallel(cmds) => cmds
+            .iter()
+            .map(|c| {
+                let mut proc = std::process::Command::new("docker");
+                proc.args(["exec", "--workdir", workdir, container_id]);
+                match c {
+                    LifecycleCmd::Shell(s) => {
+                        proc.args(["sh", "-c", s]);
+                    }
+                    LifecycleCmd::Exec(args) => {
+                        proc.args(args);
+                    }
+                    LifecycleCmd::Parallel(_) => {}
+                }
+                proc.spawn()
+                    .map_err(|e| anyhow!("Failed to run docker: {e}"))
+            })
+            .collect::<Result<_>>()?,
+    };
+    for child in &mut children {
+        if !child
+            .wait()
+            .map_err(|e| anyhow!("Failed to wait for {name}: {e}"))?
+            .success()
+        {
+            return Err(anyhow!("{name} failed"));
+        }
+    }
+    Ok(())
 }
 
 fn start_existing(target: &ContainerTarget, id: &str) -> Result<()> {
