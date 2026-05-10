@@ -5,6 +5,7 @@ use crate::features;
 use crate::lifecycle::LifecycleCmd;
 use crate::setup;
 use crate::setup::ContainerTarget;
+use crate::uid::{UidContext, UidUpdate};
 use anyhow::{Result, anyhow};
 
 pub fn run(args: Vec<String>) -> Result<()> {
@@ -194,9 +195,59 @@ fn shell(name: Option<String>) -> Result<()> {
                     devcontainer::DevcontainerConfig::DockerCompose(_) => unreachable!(),
                 }
             }
+            #[cfg(target_os = "linux")]
+            let image_tag = {
+                use std::os::unix::fs::MetadataExt;
+                let image_user = std::process::Command::new("docker")
+                    .args(["inspect", "--format", "{{.Config.User}}", &s.image_tag])
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default();
+                let meta = std::fs::metadata("/proc/self")
+                    .map_err(|e| anyhow!("Failed to get process metadata: {e}"))?;
+                let host_uid = meta.uid();
+                let host_gid = meta.gid();
+                match UidUpdate::resolve(
+                    UidContext::Single {
+                        base_image: &s.image_tag,
+                        image_user: &image_user,
+                    },
+                    config.common(),
+                    host_uid,
+                    host_gid,
+                    &cwd,
+                ) {
+                    Some(update) => {
+                        if let UidUpdate::Single {
+                            uid_tag,
+                            remote_user,
+                            new_uid,
+                            new_gid,
+                            image_user: img_user,
+                        } = &update
+                        {
+                            run_uid_docker_build(
+                                uid_tag,
+                                remote_user,
+                                *new_uid,
+                                *new_gid,
+                                img_user,
+                                &s.image_tag,
+                            )?;
+                        }
+                        update.uid_tag().to_string()
+                    }
+                    None => s.image_tag.clone(),
+                }
+            };
+            #[cfg(not(target_os = "linux"))]
+            let image_tag = s.image_tag.clone();
+
             let mut run_args = s.run_args;
             run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
-            run_args.push(s.image_tag.clone());
+            run_args.push(image_tag.clone());
             let image_config = if s.override_command == Some(false) {
                 let output = std::process::Command::new("docker")
                     .args([
@@ -204,7 +255,7 @@ fn shell(name: Option<String>) -> Result<()> {
                         "inspect",
                         "--format",
                         "{{json .Config}}",
-                        &s.image_tag,
+                        &image_tag,
                     ])
                     .output()
                     .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
@@ -301,7 +352,75 @@ fn shell(name: Option<String>) -> Result<()> {
                     .unwrap_or_default()
                     .as_millis();
                 let p = compose_dir.join(format!("{}-{}.yml", c.project_name, timestamp));
-                std::fs::write(&p, &c.override_content)
+                #[cfg(target_os = "linux")]
+                let override_content = if !no_recreate {
+                    (|| -> Option<String> {
+                        use std::os::unix::fs::MetadataExt;
+                        let out = std::process::Command::new("docker")
+                            .arg("compose")
+                            .args(&c.global_args)
+                            .args(["config", "--format", "json"])
+                            .output()
+                            .ok()
+                            .filter(|o| o.status.success())?;
+                        let cfg: devcontainer::ComposeResolved =
+                            serde_json::from_slice(&out.stdout).ok()?;
+                        let image = match cfg.services.get(&c.service)?.feature_base_source() {
+                            devcontainer::FeatureBaseSource::Image(img) => img,
+                            devcontainer::FeatureBaseSource::DockerfilePath(_) => return None,
+                        };
+                        let image_user = std::process::Command::new("docker")
+                            .args(["inspect", "--format", "{{.Config.User}}", &image])
+                            .output()
+                            .ok()
+                            .filter(|o| o.status.success())
+                            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                            .unwrap_or_default();
+                        let meta = std::fs::metadata("/proc/self").ok()?;
+                        let host_uid = meta.uid();
+                        let host_gid = meta.gid();
+                        let update = UidUpdate::resolve(
+                            UidContext::Compose {
+                                override_content: &c.override_content,
+                                service: &c.service,
+                                image: &image,
+                                image_user: &image_user,
+                            },
+                            config.common(),
+                            host_uid,
+                            host_gid,
+                            &cwd,
+                        )?;
+                        if let UidUpdate::Compose {
+                            uid_tag,
+                            remote_user,
+                            new_uid,
+                            new_gid,
+                            image_user: img_user,
+                            override_content: new_content,
+                        } = update
+                        {
+                            run_uid_docker_build(
+                                &uid_tag,
+                                &remote_user,
+                                new_uid,
+                                new_gid,
+                                &img_user,
+                                &image,
+                            )
+                            .ok()?;
+                            Some(new_content)
+                        } else {
+                            None
+                        }
+                    })()
+                    .unwrap_or_else(|| c.override_content.clone())
+                } else {
+                    c.override_content.clone()
+                };
+                #[cfg(not(target_os = "linux"))]
+                let override_content = c.override_content.clone();
+                std::fs::write(&p, &override_content)
                     .map_err(|e| anyhow!("Failed to write compose override file: {e}"))?;
                 if !no_recreate {
                     let mut build_args = c.global_args.clone();
@@ -982,6 +1101,50 @@ fn run_lifecycle_in_container(
         {
             return Err(anyhow!("{name} failed"));
         }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn run_uid_docker_build(
+    uid_tag: &str,
+    remote_user: &str,
+    new_uid: u32,
+    new_gid: u32,
+    image_user: &str,
+    base_image: &str,
+) -> Result<()> {
+    let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+    let uid_dir = std::env::temp_dir()
+        .join(format!("cyyc-{username}"))
+        .join("uid");
+    std::fs::create_dir_all(&uid_dir).map_err(|e| anyhow!("Failed to create uid temp dir: {e}"))?;
+    let dockerfile_path = uid_dir.join("updateUID.Dockerfile");
+    std::fs::write(&dockerfile_path, crate::uid::UPDATE_UID_DOCKERFILE)
+        .map_err(|e| anyhow!("Failed to write updateUID.Dockerfile: {e}"))?;
+    let status = std::process::Command::new("docker")
+        .args([
+            "build",
+            "-f",
+            &dockerfile_path.display().to_string(),
+            "-t",
+            uid_tag,
+            "--build-arg",
+            &format!("BASE_IMAGE={base_image}"),
+            "--build-arg",
+            &format!("REMOTE_USER={remote_user}"),
+            "--build-arg",
+            &format!("NEW_UID={new_uid}"),
+            "--build-arg",
+            &format!("NEW_GID={new_gid}"),
+            "--build-arg",
+            &format!("IMAGE_USER={image_user}"),
+            &uid_dir.display().to_string(),
+        ])
+        .status()
+        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+    if !status.success() {
+        return Err(anyhow!("`docker build` for UID update failed"));
     }
     Ok(())
 }

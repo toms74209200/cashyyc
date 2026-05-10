@@ -68,6 +68,7 @@ pub struct CommonConfig {
     pub security_opt: Vec<String>,
     pub remote_env: Option<HashMap<String, Option<String>>>,
     pub remote_user: Option<String>,
+    #[serde(rename = "updateRemoteUserUID")]
     pub update_remote_user_uid: Option<bool>,
     pub user_env_probe: Option<UserEnvProbe>,
     #[serde(default)]
