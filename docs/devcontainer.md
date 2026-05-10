@@ -265,6 +265,39 @@ services:
     user: <containerUser>   # containerUser が指定された場合のみ
 ```
 
+### updateRemoteUserUid
+
+定義: `devcontainers/cli` `src/spec-node/containerFeatures.ts`、`scripts/updateUID.Dockerfile`
+
+`updateRemoteUserUID`（デフォルト `true`）が有効な場合、コンテナ起動前にホストユーザーの UID/GID をコンテナユーザーへ反映した新しいイメージをビルドする。**Linux 限定**（macOS は別フラグで任意有効化）。
+
+#### 処理方式
+
+`docker run` 内で `usermod` / `groupmod` を実行するのではなく、`updateUID.Dockerfile` を `docker build` して **新しいイメージレイヤーを生成する**。ビルド引数として `REMOTE_USER`・`NEW_UID`（ホストの UID）・`NEW_GID`（ホストの GID）・`IMAGE_USER`（イメージの `USER` 命令の値）を渡す。Dockerfile 内では `/etc/passwd`・`/etc/group` を書き換え、ホームフォルダを `chown` する。
+
+- **Single コンテナ**: 更新後のイメージ名で `docker run` を実行する
+- **DockerCompose**: 更新後のイメージ名を compose override ファイルの `image:` フィールドに設定し、`docker compose up` で使用する
+
+#### スキップ条件
+
+以下のいずれかに該当する場合は UID 更新をスキップし、元のイメージをそのまま使う:
+
+| 条件 | 挙動 |
+|---|---|
+| `remoteUser` が `root` | スキップ |
+| `remoteUser` が数値のみ（`/^\d+$/`） | スキップ |
+| UID・GID がすでに一致 | スキップ |
+| 同じ UID を持つ別ユーザーが存在 | スキップ |
+| 同じ GID を持つ別グループが存在 | GID の変更のみスキップ（UID は更新する） |
+
+#### remoteUser の解決順序（updateRemoteUserUid 用）
+
+1. `devcontainer.json` の `remoteUser`
+2. `runArgs` の `--user` / `-u`（Single）または compose ファイルの `user:` フィールド（Compose）
+3. イメージの `USER` 命令（`docker inspect` の `.Config.User`）
+
+上記が `root`・空・未指定の場合はスキップ。
+
 ### ログインシェルの解決
 
 `docker exec` で使用するシェルは以下の優先順位で決定される（`devcontainers/cli` `src/spec-common/injectHeadless.ts`）:
