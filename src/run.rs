@@ -60,6 +60,12 @@ fn shell(name: Option<String>) -> Result<()> {
     };
 
     if let Some(id) = container_id {
+        if let Some(value) = config.common().post_attach_command.as_ref()
+            && let Ok(cmd) = LifecycleCmd::try_from(value)
+        {
+            let workdir = config.workspace_folder(&cwd);
+            run_lifecycle_in_container(&cmd, &id, &workdir, "postAttachCommand")?;
+        }
         return exec_in_container(id, found_container, &config, &cwd);
     }
 
@@ -394,6 +400,12 @@ fn shell(name: Option<String>) -> Result<()> {
     {
         let workdir = config.workspace_folder(&cwd);
         run_lifecycle_in_container(&cmd, &id, &workdir, "postStartCommand")?;
+    }
+    if let Some(value) = config.common().post_attach_command.as_ref()
+        && let Ok(cmd) = LifecycleCmd::try_from(value)
+    {
+        let workdir = config.workspace_folder(&cwd);
+        run_lifecycle_in_container(&cmd, &id, &workdir, "postAttachCommand")?;
     }
     exec_in_container(id, None, &config, &cwd)
 }
