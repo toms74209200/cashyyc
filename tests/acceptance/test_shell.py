@@ -92,3 +92,40 @@ def then_command_succeeds(workspace, config, cmd):
     assert result.returncode == 0, (
         f"command failed (stdout={result.stdout!r}, stderr={result.stderr!r})"
     )
+
+
+@then(parsers.parse('the container user "{user}" UID matches the host UID'))
+def then_container_user_uid_matches_host(workspace, config, user):
+    if "dockerComposeFile" in config:
+        container_id = container_id_by_compose(workspace)
+    else:
+        container_id = container_id_by_devcontainer(workspace)
+    assert container_id, "no running container found"
+    host_uid = subprocess.run(
+        ["id", "-u"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    container_uid = subprocess.run(
+        ["docker", "exec", container_id, "id", "-u", user],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert container_uid == host_uid, (
+        f"expected container user {user!r} UID {container_uid!r} to match host UID {host_uid!r}"
+    )
+
+
+@then(parsers.parse('the container user "{user}" UID is "{expected_uid}"'))
+def then_container_user_uid_is(workspace, config, user, expected_uid):
+    if "dockerComposeFile" in config:
+        container_id = container_id_by_compose(workspace)
+    else:
+        container_id = container_id_by_devcontainer(workspace)
+    assert container_id, "no running container found"
+    container_uid = subprocess.run(
+        ["docker", "exec", container_id, "id", "-u", user],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert container_uid == expected_uid, (
+        f"expected container user {user!r} UID {container_uid!r} to be {expected_uid!r}"
+    )

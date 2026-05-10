@@ -272,3 +272,27 @@ def then_exits_successfully(run_result):
         f"expected zero exit, got {run_result['returncode']}: "
         f"stdout={run_result['stdout']!r}, stderr={run_result['stderr']!r}"
     )
+
+
+@given(
+    parsers.parse('the config has remoteUser "{value}"'),
+    target_fixture="config",
+)
+def given_remote_user(workspace, config, value):
+    new_config = {**config, "remoteUser": value}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse("the config has updateRemoteUserUID false"),
+    target_fixture="config",
+)
+def given_update_remote_user_uid_false(workspace, config):
+    new_config = {**config, "updateRemoteUserUID": False}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
