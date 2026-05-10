@@ -187,3 +187,37 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the file "/tmp/post-attach-restart-ran" exists in the container
 
+  Scenario: updateRemoteUserUid syncs host UID to container user for Single config
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has remoteUser "vscode"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container user "vscode" UID matches the host UID
+
+  Scenario: updateRemoteUserUid syncs host UID to container user for Compose config
+    Given a devcontainer config using docker-compose service "app" with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has remoteUser "vscode"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container user "vscode" UID matches the host UID
+
+  Scenario: updateRemoteUserUid false skips UID sync for Single config
+    Given a devcontainer config with Dockerfile:
+      """
+      FROM mcr.microsoft.com/devcontainers/base:debian
+      RUN usermod -u 9999 vscode
+      """
+    And the config has remoteUser "vscode"
+    And the config has updateRemoteUserUID false
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container user "vscode" UID is "9999"
+
+  Scenario: updateRemoteUserUid false skips UID sync for Compose config
+    Given a devcontainer config using docker-compose service "app" with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has remoteUser "vscode"
+    And the config has updateRemoteUserUID false
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container user "vscode" UID is "1000"
+
