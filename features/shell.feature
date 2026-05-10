@@ -159,3 +159,31 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the file "/tmp/post-start-restart-ran" exists in the container
 
+  Scenario: Execute postAttachCommand as string on new container
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has postAttachCommand "touch /tmp/post-attach-ran"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/post-attach-ran" exists in the container
+
+  Scenario: Execute postAttachCommand as array on new container
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has postAttachCommand ["touch", "/tmp/post-attach-array-ran"]
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/post-attach-array-ran" exists in the container
+
+  Scenario: Execute postAttachCommand on running container
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And a running container exists for this config
+    And the config has postAttachCommand "touch /tmp/post-attach-running-ran"
+    When running "cyyc shell"
+    Then the file "/tmp/post-attach-running-ran" exists in the container
+
+  Scenario: Execute postAttachCommand on container restart
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And a stopped container exists for this config
+    And the config has postAttachCommand "touch /tmp/post-attach-restart-ran"
+    When running "cyyc shell"
+    Then the file "/tmp/post-attach-restart-ran" exists in the container
+
