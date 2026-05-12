@@ -129,3 +129,39 @@ def then_container_user_uid_is(workspace, config, user, expected_uid):
     assert container_uid == expected_uid, (
         f"expected container user {user!r} UID {container_uid!r} to be {expected_uid!r}"
     )
+
+
+@given(parsers.parse("the config has appPort {value}"), target_fixture="config")
+def given_app_port(workspace, config, value):
+    app_port = json.loads(value)
+    new_config = {**config, "appPort": app_port}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@then(parsers.parse("the container has port {port:d} bound to {host_ip}"))
+def then_port_bound_to(workspace, config, port, host_ip):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    result = subprocess.run(
+        ["docker", "port", cid, str(port)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0 and host_ip in result.stdout, (
+        f"port {port} not bound to {host_ip}: {result.stdout!r}"
+    )
+
+
+@then(parsers.parse("the container has port {port:d} bound"))
+def then_port_bound(workspace, config, port):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    result = subprocess.run(
+        ["docker", "port", cid, str(port)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0 and result.stdout.strip(), f"port {port} is not bound"
