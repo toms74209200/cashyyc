@@ -1,6 +1,6 @@
 use crate::devcontainer::{
-    CommonConfig, ComposeArgs, DevcontainerConfig, DockerfileBuildConfig, DockerfileConfig,
-    ImageConfig, compose_args, container_run_options, expand_variables,
+    AppPort, CommonConfig, ComposeArgs, DevcontainerConfig, DockerfileBuildConfig,
+    DockerfileConfig, ImageConfig, compose_args, container_run_options, expand_variables,
 };
 use crate::docker;
 use std::path::Path;
@@ -43,6 +43,7 @@ pub fn from_image(c: &ImageConfig, cwd: &Path, config_path: &Path) -> ContainerS
         dockerfile: None,
         run_args: run_args_for(
             &c.common,
+            &c.app_port,
             &c.run_args,
             c.workspace_mount.as_deref(),
             cwd,
@@ -59,6 +60,7 @@ pub fn from_dockerfile(c: &DockerfileConfig, cwd: &Path, config_path: &Path) -> 
         dockerfile: Some(config_dir.join(&c.docker_file)),
         run_args: run_args_for(
             &c.common,
+            &c.app_port,
             &c.run_args,
             c.workspace_mount.as_deref(),
             cwd,
@@ -85,6 +87,7 @@ pub fn from_dockerfile_build(
         dockerfile: Some(context.join(c.build.dockerfile.as_deref().unwrap_or("Dockerfile"))),
         run_args: run_args_for(
             &c.common,
+            &c.app_port,
             &c.run_args,
             c.workspace_mount.as_deref(),
             cwd,
@@ -96,6 +99,7 @@ pub fn from_dockerfile_build(
 
 fn run_args_for(
     common: &CommonConfig,
+    app_port: &[AppPort],
     run_args: &[String],
     raw_workspace_mount: Option<&str>,
     cwd: &Path,
@@ -111,6 +115,7 @@ fn run_args_for(
         .map(|m| expand_variables(m, cwd, &workspace_folder, &Default::default()));
     container_run_options(
         common,
+        app_port,
         run_args,
         workspace_mount.as_deref(),
         cwd,
@@ -160,7 +165,7 @@ mod tests {
     fn empty_image_config(image: &str) -> ImageConfig {
         ImageConfig {
             image: image.to_string(),
-            app_port: None,
+            app_port: vec![],
             run_args: vec![],
             workspace_mount: None,
             shutdown_action: None,
@@ -173,7 +178,7 @@ mod tests {
             docker_file: "Dockerfile".to_string(),
             context: None,
             build: None,
-            app_port: None,
+            app_port: vec![],
             run_args: vec![],
             workspace_mount: None,
             shutdown_action: None,
@@ -191,7 +196,7 @@ mod tests {
                 cache_from: None,
                 options: vec![],
             },
-            app_port: None,
+            app_port: vec![],
             run_args: vec![],
             workspace_mount: None,
             shutdown_action: None,
