@@ -270,7 +270,7 @@ mod tests {
                     args: ref a,
                     ..
                 },
-                app_port: Some(_),
+                app_port: ref ap,
                 run_args: ref ra,
                 workspace_mount: Some(_),
                 shutdown_action: Some(ref sa),

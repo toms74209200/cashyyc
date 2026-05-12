@@ -221,3 +221,17 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the container user "vscode" UID is "1000"
 
+
+  Scenario: Expose a numeric appPort on loopback
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has appPort 8080
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has port 8080 bound to 127.0.0.1
+
+  Scenario: Expose a string appPort mapping as-is
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has appPort "9000:9000"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has port 9000 bound

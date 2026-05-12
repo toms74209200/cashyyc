@@ -2,6 +2,41 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct AppPort(pub String);
+
+fn deserialize_app_port<'de, D>(deserializer: D) -> Result<Vec<AppPort>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum PortSpec {
+        Number(u64),
+        Str(String),
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum SingleOrVec {
+        Single(PortSpec),
+        Vec(Vec<PortSpec>),
+    }
+
+    fn normalize(p: PortSpec) -> AppPort {
+        match p {
+            PortSpec::Number(n) => AppPort(format!("127.0.0.1:{}:{}", n, n)),
+            PortSpec::Str(s) => AppPort(s),
+        }
+    }
+
+    match Option::<SingleOrVec>::deserialize(deserializer)? {
+        None => Ok(vec![]),
+        Some(SingleOrVec::Single(p)) => Ok(vec![normalize(p)]),
+        Some(SingleOrVec::Vec(arr)) => Ok(arr.into_iter().map(normalize).collect()),
+    }
+}
+
 #[derive(Debug, Deserialize, PartialEq, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum UserEnvProbe {
@@ -114,7 +149,8 @@ pub struct DockerfileConfig {
     pub docker_file: String,
     pub context: Option<String>,
     pub build: Option<BuildConfig>,
-    pub app_port: Option<Value>,
+    #[serde(default, deserialize_with = "deserialize_app_port")]
+    pub app_port: Vec<AppPort>,
     #[serde(default)]
     pub run_args: Vec<String>,
     pub workspace_mount: Option<String>,
@@ -127,7 +163,8 @@ pub struct DockerfileConfig {
 #[serde(rename_all = "camelCase")]
 pub struct DockerfileBuildConfig {
     pub build: BuildConfig,
-    pub app_port: Option<Value>,
+    #[serde(default, deserialize_with = "deserialize_app_port")]
+    pub app_port: Vec<AppPort>,
     #[serde(default)]
     pub run_args: Vec<String>,
     pub workspace_mount: Option<String>,
@@ -140,7 +177,8 @@ pub struct DockerfileBuildConfig {
 #[serde(rename_all = "camelCase")]
 pub struct ImageConfig {
     pub image: String,
-    pub app_port: Option<Value>,
+    #[serde(default, deserialize_with = "deserialize_app_port")]
+    pub app_port: Vec<AppPort>,
     #[serde(default)]
     pub run_args: Vec<String>,
     pub workspace_mount: Option<String>,
@@ -222,6 +260,53 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn when_deserialize_app_port_with_number_then_normalizes_to_loopback_mapping() {
+        let result = deserialize_app_port(&mut serde_json::Deserializer::from_str("8080")).unwrap();
+        assert_eq!(result, vec![AppPort("127.0.0.1:8080:8080".to_string())]);
+    }
+
+    #[test]
+    fn when_deserialize_app_port_with_string_then_uses_as_is() {
+        let result =
+            deserialize_app_port(&mut serde_json::Deserializer::from_str(r#""8080:80""#)).unwrap();
+        assert_eq!(result, vec![AppPort("8080:80".to_string())]);
+    }
+
+    #[test]
+    fn when_deserialize_app_port_with_array_of_numbers_then_normalizes_each() {
+        let result =
+            deserialize_app_port(&mut serde_json::Deserializer::from_str("[3000, 4000]")).unwrap();
+        assert_eq!(
+            result,
+            vec![
+                AppPort("127.0.0.1:3000:3000".to_string()),
+                AppPort("127.0.0.1:4000:4000".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn when_deserialize_app_port_with_array_of_strings_then_uses_each_as_is() {
+        let result = deserialize_app_port(&mut serde_json::Deserializer::from_str(
+            r#"["3000:3000", "4000:80"]"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            result,
+            vec![
+                AppPort("3000:3000".to_string()),
+                AppPort("4000:80".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn when_deserialize_app_port_with_null_then_returns_empty() {
+        let result = deserialize_app_port(&mut serde_json::Deserializer::from_str("null")).unwrap();
+        assert_eq!(result, vec![]);
+    }
 
     #[test]
     fn when_deserialize_string_or_vec_with_string_then_returns_single_element_vec() {
@@ -314,7 +399,7 @@ mod tests {
     fn when_common_for_image_then_returns_image_common() {
         let config = DevcontainerConfig::Image(ImageConfig {
             image: "img".to_string(),
-            app_port: None,
+            app_port: vec![],
             run_args: vec![],
             workspace_mount: None,
             shutdown_action: None,
@@ -332,7 +417,7 @@ mod tests {
             docker_file: "Dockerfile".to_string(),
             context: None,
             build: None,
-            app_port: None,
+            app_port: vec![],
             run_args: vec![],
             workspace_mount: None,
             shutdown_action: None,
@@ -348,7 +433,7 @@ mod tests {
     fn when_common_for_dockerfile_build_then_returns_dockerfile_build_common() {
         let config = DevcontainerConfig::DockerfileBuild(DockerfileBuildConfig {
             build: empty_build(),
-            app_port: None,
+            app_port: vec![],
             run_args: vec![],
             workspace_mount: None,
             shutdown_action: None,
@@ -380,7 +465,7 @@ mod tests {
     fn when_workspace_folder_with_explicit_path_then_returns_it() {
         let config = DevcontainerConfig::Image(ImageConfig {
             image: "img".to_string(),
-            app_port: None,
+            app_port: vec![],
             run_args: vec![],
             workspace_mount: None,
             shutdown_action: None,
@@ -399,7 +484,7 @@ mod tests {
     fn when_workspace_folder_without_explicit_path_then_uses_cwd_basename() {
         let config = DevcontainerConfig::Image(ImageConfig {
             image: "img".to_string(),
-            app_port: None,
+            app_port: vec![],
             run_args: vec![],
             workspace_mount: None,
             shutdown_action: None,
@@ -417,7 +502,7 @@ mod tests {
             docker_file: "Dockerfile".to_string(),
             context: None,
             build: None,
-            app_port: None,
+            app_port: vec![],
             run_args: vec![],
             workspace_mount: None,
             shutdown_action: None,
@@ -436,7 +521,7 @@ mod tests {
     fn when_workspace_folder_for_dockerfile_build_variant_with_explicit_path_then_returns_it() {
         let config = DevcontainerConfig::DockerfileBuild(DockerfileBuildConfig {
             build: empty_build(),
-            app_port: None,
+            app_port: vec![],
             run_args: vec![],
             workspace_mount: None,
             shutdown_action: None,
@@ -455,7 +540,7 @@ mod tests {
     fn when_workspace_folder_with_local_workspace_folder_basename_variable_then_expands_it() {
         let config = DevcontainerConfig::Image(ImageConfig {
             image: "img".to_string(),
-            app_port: None,
+            app_port: vec![],
             run_args: vec![],
             workspace_mount: None,
             shutdown_action: None,

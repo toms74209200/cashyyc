@@ -1,4 +1,4 @@
-use super::config::{BuildConfig, CommonConfig, DockerfileConfig};
+use super::config::{AppPort, BuildConfig, CommonConfig, DockerfileConfig};
 use std::path::Path;
 
 pub fn normalize_dockerfile_config(config: &DockerfileConfig) -> BuildConfig {
@@ -85,6 +85,7 @@ pub fn container_start_args(
 
 pub fn container_run_options(
     common: &CommonConfig,
+    app_port: &[AppPort],
     run_args: &[String],
     workspace_mount: Option<&str>,
     local_folder: &Path,
@@ -148,6 +149,10 @@ pub fn container_run_options(
         args.extend(["--security-opt".to_string(), opt.clone()]);
     }
 
+    for port in app_port {
+        args.extend(["-p".to_string(), port.0.clone()]);
+    }
+
     args.extend(run_args.iter().cloned());
 
     args
@@ -196,7 +201,7 @@ mod tests {
             docker_file: docker_file.to_string(),
             context: None,
             build: None,
-            app_port: None,
+            app_port: vec![],
             run_args: vec![],
             workspace_mount: None,
             shutdown_action: None,
@@ -220,6 +225,7 @@ mod tests {
         let args = container_run_options(
             &empty_common(),
             &[],
+            &[],
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -231,6 +237,7 @@ mod tests {
     fn when_container_run_options_then_includes_local_folder_label() {
         let args = container_run_options(
             &empty_common(),
+            &[],
             &[],
             None,
             Path::new("/home/user/project"),
@@ -247,6 +254,7 @@ mod tests {
     fn when_container_run_options_then_includes_config_file_label() {
         let args = container_run_options(
             &empty_common(),
+            &[],
             &[],
             None,
             Path::new("/home/user/project"),
@@ -268,6 +276,7 @@ mod tests {
         let args = container_run_options(
             &empty_common(),
             &[],
+            &[],
             None,
             Path::new("/home/user/myproject"),
             Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
@@ -283,6 +292,7 @@ mod tests {
         let args = container_run_options(
             &common,
             &[],
+            &[],
             None,
             Path::new("/home/user/project"),
             Path::new("/home/user/project/.devcontainer/devcontainer.json"),
@@ -296,6 +306,7 @@ mod tests {
     {
         let args = container_run_options(
             &empty_common(),
+            &[],
             &[],
             None,
             Path::new("/home/user/myproject"),
@@ -314,6 +325,7 @@ mod tests {
         let args = container_run_options(
             &empty_common(),
             &[],
+            &[],
             Some(custom_mount),
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -331,6 +343,7 @@ mod tests {
         let args = container_run_options(
             &common,
             &[],
+            &[],
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -345,6 +358,7 @@ mod tests {
         common.container_user = Some("vscode".to_string());
         let args = container_run_options(
             &common,
+            &[],
             &[],
             None,
             Path::new("/project"),
@@ -361,6 +375,7 @@ mod tests {
         let args = container_run_options(
             &common,
             &[],
+            &[],
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -374,6 +389,7 @@ mod tests {
         common.init = Some(false);
         let args = container_run_options(
             &common,
+            &[],
             &[],
             None,
             Path::new("/project"),
@@ -389,6 +405,7 @@ mod tests {
         let args = container_run_options(
             &common,
             &[],
+            &[],
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -402,6 +419,7 @@ mod tests {
         common.cap_add = vec!["SYS_PTRACE".to_string()];
         let args = container_run_options(
             &common,
+            &[],
             &[],
             None,
             Path::new("/project"),
@@ -418,6 +436,7 @@ mod tests {
         let args = container_run_options(
             &common,
             &[],
+            &[],
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
@@ -427,10 +446,51 @@ mod tests {
     }
 
     #[test]
+    fn when_container_run_options_with_app_port_then_includes_p_flags() {
+        let ports = vec![AppPort("127.0.0.1:8080:8080".to_string())];
+        let args = container_run_options(
+            &empty_common(),
+            &ports,
+            &[],
+            None,
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+        );
+        let p_idx = args.iter().position(|a| a == "-p").unwrap();
+        assert_eq!(args[p_idx + 1], "127.0.0.1:8080:8080");
+    }
+
+    #[test]
+    fn when_container_run_options_with_multiple_app_ports_then_includes_all_p_flags() {
+        let ports = vec![
+            AppPort("127.0.0.1:3000:3000".to_string()),
+            AppPort("4000:80".to_string()),
+        ];
+        let args = container_run_options(
+            &empty_common(),
+            &ports,
+            &[],
+            None,
+            Path::new("/project"),
+            Path::new("/project/.devcontainer/devcontainer.json"),
+        );
+        let p_indices: Vec<_> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "-p")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(p_indices.len(), 2);
+        assert_eq!(args[p_indices[0] + 1], "127.0.0.1:3000:3000");
+        assert_eq!(args[p_indices[1] + 1], "4000:80");
+    }
+
+    #[test]
     fn when_container_run_options_with_run_args_then_includes_them() {
         let extra = vec!["--network=host".to_string()];
         let args = container_run_options(
             &empty_common(),
+            &[],
             &extra,
             None,
             Path::new("/project"),
@@ -604,6 +664,7 @@ mod tests {
         )];
         let args = container_run_options(
             &common,
+            &[],
             &[],
             None,
             Path::new("/project"),
