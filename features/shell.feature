@@ -131,6 +131,27 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the command exits with a non-zero status
 
+  Scenario: Execute initializeCommand as string on new container
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has initializeCommand "touch .init-ran"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file ".init-ran" exists in the workspace
+
+  Scenario: Execute initializeCommand as array on new container
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has initializeCommand ["touch", ".init-array-ran"]
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file ".init-array-ran" exists in the workspace
+
+  Scenario: initializeCommand is not run when container already exists
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And a running container exists for this config
+    And the config has initializeCommand "touch .init-reuse-ran"
+    When running "cyyc shell"
+    Then the file ".init-reuse-ran" does not exist in the workspace
+
   Scenario: Execute postCreateCommand as string on new container
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
     And the config has postCreateCommand "touch /tmp/post-create-ran"

@@ -139,6 +139,48 @@ fn shell(name: Option<String>) -> Result<()> {
         target
     };
 
+    if let Some(value) = config.common().initialize_command.as_ref()
+        && let Ok(cmd) = LifecycleCmd::try_from(value)
+    {
+        let mut children: Vec<std::process::Child> = match &cmd {
+            LifecycleCmd::Shell(s) => vec![
+                std::process::Command::new("sh")
+                    .args(["-c", s])
+                    .spawn()
+                    .map_err(|e| anyhow!("Failed to run initializeCommand: {e}"))?,
+            ],
+            LifecycleCmd::Exec(args) => vec![
+                std::process::Command::new(&args[0])
+                    .args(&args[1..])
+                    .spawn()
+                    .map_err(|e| anyhow!("Failed to run initializeCommand: {e}"))?,
+            ],
+            LifecycleCmd::Parallel(cmds) => cmds
+                .iter()
+                .map(|c| match c {
+                    LifecycleCmd::Shell(s) => std::process::Command::new("sh")
+                        .args(["-c", s])
+                        .spawn()
+                        .map_err(|e| anyhow!("Failed to run initializeCommand: {e}")),
+                    LifecycleCmd::Exec(args) => std::process::Command::new(&args[0])
+                        .args(&args[1..])
+                        .spawn()
+                        .map_err(|e| anyhow!("Failed to run initializeCommand: {e}")),
+                    LifecycleCmd::Parallel(_) => unreachable!(),
+                })
+                .collect::<Result<_>>()?,
+        };
+        for child in &mut children {
+            if !child
+                .wait()
+                .map_err(|e| anyhow!("Failed to wait for initializeCommand: {e}"))?
+                .success()
+            {
+                return Err(anyhow!("initializeCommand failed"));
+            }
+        }
+    }
+
     let id: String = match target {
         ContainerTarget::Single(s) => {
             if let Some((_, ref fdir)) = features_plan {

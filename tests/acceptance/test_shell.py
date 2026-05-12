@@ -66,6 +66,18 @@ def given_lifecycle_command(workspace, config, field, cmd_json):
     return new_config
 
 
+@then(parsers.parse('the file "{path}" exists in the workspace'))
+def then_file_exists_in_workspace(workspace, path):
+    assert (workspace / path).exists(), f"file {path!r} not found in workspace"
+
+
+@then(parsers.parse('the file "{path}" does not exist in the workspace'))
+def then_file_not_exists_in_workspace(workspace, path):
+    assert not (workspace / path).exists(), (
+        f"file {path!r} unexpectedly found in workspace"
+    )
+
+
 @then(parsers.parse('the file "{path}" exists in the container'))
 def then_file_exists_in_container(workspace, config, path):
     container_id = _container_id(workspace, config)
