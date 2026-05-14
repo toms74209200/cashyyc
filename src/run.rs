@@ -509,6 +509,12 @@ fn shell(name: Option<String>) -> Result<()> {
                 .ok_or_else(|| anyhow!("Failed to get container ID from `docker compose up`"))?
         }
     };
+    if let Some(value) = config.common().on_create_command.as_ref()
+        && let Ok(cmd) = LifecycleCmd::try_from(value)
+    {
+        let workdir = config.workspace_folder(&cwd);
+        run_lifecycle_in_container(&cmd, &id, &workdir, "onCreateCommand")?;
+    }
     if let Some(value) = config.common().post_create_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {

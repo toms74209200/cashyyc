@@ -152,6 +152,20 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the file ".init-reuse-ran" does not exist in the workspace
 
+  Scenario: Execute onCreateCommand as string on new container
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has onCreateCommand "touch /tmp/on-create-ran"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/on-create-ran" exists in the container
+
+  Scenario: Execute onCreateCommand as array on new container
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has onCreateCommand ["touch", "/tmp/on-create-array-ran"]
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/on-create-array-ran" exists in the container
+
   Scenario: Execute postCreateCommand as string on new container
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
     And the config has postCreateCommand "touch /tmp/post-create-ran"
