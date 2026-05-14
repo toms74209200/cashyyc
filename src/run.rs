@@ -515,6 +515,12 @@ fn shell(name: Option<String>) -> Result<()> {
         let workdir = config.workspace_folder(&cwd);
         run_lifecycle_in_container(&cmd, &id, &workdir, "onCreateCommand")?;
     }
+    if let Some(value) = config.common().update_content_command.as_ref()
+        && let Ok(cmd) = LifecycleCmd::try_from(value)
+    {
+        let workdir = config.workspace_folder(&cwd);
+        run_lifecycle_in_container(&cmd, &id, &workdir, "updateContentCommand")?;
+    }
     if let Some(value) = config.common().post_create_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
