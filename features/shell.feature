@@ -159,6 +159,13 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the file "/tmp/on-create-ran" exists in the container
 
+  Scenario: onCreateCommand is not rerun on second shell attach
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has onCreateCommand "sh -c 'echo ran >> /tmp/on-create-count'"
+    And a running container exists for this config
+    When running "cyyc shell"
+    Then the command "[ $(wc -l < /tmp/on-create-count) -eq 1 ]" succeeds in the resulting shell
+
   Scenario: Execute onCreateCommand as array on new container
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
     And the config has onCreateCommand ["touch", "/tmp/on-create-array-ran"]
