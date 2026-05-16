@@ -58,7 +58,13 @@ fn shell(name: Option<String>) -> Result<()> {
                 && let Ok(cmd) = LifecycleCmd::try_from(value)
             {
                 let workdir = config.workspace_folder(&cwd);
-                run_lifecycle_in_container(&cmd, &id, &workdir, "postStartCommand", LifecycleMarker::Once(&started_at))?;
+                run_lifecycle_in_container(
+                    &cmd,
+                    &id,
+                    &workdir,
+                    "postStartCommand",
+                    LifecycleMarker::Once(&started_at),
+                )?;
             }
             (meta, Some(id))
         }
@@ -70,7 +76,13 @@ fn shell(name: Option<String>) -> Result<()> {
             && let Ok(cmd) = LifecycleCmd::try_from(value)
         {
             let workdir = config.workspace_folder(&cwd);
-            run_lifecycle_in_container(&cmd, &id, &workdir, "postAttachCommand", LifecycleMarker::Always)?;
+            run_lifecycle_in_container(
+                &cmd,
+                &id,
+                &workdir,
+                "postAttachCommand",
+                LifecycleMarker::Always,
+            )?;
         }
         return exec_in_container(id, found_container, &config, &cwd);
     }
@@ -528,31 +540,61 @@ fn shell(name: Option<String>) -> Result<()> {
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
         let workdir = config.workspace_folder(&cwd);
-        run_lifecycle_in_container(&cmd, &id, &workdir, "onCreateCommand", LifecycleMarker::Once(&created_at))?;
+        run_lifecycle_in_container(
+            &cmd,
+            &id,
+            &workdir,
+            "onCreateCommand",
+            LifecycleMarker::Once(&created_at),
+        )?;
     }
     if let Some(value) = config.common().update_content_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
         let workdir = config.workspace_folder(&cwd);
-        run_lifecycle_in_container(&cmd, &id, &workdir, "updateContentCommand", LifecycleMarker::Once(&created_at))?;
+        run_lifecycle_in_container(
+            &cmd,
+            &id,
+            &workdir,
+            "updateContentCommand",
+            LifecycleMarker::Once(&created_at),
+        )?;
     }
     if let Some(value) = config.common().post_create_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
         let workdir = config.workspace_folder(&cwd);
-        run_lifecycle_in_container(&cmd, &id, &workdir, "postCreateCommand", LifecycleMarker::Once(&created_at))?;
+        run_lifecycle_in_container(
+            &cmd,
+            &id,
+            &workdir,
+            "postCreateCommand",
+            LifecycleMarker::Once(&created_at),
+        )?;
     }
     if let Some(value) = config.common().post_start_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
         let workdir = config.workspace_folder(&cwd);
-        run_lifecycle_in_container(&cmd, &id, &workdir, "postStartCommand", LifecycleMarker::Once(&started_at))?;
+        run_lifecycle_in_container(
+            &cmd,
+            &id,
+            &workdir,
+            "postStartCommand",
+            LifecycleMarker::Once(&started_at),
+        )?;
     }
     if let Some(value) = config.common().post_attach_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
         let workdir = config.workspace_folder(&cwd);
-        run_lifecycle_in_container(&cmd, &id, &workdir, "postAttachCommand", LifecycleMarker::Always)?;
+        run_lifecycle_in_container(
+            &cmd,
+            &id,
+            &workdir,
+            "postAttachCommand",
+            LifecycleMarker::Always,
+        )?;
     }
     exec_in_container(id, None, &config, &cwd)
 }
