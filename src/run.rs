@@ -65,7 +65,7 @@ fn shell(name: Option<String>) -> Result<()> {
                     &workdir,
                     "postStartCommand",
                     LifecycleMarker::Once(&started_at),
-                    wait_for.as_ref().map_or(true, |wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
+                    wait_for.as_ref().is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
                 )?;
             }
             (meta, Some(id))
@@ -85,7 +85,7 @@ fn shell(name: Option<String>) -> Result<()> {
                 &workdir,
                 "postAttachCommand",
                 LifecycleMarker::Always,
-                wait_for.as_ref().map_or(true, |wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
+                wait_for.as_ref().is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
             )?;
         }
         return exec_in_container(id, found_container, &config, &cwd);
@@ -551,7 +551,7 @@ fn shell(name: Option<String>) -> Result<()> {
             &workdir,
             "onCreateCommand",
             LifecycleMarker::Once(&created_at),
-            wait_for.as_ref().map_or(true, |wf| wf.requires(&devcontainer::WaitFor::OnCreateCommand)),
+            wait_for.as_ref().is_none_or(|wf| wf.requires(&devcontainer::WaitFor::OnCreateCommand)),
         )?;
     }
     if let Some(value) = config.common().update_content_command.as_ref()
@@ -564,7 +564,7 @@ fn shell(name: Option<String>) -> Result<()> {
             &workdir,
             "updateContentCommand",
             LifecycleMarker::Once(&created_at),
-            wait_for.as_ref().map_or(true, |wf| wf.requires(&devcontainer::WaitFor::UpdateContentCommand)),
+            wait_for.as_ref().is_none_or(|wf| wf.requires(&devcontainer::WaitFor::UpdateContentCommand)),
         )?;
     }
     if let Some(value) = config.common().post_create_command.as_ref()
@@ -577,7 +577,7 @@ fn shell(name: Option<String>) -> Result<()> {
             &workdir,
             "postCreateCommand",
             LifecycleMarker::Once(&created_at),
-            wait_for.as_ref().map_or(true, |wf| wf.requires(&devcontainer::WaitFor::PostCreateCommand)),
+            wait_for.as_ref().is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostCreateCommand)),
         )?;
     }
     if let Some(value) = config.common().post_start_command.as_ref()
@@ -590,7 +590,7 @@ fn shell(name: Option<String>) -> Result<()> {
             &workdir,
             "postStartCommand",
             LifecycleMarker::Once(&started_at),
-            wait_for.as_ref().map_or(true, |wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
+            wait_for.as_ref().is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
         )?;
     }
     if let Some(value) = config.common().post_attach_command.as_ref()
@@ -603,7 +603,7 @@ fn shell(name: Option<String>) -> Result<()> {
             &workdir,
             "postAttachCommand",
             LifecycleMarker::Always,
-            wait_for.as_ref().map_or(true, |wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
+            wait_for.as_ref().is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
         )?;
     }
     exec_in_container(id, None, &config, &cwd)
