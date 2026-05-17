@@ -57,6 +57,22 @@ pub enum WaitFor {
     PostAttachCommand,
 }
 
+impl WaitFor {
+    const CHAIN: &'static [WaitFor] = &[
+        WaitFor::InitializeCommand,
+        WaitFor::OnCreateCommand,
+        WaitFor::UpdateContentCommand,
+        WaitFor::PostCreateCommand,
+        WaitFor::PostStartCommand,
+        WaitFor::PostAttachCommand,
+    ];
+
+    pub fn requires(&self, cmd: &WaitFor) -> bool {
+        let pos = |x: &WaitFor| Self::CHAIN.iter().position(|c| c == x);
+        matches!((pos(cmd), pos(self)), (Some(c), Some(s)) if c <= s)
+    }
+}
+
 #[derive(Debug, Deserialize, PartialEq, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PortAttributes {

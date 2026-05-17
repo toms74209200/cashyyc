@@ -243,6 +243,30 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the file "/tmp/post-attach-restart-ran" exists in the container
 
+  Scenario: waitFor onCreateCommand blocks on onCreateCommand
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has waitFor "onCreateCommand"
+    And the config has onCreateCommand "touch /tmp/wait-for-on-create-ran"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/wait-for-on-create-ran" exists in the container
+
+  Scenario: waitFor postCreateCommand blocks on postCreateCommand
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has waitFor "postCreateCommand"
+    And the config has postCreateCommand "touch /tmp/wait-for-post-create-ran"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/wait-for-post-create-ran" exists in the container
+
+  Scenario: waitFor onCreateCommand does not block on updateContentCommand
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has waitFor "onCreateCommand"
+    And the config has updateContentCommand "touch /tmp/wait-for-async-update-ran"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/wait-for-async-update-ran" eventually exists in the container
+
   Scenario: updateRemoteUserUid syncs host UID to container user for Single config
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
     And the config has remoteUser "vscode"
