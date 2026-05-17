@@ -1,5 +1,6 @@
 import json
 import subprocess
+import time
 
 from pytest_bdd import given, parsers, scenarios, then
 
@@ -87,6 +88,34 @@ def then_file_exists_in_container(workspace, config, path):
         capture_output=True,
     )
     assert result.returncode == 0, f"file {path!r} not found in container"
+
+
+@given(
+    parsers.re(r'the config has waitFor "(?P<value>\w+)"'),
+    target_fixture="config",
+)
+def given_wait_for(workspace, config, value):
+    new_config = {**config, "waitFor": value}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@then(parsers.parse('the file "{path}" eventually exists in the container'))
+def then_file_eventually_exists_in_container(workspace, config, path):
+    container_id = _container_id(workspace, config)
+    assert container_id, "no running container found"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            ["docker", "exec", container_id, "test", "-f", path],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return
+        time.sleep(0.5)
+    raise AssertionError(f"file {path!r} not found in container after 10s")
 
 
 @then(parsers.parse('the command "{cmd}" succeeds in the resulting shell'))
