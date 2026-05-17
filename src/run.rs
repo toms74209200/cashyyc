@@ -54,6 +54,7 @@ fn shell(name: Option<String>) -> Result<()> {
                 .output()
                 .map_err(|e| anyhow!("Failed to run docker: {e}"))
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
+            let wait_for = config.common().wait_for.clone();
             if let Some(value) = config.common().post_start_command.as_ref()
                 && let Ok(cmd) = LifecycleCmd::try_from(value)
             {
@@ -64,6 +65,7 @@ fn shell(name: Option<String>) -> Result<()> {
                     &workdir,
                     "postStartCommand",
                     LifecycleMarker::Once(&started_at),
+                    wait_for.as_ref().map_or(true, |wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
                 )?;
             }
             (meta, Some(id))
@@ -72,6 +74,7 @@ fn shell(name: Option<String>) -> Result<()> {
     };
 
     if let Some(id) = container_id {
+        let wait_for = config.common().wait_for.clone();
         if let Some(value) = config.common().post_attach_command.as_ref()
             && let Ok(cmd) = LifecycleCmd::try_from(value)
         {
@@ -82,6 +85,7 @@ fn shell(name: Option<String>) -> Result<()> {
                 &workdir,
                 "postAttachCommand",
                 LifecycleMarker::Always,
+                wait_for.as_ref().map_or(true, |wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
             )?;
         }
         return exec_in_container(id, found_container, &config, &cwd);
@@ -536,6 +540,7 @@ fn shell(name: Option<String>) -> Result<()> {
         .output()
         .map_err(|e| anyhow!("Failed to run docker: {e}"))
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
+    let wait_for = config.common().wait_for.clone();
     if let Some(value) = config.common().on_create_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
@@ -546,6 +551,7 @@ fn shell(name: Option<String>) -> Result<()> {
             &workdir,
             "onCreateCommand",
             LifecycleMarker::Once(&created_at),
+            wait_for.as_ref().map_or(true, |wf| wf.requires(&devcontainer::WaitFor::OnCreateCommand)),
         )?;
     }
     if let Some(value) = config.common().update_content_command.as_ref()
@@ -558,6 +564,7 @@ fn shell(name: Option<String>) -> Result<()> {
             &workdir,
             "updateContentCommand",
             LifecycleMarker::Once(&created_at),
+            wait_for.as_ref().map_or(true, |wf| wf.requires(&devcontainer::WaitFor::UpdateContentCommand)),
         )?;
     }
     if let Some(value) = config.common().post_create_command.as_ref()
@@ -570,6 +577,7 @@ fn shell(name: Option<String>) -> Result<()> {
             &workdir,
             "postCreateCommand",
             LifecycleMarker::Once(&created_at),
+            wait_for.as_ref().map_or(true, |wf| wf.requires(&devcontainer::WaitFor::PostCreateCommand)),
         )?;
     }
     if let Some(value) = config.common().post_start_command.as_ref()
@@ -582,6 +590,7 @@ fn shell(name: Option<String>) -> Result<()> {
             &workdir,
             "postStartCommand",
             LifecycleMarker::Once(&started_at),
+            wait_for.as_ref().map_or(true, |wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
         )?;
     }
     if let Some(value) = config.common().post_attach_command.as_ref()
@@ -594,6 +603,7 @@ fn shell(name: Option<String>) -> Result<()> {
             &workdir,
             "postAttachCommand",
             LifecycleMarker::Always,
+            wait_for.as_ref().map_or(true, |wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
         )?;
     }
     exec_in_container(id, None, &config, &cwd)
@@ -1135,6 +1145,7 @@ fn run_lifecycle_in_container(
     workdir: &str,
     name: &str,
     marker: LifecycleMarker<'_>,
+    wait: bool,
 ) -> Result<()> {
     if let LifecycleMarker::Once(epoch) = marker {
         let script = format!(
@@ -1184,13 +1195,15 @@ fn run_lifecycle_in_container(
             })
             .collect::<Result<_>>()?,
     };
-    for child in &mut children {
-        if !child
-            .wait()
-            .map_err(|e| anyhow!("Failed to wait for {name}: {e}"))?
-            .success()
-        {
-            return Err(anyhow!("{name} failed"));
+    if wait {
+        for child in &mut children {
+            if !child
+                .wait()
+                .map_err(|e| anyhow!("Failed to wait for {name}: {e}"))?
+                .success()
+            {
+                return Err(anyhow!("{name} failed"));
+            }
         }
     }
     Ok(())
