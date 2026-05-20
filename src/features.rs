@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub enum FeatureSource {
@@ -64,7 +64,7 @@ pub struct Feature {
 pub struct InstallPlan(Vec<Feature>);
 
 impl InstallPlan {
-    pub fn new(features: Vec<Feature>) -> Result<Self> {
+    pub fn new(features: Vec<Feature>, override_order: &[String]) -> Result<Self> {
         let n = features.len();
         let id_to_idx: HashMap<&str, usize> = features
             .iter()
@@ -90,16 +90,46 @@ impl InstallPlan {
             }
         }
 
-        let mut queue: VecDeque<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
+        let priority: Vec<usize> = features
+            .iter()
+            .map(|f| {
+                override_order
+                    .iter()
+                    .position(|id| {
+                        id == &f.short_id
+                            || id
+                                .rsplit('/')
+                                .next()
+                                .and_then(|s| s.split_once(':').map(|(id, _)| id).or(Some(s)))
+                                .is_some_and(|s| s == f.short_id)
+                    })
+                    .map_or(0, |pos| override_order.len() - pos)
+            })
+            .collect();
+
+        let mut eligible: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
         let mut order = Vec::with_capacity(n);
-        while let Some(i) = queue.pop_front() {
-            order.push(i);
-            for &j in &adj[i] {
-                in_degree[j] -= 1;
-                if in_degree[j] == 0 {
-                    queue.push_back(j);
+        while !eligible.is_empty() {
+            let max_priority = eligible.iter().map(|&i| priority[i]).max().unwrap();
+            let mut next_eligible = Vec::new();
+            let mut round = Vec::new();
+            for i in eligible {
+                if priority[i] == max_priority {
+                    round.push(i);
+                } else {
+                    next_eligible.push(i);
                 }
             }
+            for i in round {
+                order.push(i);
+                for &j in &adj[i] {
+                    in_degree[j] -= 1;
+                    if in_degree[j] == 0 {
+                        next_eligible.push(j);
+                    }
+                }
+            }
+            eligible = next_eligible;
         }
 
         if order.len() != n {
@@ -215,7 +245,7 @@ mod tests {
             make_feature("node", vec!["common-utils"]),
             make_feature("common-utils", vec![]),
         ];
-        let plan = InstallPlan::new(features).unwrap();
+        let plan = InstallPlan::new(features, &[]).unwrap();
         let ids: Vec<_> = plan
             .features()
             .iter()
@@ -233,7 +263,7 @@ mod tests {
             ),
             make_feature("common-utils", vec![]),
         ];
-        let plan = InstallPlan::new(features).unwrap();
+        let plan = InstallPlan::new(features, &[]).unwrap();
         let ids: Vec<_> = plan
             .features()
             .iter()
@@ -245,14 +275,57 @@ mod tests {
     #[test]
     fn sort_detects_cycle() {
         let features = vec![make_feature("a", vec!["b"]), make_feature("b", vec!["a"])];
-        assert!(InstallPlan::new(features).is_err());
+        assert!(InstallPlan::new(features, &[]).is_err());
     }
 
     #[test]
     fn sort_unknown_dep_is_ignored() {
         let features = vec![make_feature("git", vec!["unknown-feature"])];
-        let plan = InstallPlan::new(features).unwrap();
+        let plan = InstallPlan::new(features, &[]).unwrap();
         assert_eq!(plan.features().len(), 1);
+    }
+
+    #[test]
+    fn override_order_installs_specified_feature_first() {
+        let features = vec![
+            make_feature("a", vec![]),
+            make_feature("b", vec![]),
+            make_feature("c", vec![]),
+        ];
+        let override_order = vec!["c".to_string(), "b".to_string()];
+        let plan = InstallPlan::new(features, &override_order).unwrap();
+        let ids: Vec<_> = plan
+            .features()
+            .iter()
+            .map(|f| f.short_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["c", "b", "a"]);
+    }
+
+    #[test]
+    fn override_order_does_not_break_installs_after_constraint() {
+        let features = vec![make_feature("a", vec![]), make_feature("b", vec!["a"])];
+        let override_order = vec!["b".to_string()];
+        let plan = InstallPlan::new(features, &override_order).unwrap();
+        let ids: Vec<_> = plan
+            .features()
+            .iter()
+            .map(|f| f.short_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn override_order_matches_oci_ref() {
+        let features = vec![make_feature("a", vec![]), make_feature("b", vec![])];
+        let override_order = vec!["ghcr.io/devcontainers/features/b:1".to_string()];
+        let plan = InstallPlan::new(features, &override_order).unwrap();
+        let ids: Vec<_> = plan
+            .features()
+            .iter()
+            .map(|f| f.short_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["b", "a"]);
     }
 
     #[test]
@@ -264,7 +337,7 @@ mod tests {
             installs_after: vec![],
             container_env: HashMap::new(),
         }];
-        let plan = InstallPlan::new(features).unwrap();
+        let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile("FROM rust:latest", &plan);
         assert!(df.contains("FROM rust:latest"));
         assert!(df.contains("COPY ./0/ /tmp/dev-container-features/git/"));
@@ -280,7 +353,7 @@ mod tests {
             installs_after: vec![],
             container_env: HashMap::new(),
         }];
-        let plan = InstallPlan::new(features).unwrap();
+        let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile("FROM ubuntu:22.04", &plan);
         assert!(df.contains("export VERSION='18'"));
     }

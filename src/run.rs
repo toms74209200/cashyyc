@@ -99,7 +99,12 @@ fn shell(name: Option<String>) -> Result<()> {
 
     let features_plan: Option<(features::InstallPlan, std::path::PathBuf)> =
         if !features_map.is_empty() {
-            Some(download_features(features_map, config_dir, &cwd)?)
+            Some(download_features(
+                features_map,
+                &config.common().override_feature_install_order,
+                config_dir,
+                &cwd,
+            )?)
         } else {
             None
         };
@@ -787,6 +792,7 @@ fn exec_in_container(
 
 fn download_features(
     features_map: &std::collections::HashMap<String, serde_json::Value>,
+    override_order: &[String],
     devcontainer_dir: &std::path::Path,
     cwd: &std::path::Path,
 ) -> Result<(features::InstallPlan, std::path::PathBuf)> {
@@ -942,7 +948,7 @@ fn download_features(
         });
     }
 
-    let plan = features::InstallPlan::new(resolved)?;
+    let plan = features::InstallPlan::new(resolved, override_order)?;
     Ok((plan, features_dir))
 }
 
