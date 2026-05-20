@@ -206,3 +206,64 @@ def then_port_bound(workspace, config, port):
         text=True,
     )
     assert result.returncode == 0 and result.stdout.strip(), f"port {port} is not bound"
+
+
+@given(
+    'the config has local features "alpha" and "beta" that log their id on install',
+    target_fixture="config",
+)
+def given_local_features_alpha_beta(workspace, config):
+    features_dir = workspace / ".devcontainer" / "features"
+    for name in ("alpha", "beta"):
+        d = features_dir / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "devcontainer-feature.json").write_text(
+            json.dumps({"id": name, "version": "1.0.0"})
+        )
+        (d / "install.sh").write_text(f"#!/bin/sh\necho {name} >> /install-order.log\n")
+    new_config = {
+        **config,
+        "features": {
+            **config.get("features", {}),
+            "./features/alpha": {},
+            "./features/beta": {},
+        },
+    }
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    'the config overrides feature install order with "beta" first',
+    target_fixture="config",
+)
+def given_override_beta_first(workspace, config):
+    new_config = {
+        **config,
+        "overrideFeatureInstallOrder": ["./features/beta", "./features/alpha"],
+    }
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@then('the install log shows "beta" installed before "alpha"')
+def then_install_log_beta_before_alpha(workspace, config):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    result = subprocess.run(
+        ["docker", "exec", cid, "cat", "/install-order.log"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"failed to read install log: {result.stderr}"
+    lines = result.stdout.strip().splitlines()
+    assert "beta" in lines and "alpha" in lines, (
+        f"expected both beta and alpha in log, got: {lines}"
+    )
+    assert lines.index("beta") < lines.index("alpha"), (
+        f"expected beta before alpha, got order: {lines}"
+    )

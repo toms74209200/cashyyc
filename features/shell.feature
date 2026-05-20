@@ -315,3 +315,12 @@ Feature: cyyc shell
     And no container exists for this config
     When running "cyyc shell"
     Then the container has port 9000 bound
+
+  Scenario: Respect overrideFeatureInstallOrder for feature installation order
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has local features "alpha" and "beta" that log their id on install
+    And the config overrides feature install order with "beta" first
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the install log shows "beta" installed before "alpha"
