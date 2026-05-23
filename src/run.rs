@@ -635,12 +635,29 @@ fn stop(name: Option<String>) -> Result<()> {
     let target = setup::from_config(&config, &cwd, &config_path, config_dir);
 
     if let Existing::Running { id, .. } = lookup_existing(&target, &config_path, &cwd)? {
-        let status = std::process::Command::new("docker")
-            .args(["stop", &id])
-            .status()
-            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-        if !status.success() {
-            return Err(anyhow!("`docker stop` failed"));
+        match &target {
+            ContainerTarget::Single(_) => {
+                let status = std::process::Command::new("docker")
+                    .args(["stop", &id])
+                    .status()
+                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                if !status.success() {
+                    return Err(anyhow!("`docker stop` failed"));
+                }
+            }
+            ContainerTarget::Compose(c) => {
+                let mut stop_args = c.global_args.clone();
+                stop_args.push("stop".to_string());
+                stop_args.extend(c.services.iter().cloned());
+                let status = std::process::Command::new("docker")
+                    .arg("compose")
+                    .args(&stop_args)
+                    .status()
+                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                if !status.success() {
+                    return Err(anyhow!("`docker compose stop` failed"));
+                }
+            }
         }
     }
     Ok(())

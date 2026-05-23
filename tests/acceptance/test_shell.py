@@ -6,8 +6,8 @@ from pytest_bdd import given, parsers, scenarios, then
 
 from conftest import (
     _container_id,
-    container_id_by_compose,
     container_id_by_devcontainer,
+    container_ids_by_compose,
 )
 
 scenarios("../../features/shell.feature")
@@ -26,7 +26,8 @@ def given_has_feature(workspace, config, feature_id):
 @then("the container is running")
 def then_container_running(workspace, config):
     if "dockerComposeFile" in config:
-        cid = container_id_by_compose(workspace)
+        ids = container_ids_by_compose(workspace)
+        cid = ids[0] if ids else None
     else:
         cid = container_id_by_devcontainer(workspace)
     assert cid, "no running container found"
@@ -35,7 +36,8 @@ def then_container_running(workspace, config):
 @then("the existing container is reused")
 def then_existing_reused(workspace, config, container_id_before):
     if "dockerComposeFile" in config:
-        cid_now = container_id_by_compose(workspace)
+        ids = container_ids_by_compose(workspace)
+        cid_now = ids[0] if ids else None
     else:
         cid_now = container_id_by_devcontainer(workspace)
     assert cid_now == container_id_before[0], (
@@ -46,7 +48,8 @@ def then_existing_reused(workspace, config, container_id_before):
 @then("a new shell session is opened in the existing container")
 def then_new_session_in_existing(workspace, config, container_id_before):
     if "dockerComposeFile" in config:
-        cid_now = container_id_by_compose(workspace)
+        ids = container_ids_by_compose(workspace)
+        cid_now = ids[0] if ids else None
     else:
         cid_now = container_id_by_devcontainer(workspace)
     assert cid_now == container_id_before[0], (
@@ -121,7 +124,8 @@ def then_file_eventually_exists_in_container(workspace, config, path):
 @then(parsers.parse('the command "{cmd}" succeeds in the resulting shell'))
 def then_command_succeeds(workspace, config, cmd):
     if "dockerComposeFile" in config:
-        container_id = container_id_by_compose(workspace)
+        ids = container_ids_by_compose(workspace)
+        container_id = ids[0] if ids else None
     else:
         container_id = container_id_by_devcontainer(workspace)
     assert container_id, "no running container found"
@@ -138,7 +142,8 @@ def then_command_succeeds(workspace, config, cmd):
 @then(parsers.parse('the container user "{user}" UID matches the host UID'))
 def then_container_user_uid_matches_host(workspace, config, user):
     if "dockerComposeFile" in config:
-        container_id = container_id_by_compose(workspace)
+        ids = container_ids_by_compose(workspace)
+        container_id = ids[0] if ids else None
     else:
         container_id = container_id_by_devcontainer(workspace)
     assert container_id, "no running container found"
@@ -158,7 +163,8 @@ def then_container_user_uid_matches_host(workspace, config, user):
 @then(parsers.parse('the container user "{user}" UID is "{expected_uid}"'))
 def then_container_user_uid_is(workspace, config, user, expected_uid):
     if "dockerComposeFile" in config:
-        container_id = container_id_by_compose(workspace)
+        ids = container_ids_by_compose(workspace)
+        container_id = ids[0] if ids else None
     else:
         container_id = container_id_by_devcontainer(workspace)
     assert container_id, "no running container found"
