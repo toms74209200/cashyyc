@@ -12,6 +12,12 @@ Feature: cyyc down
     When running "cyyc down"
     Then the container is removed
 
+  Scenario: Down a running Compose container with runServices removes all services
+    Given a devcontainer config using docker-compose service "app" with runService "db" and image "mcr.microsoft.com/devcontainers/base:debian"
+    And a running container exists for this config
+    When running "cyyc down"
+    Then the container is removed
+
   Scenario: Down a stopped container
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
     And a stopped container exists for this config
