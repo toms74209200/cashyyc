@@ -14,6 +14,13 @@ Feature: cyyc stop
     Then the container is stopped
     And the container is not removed
 
+  Scenario: Stop a running Compose container with runServices stops all services
+    Given a devcontainer config using docker-compose service "app" with runService "db" and image "mcr.microsoft.com/devcontainers/base:debian"
+    And a running container exists for this config
+    When running "cyyc stop"
+    Then all compose containers are stopped
+    And all compose containers are not removed
+
   Scenario: Stop when container is already stopped
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
     And a stopped container exists for this config
