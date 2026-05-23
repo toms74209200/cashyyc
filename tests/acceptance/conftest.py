@@ -103,7 +103,7 @@ def container_id_by_devcontainer(
     return None
 
 
-def container_id_by_compose(workspace: Path, *, all_states: bool = False) -> str | None:
+def container_ids_by_compose(workspace: Path, *, all_states: bool = False) -> list[str]:
     flag = "-aq" if all_states else "-q"
     r = subprocess.run(
         [
@@ -117,16 +117,15 @@ def container_id_by_compose(workspace: Path, *, all_states: bool = False) -> str
         text=True,
     )
     out = r.stdout.strip()
-    if out:
-        return out.split("\n")[0]
-    return None
+    return out.split("\n") if out else []
 
 
 def _container_id(
     workspace: Path, config: dict, *, all_states: bool = False
 ) -> str | None:
     if "dockerComposeFile" in config:
-        return container_id_by_compose(workspace, all_states=all_states)
+        ids = container_ids_by_compose(workspace, all_states=all_states)
+        return ids[0] if ids else None
     return container_id_by_devcontainer(workspace, all_states=all_states)
 
 
@@ -175,6 +174,36 @@ def given_compose_config(workspace, service, image):
     config = {
         "dockerComposeFile": "docker-compose.yml",
         "service": service,
+        "workspaceFolder": "/workspaces",
+    }
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(json.dumps(config))
+    return config
+
+
+@given(
+    parsers.parse(
+        'a devcontainer config using docker-compose service "{service}" with runService "{run_service}" and image "{image}"'
+    ),
+    target_fixture="config",
+)
+def given_compose_config_with_run_service(workspace, service, run_service, image):
+    compose_yaml = (
+        f"services:\n"
+        f"  {service}:\n"
+        f"    image: {image}\n"
+        f"    command: sleep infinity\n"
+        f"    volumes:\n"
+        f"      - ..:/workspaces:cached\n"
+        f"    working_dir: /workspaces\n"
+        f"  {run_service}:\n"
+        f"    image: {image}\n"
+        f"    command: sleep infinity\n"
+    )
+    (workspace / ".devcontainer" / "docker-compose.yml").write_text(compose_yaml)
+    config = {
+        "dockerComposeFile": "docker-compose.yml",
+        "service": service,
+        "runServices": [run_service],
         "workspaceFolder": "/workspaces",
     }
     (workspace / ".devcontainer" / "devcontainer.json").write_text(json.dumps(config))
