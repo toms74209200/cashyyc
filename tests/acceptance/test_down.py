@@ -1,5 +1,3 @@
-import subprocess
-
 from pytest_bdd import scenarios, then
 
 from conftest import (
