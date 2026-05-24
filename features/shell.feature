@@ -173,6 +173,14 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the file "/tmp/on-create-array-ran" exists in the container
 
+  Scenario: onCreateCommand runs as remoteUser
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has remoteUser "vscode"
+    And the config has onCreateCommand "whoami > /tmp/on-create-user"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/on-create-user" in the container contains "vscode"
+
   Scenario: Execute updateContentCommand as string on new container
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
     And the config has updateContentCommand "touch /tmp/update-content-ran"
