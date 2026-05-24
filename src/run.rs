@@ -65,6 +65,7 @@ fn shell(name: Option<String>) -> Result<()> {
                     &workdir,
                     "postStartCommand",
                     LifecycleMarker::Once(&started_at),
+                    config.common().remote_user.as_deref(),
                     wait_for
                         .as_ref()
                         .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
@@ -87,6 +88,7 @@ fn shell(name: Option<String>) -> Result<()> {
                 &workdir,
                 "postAttachCommand",
                 LifecycleMarker::Always,
+                config.common().remote_user.as_deref(),
                 wait_for
                     .as_ref()
                     .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
@@ -560,6 +562,7 @@ fn shell(name: Option<String>) -> Result<()> {
             &workdir,
             "onCreateCommand",
             LifecycleMarker::Once(&created_at),
+            config.common().remote_user.as_deref(),
             wait_for
                 .as_ref()
                 .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::OnCreateCommand)),
@@ -575,6 +578,7 @@ fn shell(name: Option<String>) -> Result<()> {
             &workdir,
             "updateContentCommand",
             LifecycleMarker::Once(&created_at),
+            config.common().remote_user.as_deref(),
             wait_for
                 .as_ref()
                 .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::UpdateContentCommand)),
@@ -590,6 +594,7 @@ fn shell(name: Option<String>) -> Result<()> {
             &workdir,
             "postCreateCommand",
             LifecycleMarker::Once(&created_at),
+            config.common().remote_user.as_deref(),
             wait_for
                 .as_ref()
                 .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostCreateCommand)),
@@ -605,6 +610,7 @@ fn shell(name: Option<String>) -> Result<()> {
             &workdir,
             "postStartCommand",
             LifecycleMarker::Once(&started_at),
+            config.common().remote_user.as_deref(),
             wait_for
                 .as_ref()
                 .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
@@ -620,6 +626,7 @@ fn shell(name: Option<String>) -> Result<()> {
             &workdir,
             "postAttachCommand",
             LifecycleMarker::Always,
+            config.common().remote_user.as_deref(),
             wait_for
                 .as_ref()
                 .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
@@ -1182,8 +1189,14 @@ fn run_lifecycle_in_container(
     workdir: &str,
     name: &str,
     marker: LifecycleMarker<'_>,
+    remote_user: Option<&str>,
     wait: bool,
 ) -> Result<()> {
+    let user_args: Vec<&str> = if let Some(user) = remote_user {
+        vec!["--user", user]
+    } else {
+        vec![]
+    };
     if let LifecycleMarker::Once(epoch) = marker {
         let script = format!(
             "mkdir -p \"$HOME/.devcontainer\" && \
@@ -1192,7 +1205,9 @@ fn run_lifecycle_in_container(
              echo '{epoch}' > \"$HOME/.devcontainer/.{name}Marker\""
         );
         let status = std::process::Command::new("docker")
-            .args(["exec", container_id, "sh", "-c", &script])
+            .args(["exec"])
+            .args(&user_args)
+            .args([container_id, "sh", "-c", &script])
             .status()
             .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
         if !status.success() {
@@ -1202,13 +1217,17 @@ fn run_lifecycle_in_container(
     let mut children: Vec<std::process::Child> = match cmd {
         LifecycleCmd::Shell(s) => vec![
             std::process::Command::new("docker")
-                .args(["exec", "--workdir", workdir, container_id, "sh", "-c", s])
+                .args(["exec"])
+                .args(&user_args)
+                .args(["--workdir", workdir, container_id, "sh", "-c", s])
                 .spawn()
                 .map_err(|e| anyhow!("Failed to run docker: {e}"))?,
         ],
         LifecycleCmd::Exec(args) => vec![
             std::process::Command::new("docker")
-                .args(["exec", "--workdir", workdir, container_id])
+                .args(["exec"])
+                .args(&user_args)
+                .args(["--workdir", workdir, container_id])
                 .args(args)
                 .spawn()
                 .map_err(|e| anyhow!("Failed to run docker: {e}"))?,
@@ -1217,7 +1236,9 @@ fn run_lifecycle_in_container(
             .iter()
             .map(|c| {
                 let mut proc = std::process::Command::new("docker");
-                proc.args(["exec", "--workdir", workdir, container_id]);
+                proc.args(["exec"]);
+                proc.args(&user_args);
+                proc.args(["--workdir", workdir, container_id]);
                 match c {
                     LifecycleCmd::Shell(s) => {
                         proc.args(["sh", "-c", s]);

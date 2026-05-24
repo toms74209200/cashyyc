@@ -139,6 +139,21 @@ def then_command_succeeds(workspace, config, cmd):
     )
 
 
+@then(parsers.parse('the file "{path}" in the container contains "{text}"'))
+def then_file_in_container_contains(workspace, config, path, text):
+    container_id = _container_id(workspace, config)
+    assert container_id, "no running container found"
+    result = subprocess.run(
+        ["docker", "exec", container_id, "cat", path],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"file {path!r} not found in container"
+    assert text in result.stdout, (
+        f"expected {text!r} in {path!r}, got {result.stdout!r}"
+    )
+
+
 @then(parsers.parse('the container user "{user}" UID matches the host UID'))
 def then_container_user_uid_matches_host(workspace, config, user):
     if "dockerComposeFile" in config:
