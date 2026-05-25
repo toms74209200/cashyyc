@@ -105,12 +105,19 @@ fn run_args_for(
     cwd: &Path,
     config_path: &Path,
 ) -> Vec<String> {
-    let workspace_folder = common.workspace_folder.clone().unwrap_or_else(|| {
-        format!(
-            "/workspaces/{}",
-            cwd.file_name().unwrap_or_default().to_string_lossy()
-        )
-    });
+    let default_workspace_folder = format!(
+        "/workspaces/{}",
+        cwd.file_name().unwrap_or_default().to_string_lossy()
+    );
+    let workspace_folder = expand_variables(
+        &common
+            .workspace_folder
+            .clone()
+            .unwrap_or_else(|| default_workspace_folder.clone()),
+        cwd,
+        &default_workspace_folder,
+        &Default::default(),
+    );
     let workspace_mount = raw_workspace_mount
         .map(|m| expand_variables(m, cwd, &workspace_folder, &Default::default()));
     container_run_options(
