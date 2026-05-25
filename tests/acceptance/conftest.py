@@ -1,4 +1,6 @@
 import json
+import random
+import string
 import subprocess
 from pathlib import Path
 
@@ -6,6 +8,10 @@ import pytest
 from pytest_bdd import given, parsers, then, when
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _random_name(length: int = 8) -> str:
+    return "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
 
 @pytest.fixture(scope="session")
@@ -20,9 +26,10 @@ def cyyc_binary():
 
 @pytest.fixture
 def workspace(tmp_path):
-    devcontainer_dir = tmp_path / ".devcontainer"
-    devcontainer_dir.mkdir()
-    yield tmp_path
+    workspace_dir = tmp_path / _random_name()
+    devcontainer_dir = workspace_dir / ".devcontainer"
+    devcontainer_dir.mkdir(parents=True)
+    yield workspace_dir
     for cfg_path in devcontainer_dir.rglob("devcontainer.json"):
         r = subprocess.run(
             [
@@ -43,14 +50,14 @@ def workspace(tmp_path):
             "docker",
             "compose",
             "-p",
-            f"{tmp_path.name}_devcontainer",
+            f"{workspace_dir.name}_devcontainer",
             "down",
             "-v",
             "--remove-orphans",
         ],
         capture_output=True,
     )
-    name = tmp_path.name.lower()
+    name = workspace_dir.name.lower()
     r = subprocess.run(
         ["docker", "images", "-q", "--filter", f"reference=vsc-{name}*"],
         capture_output=True,
