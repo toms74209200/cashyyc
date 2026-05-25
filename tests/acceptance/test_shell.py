@@ -1,4 +1,6 @@
 import json
+import os
+import re
 import subprocess
 import time
 
@@ -9,6 +11,37 @@ from conftest import (
     container_id_by_devcontainer,
     container_ids_by_compose,
 )
+
+
+def _expand_template(workspace, template):
+    if "${devcontainerId}" in template:
+        return None
+    result = template
+    result = result.replace("${localWorkspaceFolder}", str(workspace))
+    result = result.replace("${localWorkspaceFolderBasename}", workspace.name)
+    result = result.replace(
+        "${containerWorkspaceFolder}", f"/workspaces/{workspace.name}"
+    )
+    result = result.replace("${containerWorkspaceFolderBasename}", workspace.name)
+    m = re.search(r"\$\{localEnv:([^}]+)\}", result)
+    if m:
+        result = (
+            result[: m.start()] + os.environ.get(m.group(1), "") + result[m.end() :]
+        )
+    return result
+
+
+def _assert_expansion(actual, workspace, template):
+    expected = _expand_template(workspace, template)
+    if expected is None:
+        assert "${" not in actual.strip() and actual.strip(), (
+            f"{template!r} not expanded; got {actual!r}"
+        )
+    else:
+        assert os.path.normpath(actual.strip()) == os.path.normpath(expected), (
+            f"{template!r}: expected {expected!r}, got {actual.strip()!r}"
+        )
+
 
 scenarios("../../features/shell.feature")
 
@@ -254,6 +287,121 @@ def given_local_features_alpha_beta(workspace, config):
         json.dumps(new_config)
     )
     return new_config
+
+
+@then(parsers.parse('the container env "{key}" is the expansion of "{template}"'))
+def then_container_env_is_expansion(workspace, config, key, template):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    result = subprocess.run(
+        ["docker", "exec", cid, "printenv", key],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"env {key!r} not set: {result.stderr!r}"
+    _assert_expansion(result.stdout, workspace, template)
+
+
+@then(
+    parsers.parse(
+        'the file "{path}" in the container contains the expansion of "{template}"'
+    )
+)
+def then_file_in_container_contains_expansion(workspace, config, path, template):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    result = subprocess.run(
+        ["docker", "exec", cid, "cat", path],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"file {path!r} not found: {result.stderr!r}"
+    _assert_expansion(result.stdout, workspace, template)
+
+
+@then(
+    parsers.parse(
+        'the file "{path}" in the workspace contains the expansion of "{template}"'
+    )
+)
+def then_file_in_workspace_contains_expansion(workspace, path, template):
+    full = workspace / path
+    assert full.exists(), f"file {path!r} not in workspace"
+    _assert_expansion(full.read_text(), workspace, template)
+
+
+@then(
+    parsers.parse(
+        'the container has a mount destination matching the expansion of "{template}"'
+    )
+)
+def then_mount_destination_matches_expansion(workspace, config, template):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    result = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            cid,
+            "--format",
+            "{{range .Mounts}}{{.Destination}}\n{{end}}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    destinations = result.stdout.strip().splitlines()
+    expected = _expand_template(workspace, template)
+    if expected is None:
+        assert not any("${" in d for d in destinations), (
+            f"unexpanded variable in mount destinations: {destinations}"
+        )
+    else:
+        assert os.path.normpath(expected) in [
+            os.path.normpath(d) for d in destinations
+        ], f"mount at {expected!r} not found; found: {destinations}"
+
+
+@then(
+    parsers.parse(
+        'the container has a mount source matching the expansion of "{template}"'
+    )
+)
+def then_mount_source_matches_expansion(workspace, config, template):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    result = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            cid,
+            "--format",
+            "{{range .Mounts}}{{.Source}}\n{{end}}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    sources = result.stdout.strip().splitlines()
+    expected = _expand_template(workspace, template)
+    if expected is None:
+        assert not any("${" in s for s in sources), (
+            f"unexpanded variable in mount sources: {sources}"
+        )
+    else:
+        assert os.path.normpath(expected) in [os.path.normpath(s) for s in sources], (
+            f"mount source {expected!r} not found; found: {sources}"
+        )
+
+
+@then(parsers.parse('the container user is the expansion of "{template}"'))
+def then_container_user_is_expansion(workspace, config, template):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    result = subprocess.run(
+        ["docker", "inspect", cid, "--format", "{{.Config.User}}"],
+        capture_output=True,
+        text=True,
+    )
+    _assert_expansion(result.stdout, workspace, template)
 
 
 @given(

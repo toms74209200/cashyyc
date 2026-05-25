@@ -325,3 +325,91 @@ def given_update_remote_user_uid_false(workspace, config):
         json.dumps(new_config)
     )
     return new_config
+
+
+@given(
+    parsers.parse('the config has containerEnv "{key}" set to "{value}"'),
+    target_fixture="config",
+)
+def given_container_env_key_value(workspace, config, key, value):
+    container_env = {**config.get("containerEnv", {}), key: value}
+    new_config = {**config, "containerEnv": container_env}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse('the config has remoteEnv "{key}" set to "{value}"'),
+    target_fixture="config",
+)
+def given_remote_env_key_value(workspace, config, key, value):
+    remote_env = {**config.get("remoteEnv", {}), key: value}
+    new_config = {**config, "remoteEnv": remote_env}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse('the config has workspaceFolder "{value}"'),
+    target_fixture="config",
+)
+def given_workspace_folder_config(workspace, config, value):
+    new_config = {**config, "workspaceFolder": value}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse('the config has workspaceMount "{value}"'),
+    target_fixture="config",
+)
+def given_workspace_mount_config(workspace, config, value):
+    new_config = {**config, "workspaceMount": value}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse('the config has mounts with "{value}"'),
+    target_fixture="config",
+)
+def given_config_mounts(workspace, config, value):
+    mounts = [*config.get("mounts", []), value]
+    new_config = {**config, "mounts": mounts}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse('the config has runArgs with env "{key}" set to "{value}"'),
+    target_fixture="config",
+)
+def given_run_args_env(workspace, config, key, value):
+    run_args = [*config.get("runArgs", []), "--env", f"{key}={value}"]
+    new_config = {**config, "runArgs": run_args}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse('the config has containerUser "{value}"'),
+    target_fixture="config",
+)
+def given_container_user_config(workspace, config, value):
+    new_config = {**config, "containerUser": value}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
