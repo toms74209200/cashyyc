@@ -332,3 +332,168 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the container is running
     And the install log shows "beta" installed before "alpha"
+
+  Scenario: when containerEnv value contains ${localWorkspaceFolder} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has containerEnv "RESULT" set to "${localWorkspaceFolder}"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container env "RESULT" is the expansion of "${localWorkspaceFolder}"
+
+  Scenario: when runArgs contains env ${localWorkspaceFolderBasename} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has runArgs with env "RESULT" set to "${localWorkspaceFolderBasename}"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container env "RESULT" is the expansion of "${localWorkspaceFolderBasename}"
+
+  Scenario: when initializeCommand contains ${containerWorkspaceFolder} then it is expanded on the host
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has initializeCommand "sh -c 'printf %s ${containerWorkspaceFolder} > .init-var-result'"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file ".init-var-result" in the workspace contains the expansion of "${containerWorkspaceFolder}"
+
+  Scenario: when onCreateCommand contains ${containerWorkspaceFolderBasename} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has onCreateCommand "sh -c 'printf %s ${containerWorkspaceFolderBasename} > /tmp/var-result'"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/var-result" in the container contains the expansion of "${containerWorkspaceFolderBasename}"
+
+  Scenario: when updateContentCommand contains ${localEnv:HOME} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has updateContentCommand "sh -c 'printf %s ${localEnv:HOME} > /tmp/var-result'"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/var-result" in the container contains the expansion of "${localEnv:HOME}"
+
+  Scenario: when postCreateCommand contains ${devcontainerId} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has postCreateCommand "sh -c 'printf %s ${devcontainerId} > /tmp/var-result'"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/var-result" in the container contains the expansion of "${devcontainerId}"
+
+  Scenario: when postStartCommand contains ${localWorkspaceFolder} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has postStartCommand "sh -c 'printf %s ${localWorkspaceFolder} > /tmp/var-result'"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/var-result" in the container contains the expansion of "${localWorkspaceFolder}"
+
+  Scenario: when postAttachCommand contains ${localWorkspaceFolderBasename} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has postAttachCommand "sh -c 'printf %s ${localWorkspaceFolderBasename} > /tmp/var-result'"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/var-result" in the container contains the expansion of "${localWorkspaceFolderBasename}"
+
+  Scenario: when workspaceFolder contains ${containerWorkspaceFolder} then the exec workdir is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has workspaceFolder "/work/${containerWorkspaceFolder}"
+    And the config has postCreateCommand "pwd > /tmp/wf-result"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/wf-result" in the container contains the expansion of "/work/${containerWorkspaceFolder}"
+
+  Scenario: when mounts source is ${localWorkspaceFolder} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has mounts with "type=bind,source=${localWorkspaceFolder},target=/home/vscode/extra-bind"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount source matching the expansion of "${localWorkspaceFolder}"
+    And the container has a mount destination matching the expansion of "/home/vscode/extra-bind"
+
+  Scenario: when mounts volume name contains ${localWorkspaceFolderBasename} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has mounts with "type=volume,source=cyyc-${localWorkspaceFolderBasename},target=/extra-vol"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount destination matching the expansion of "/extra-vol"
+
+  Scenario: when mounts target contains ${containerWorkspaceFolder} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has mounts with "type=bind,source=/tmp,target=${containerWorkspaceFolder}-extra"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount destination matching the expansion of "${containerWorkspaceFolder}-extra"
+
+  Scenario: when mounts volume name contains ${containerWorkspaceFolderBasename} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has mounts with "type=volume,source=cyyc-${containerWorkspaceFolderBasename},target=/extra-vol2"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount destination matching the expansion of "/extra-vol2"
+
+  Scenario: when mounts source is ${localEnv:HOME} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has mounts with "type=bind,source=${localEnv:HOME},target=/extra-home"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount destination matching the expansion of "/extra-home"
+
+  Scenario: when mounts volume name contains ${devcontainerId} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has mounts with "type=volume,source=cyyc-${devcontainerId},target=/extra-id"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount destination matching the expansion of "/extra-id"
+
+  Scenario: when workspaceMount source is ${localWorkspaceFolder} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has workspaceMount "type=bind,source=${localWorkspaceFolder},target=/home/vscode/custom-ws"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount source matching the expansion of "${localWorkspaceFolder}"
+    And the container has a mount destination matching the expansion of "/home/vscode/custom-ws"
+
+  Scenario: when workspaceMount target contains ${localWorkspaceFolderBasename} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has workspaceMount "type=bind,source=/tmp,target=/ws-${localWorkspaceFolderBasename}"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount destination matching the expansion of "/ws-${localWorkspaceFolderBasename}"
+
+  Scenario: when workspaceMount target contains ${containerWorkspaceFolder} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has workspaceMount "type=bind,source=/tmp,target=${containerWorkspaceFolder}-ws"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount destination matching the expansion of "${containerWorkspaceFolder}-ws"
+
+  Scenario: when workspaceMount target contains ${containerWorkspaceFolderBasename} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has workspaceMount "type=bind,source=/tmp,target=/ws-${containerWorkspaceFolderBasename}"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount destination matching the expansion of "/ws-${containerWorkspaceFolderBasename}"
+
+  Scenario: when workspaceMount source is ${localEnv:HOME} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has workspaceMount "type=bind,source=${localEnv:HOME},target=/ws-home"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount destination matching the expansion of "/ws-home"
+
+  Scenario: when workspaceMount target contains ${devcontainerId} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has workspaceMount "type=bind,source=/tmp,target=/ws-${devcontainerId}"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount destination matching the expansion of "/ws-${devcontainerId}"
+
+  Scenario: when containerUser is ${localEnv:USER} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has containerUser "${localEnv:USER}"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container user is the expansion of "${localEnv:USER}"
+
+  Scenario: when remoteUser is ${localEnv:USER} then it is expanded in lifecycle commands
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has remoteUser "${localEnv:USER}"
+    And the config has postCreateCommand "whoami > /tmp/remote-user-result"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/remote-user-result" in the container contains the expansion of "${localEnv:USER}"
