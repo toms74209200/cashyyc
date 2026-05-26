@@ -485,6 +485,7 @@ Feature: cyyc shell
 
   Scenario: when containerUser is ${localEnv:USER} then it is expanded
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a Dockerfile that adds the host user
     And the config has containerUser "${localEnv:USER}"
     And no container exists for this config
     When running "cyyc shell"
@@ -492,6 +493,7 @@ Feature: cyyc shell
 
   Scenario: when remoteUser is ${localEnv:USER} then it is expanded in lifecycle commands
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a Dockerfile that adds the host user
     And the config has remoteUser "${localEnv:USER}"
     And the config has postCreateCommand "whoami > /tmp/remote-user-result"
     And no container exists for this config

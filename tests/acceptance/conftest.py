@@ -1,4 +1,5 @@
 import json
+import os
 import random
 import string
 import subprocess
@@ -416,6 +417,23 @@ def given_run_args_env(workspace, config, key, value):
 )
 def given_container_user_config(workspace, config, value):
     new_config = {**config, "containerUser": value}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given("the config has a Dockerfile that adds the host user", target_fixture="config")
+def given_dockerfile_adds_host_user(workspace, config):
+    image = config.get("image", "mcr.microsoft.com/devcontainers/base:debian")
+    current_user = os.environ.get("USER", "vscode")
+    dockerfile = (
+        f"FROM {image}\n"
+        f"RUN id {current_user} 2>/dev/null || useradd -ms /bin/bash {current_user}\n"
+    )
+    (workspace / ".devcontainer" / "Dockerfile").write_text(dockerfile)
+    new_config = {k: v for k, v in config.items() if k != "image"}
+    new_config["dockerFile"] = "Dockerfile"
     (workspace / ".devcontainer" / "devcontainer.json").write_text(
         json.dumps(new_config)
     )
