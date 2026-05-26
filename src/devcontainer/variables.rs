@@ -8,6 +8,7 @@ enum DevcontainerVariable {
     ContainerWorkspaceFolderBasename,
     LocalEnv(String, Option<String>),
     ContainerEnv(String, Option<String>),
+    DevcontainerId,
 }
 
 impl DevcontainerVariable {
@@ -17,6 +18,7 @@ impl DevcontainerVariable {
             "localWorkspaceFolderBasename" => Some(Self::LocalWorkspaceFolderBasename),
             "containerWorkspaceFolder" => Some(Self::ContainerWorkspaceFolder),
             "containerWorkspaceFolderBasename" => Some(Self::ContainerWorkspaceFolderBasename),
+            "devcontainerId" => Some(Self::DevcontainerId),
             _ => {
                 let scope_end = content.find(':')?;
                 let scope = &content[..scope_end];
@@ -63,6 +65,15 @@ impl DevcontainerVariable {
                 .get(name)
                 .cloned()
                 .unwrap_or_else(|| default.clone().unwrap_or_default()),
+            Self::DevcontainerId => {
+                let path_bytes = local_folder.as_os_str().as_encoded_bytes();
+                let mut hash: u64 = 14695981039346656037;
+                for &byte in path_bytes {
+                    hash ^= byte as u64;
+                    hash = hash.wrapping_mul(1099511628211);
+                }
+                format!("{:016x}", hash)
+            }
         }
     }
 }

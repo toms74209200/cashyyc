@@ -8,6 +8,39 @@ use crate::setup::ContainerTarget;
 use crate::uid::{UidContext, UidUpdate};
 use anyhow::{Result, anyhow};
 
+fn expand_lifecycle_cmd(
+    cmd: &LifecycleCmd,
+    cwd: &std::path::Path,
+    container_workspace_folder: &str,
+    container_env: &std::collections::HashMap<String, String>,
+) -> LifecycleCmd {
+    match cmd {
+        LifecycleCmd::Shell(s) => LifecycleCmd::Shell(devcontainer::expand_variables(
+            s,
+            cwd,
+            container_workspace_folder,
+            container_env,
+        )),
+        LifecycleCmd::Exec(args) => LifecycleCmd::Exec(
+            args.iter()
+                .map(|a| {
+                    devcontainer::expand_variables(
+                        a,
+                        cwd,
+                        container_workspace_folder,
+                        container_env,
+                    )
+                })
+                .collect(),
+        ),
+        LifecycleCmd::Parallel(cmds) => LifecycleCmd::Parallel(
+            cmds.iter()
+                .map(|c| expand_lifecycle_cmd(c, cwd, container_workspace_folder, container_env))
+                .collect(),
+        ),
+    }
+}
+
 pub fn run(args: Vec<String>) -> Result<()> {
     match cli::parse_args(&args) {
         cli::Command::Shell { name } => shell(name),
@@ -59,13 +92,17 @@ fn shell(name: Option<String>) -> Result<()> {
                 && let Ok(cmd) = LifecycleCmd::try_from(value)
             {
                 let workdir = config.workspace_folder(&cwd);
+                let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+                let expanded_remote_user = config.common().remote_user.as_deref().map(|u| {
+                    devcontainer::expand_variables(u, &cwd, &workdir, &Default::default())
+                });
                 run_lifecycle_in_container(
                     &cmd,
                     &id,
                     &workdir,
                     "postStartCommand",
                     LifecycleMarker::Once(&started_at),
-                    config.common().remote_user.as_deref(),
+                    expanded_remote_user.as_deref(),
                     wait_for
                         .as_ref()
                         .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
@@ -82,13 +119,18 @@ fn shell(name: Option<String>) -> Result<()> {
             && let Ok(cmd) = LifecycleCmd::try_from(value)
         {
             let workdir = config.workspace_folder(&cwd);
+            let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+            let expanded_remote_user =
+                config.common().remote_user.as_deref().map(|u| {
+                    devcontainer::expand_variables(u, &cwd, &workdir, &Default::default())
+                });
             run_lifecycle_in_container(
                 &cmd,
                 &id,
                 &workdir,
                 "postAttachCommand",
                 LifecycleMarker::Always,
-                config.common().remote_user.as_deref(),
+                expanded_remote_user.as_deref(),
                 wait_for
                     .as_ref()
                     .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
@@ -174,6 +216,8 @@ fn shell(name: Option<String>) -> Result<()> {
     if let Some(value) = config.common().initialize_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
+        let workdir = config.workspace_folder(&cwd);
+        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
         let mut children: Vec<std::process::Child> = match &cmd {
             LifecycleCmd::Shell(s) => vec![
                 std::process::Command::new("sh")
@@ -556,13 +600,19 @@ fn shell(name: Option<String>) -> Result<()> {
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
         let workdir = config.workspace_folder(&cwd);
+        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+        let expanded_remote_user = config
+            .common()
+            .remote_user
+            .as_deref()
+            .map(|u| devcontainer::expand_variables(u, &cwd, &workdir, &Default::default()));
         run_lifecycle_in_container(
             &cmd,
             &id,
             &workdir,
             "onCreateCommand",
             LifecycleMarker::Once(&created_at),
-            config.common().remote_user.as_deref(),
+            expanded_remote_user.as_deref(),
             wait_for
                 .as_ref()
                 .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::OnCreateCommand)),
@@ -572,13 +622,19 @@ fn shell(name: Option<String>) -> Result<()> {
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
         let workdir = config.workspace_folder(&cwd);
+        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+        let expanded_remote_user = config
+            .common()
+            .remote_user
+            .as_deref()
+            .map(|u| devcontainer::expand_variables(u, &cwd, &workdir, &Default::default()));
         run_lifecycle_in_container(
             &cmd,
             &id,
             &workdir,
             "updateContentCommand",
             LifecycleMarker::Once(&created_at),
-            config.common().remote_user.as_deref(),
+            expanded_remote_user.as_deref(),
             wait_for
                 .as_ref()
                 .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::UpdateContentCommand)),
@@ -588,13 +644,19 @@ fn shell(name: Option<String>) -> Result<()> {
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
         let workdir = config.workspace_folder(&cwd);
+        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+        let expanded_remote_user = config
+            .common()
+            .remote_user
+            .as_deref()
+            .map(|u| devcontainer::expand_variables(u, &cwd, &workdir, &Default::default()));
         run_lifecycle_in_container(
             &cmd,
             &id,
             &workdir,
             "postCreateCommand",
             LifecycleMarker::Once(&created_at),
-            config.common().remote_user.as_deref(),
+            expanded_remote_user.as_deref(),
             wait_for
                 .as_ref()
                 .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostCreateCommand)),
@@ -604,13 +666,19 @@ fn shell(name: Option<String>) -> Result<()> {
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
         let workdir = config.workspace_folder(&cwd);
+        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+        let expanded_remote_user = config
+            .common()
+            .remote_user
+            .as_deref()
+            .map(|u| devcontainer::expand_variables(u, &cwd, &workdir, &Default::default()));
         run_lifecycle_in_container(
             &cmd,
             &id,
             &workdir,
             "postStartCommand",
             LifecycleMarker::Once(&started_at),
-            config.common().remote_user.as_deref(),
+            expanded_remote_user.as_deref(),
             wait_for
                 .as_ref()
                 .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
@@ -620,13 +688,19 @@ fn shell(name: Option<String>) -> Result<()> {
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
         let workdir = config.workspace_folder(&cwd);
+        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+        let expanded_remote_user = config
+            .common()
+            .remote_user
+            .as_deref()
+            .map(|u| devcontainer::expand_variables(u, &cwd, &workdir, &Default::default()));
         run_lifecycle_in_container(
             &cmd,
             &id,
             &workdir,
             "postAttachCommand",
             LifecycleMarker::Always,
-            config.common().remote_user.as_deref(),
+            expanded_remote_user.as_deref(),
             wait_for
                 .as_ref()
                 .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
@@ -711,7 +785,29 @@ fn exec_in_container(
     config: &devcontainer::DevcontainerConfig,
     cwd: &std::path::Path,
 ) -> Result<()> {
-    let remote_user_from_config = config.common().remote_user.clone();
+    let container_workspace_folder = config.workspace_folder(cwd);
+    let container_env: std::collections::HashMap<String, String> =
+        std::process::Command::new("docker")
+            .args(["exec", &id, "printenv"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter_map(|line| {
+                        let mut parts = line.splitn(2, '=');
+                        Some((
+                            parts.next()?.to_string(),
+                            parts.next().unwrap_or("").to_string(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    let remote_user_from_config = config.common().remote_user.as_deref().map(|u| {
+        devcontainer::expand_variables(u, cwd, &container_workspace_folder, &container_env)
+    });
     let remote_user_from_container = if let Some(ref c) = found_container {
         c.remote_user.clone()
     } else {
@@ -761,26 +857,6 @@ fn exec_in_container(
             })
         })
         .unwrap_or_else(|| "/bin/sh".to_string());
-    let container_workspace_folder = config.workspace_folder(cwd);
-    let container_env: std::collections::HashMap<String, String> =
-        std::process::Command::new("docker")
-            .args(["exec", &id, "printenv"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .filter_map(|line| {
-                        let mut parts = line.splitn(2, '=');
-                        Some((
-                            parts.next()?.to_string(),
-                            parts.next().unwrap_or("").to_string(),
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
     let remote_env = config.common().remote_env.as_ref();
     let mut exec_args = vec!["exec".to_string(), "-it".to_string()];
     if let Some(user) = remote_user {

@@ -1,4 +1,5 @@
 use super::config::{AppPort, BuildConfig, CommonConfig, DockerfileConfig};
+use super::variables::expand_variables;
 use std::path::Path;
 
 pub fn normalize_dockerfile_config(config: &DockerfileConfig) -> BuildConfig {
@@ -99,15 +100,22 @@ pub fn container_run_options(
         format!("devcontainer.config_file={}", config_file.display()),
     ];
 
-    let workspace_folder = common.workspace_folder.clone().unwrap_or_else(|| {
-        format!(
-            "/workspaces/{}",
-            local_folder
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-        )
-    });
+    let default_workspace_folder = format!(
+        "/workspaces/{}",
+        local_folder
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+    );
+    let workspace_folder = expand_variables(
+        &common
+            .workspace_folder
+            .clone()
+            .unwrap_or_else(|| default_workspace_folder.clone()),
+        local_folder,
+        &default_workspace_folder,
+        &Default::default(),
+    );
 
     let mount = workspace_mount.map(|s| s.to_string()).unwrap_or_else(|| {
         format!(
@@ -117,20 +125,26 @@ pub fn container_run_options(
         )
     });
     args.extend(["--mount".to_string(), mount]);
-    args.extend(["-w".to_string(), workspace_folder]);
+    args.extend(["-w".to_string(), workspace_folder.clone()]);
 
     for mount in &common.mounts {
         if let Some(m) = mount.as_str() {
-            args.extend(["--mount".to_string(), m.to_string()]);
+            let expanded =
+                expand_variables(m, local_folder, &workspace_folder, &Default::default());
+            args.extend(["--mount".to_string(), expanded]);
         }
     }
 
     for (key, value) in &common.container_env {
-        args.extend(["--env".to_string(), format!("{}={}", key, value)]);
+        let expanded_value =
+            expand_variables(value, local_folder, &workspace_folder, &Default::default());
+        args.extend(["--env".to_string(), format!("{}={}", key, expanded_value)]);
     }
 
     if let Some(user) = &common.container_user {
-        args.extend(["--user".to_string(), user.clone()]);
+        let expanded_user =
+            expand_variables(user, local_folder, &workspace_folder, &Default::default());
+        args.extend(["--user".to_string(), expanded_user]);
     }
 
     if common.init == Some(true) {
@@ -153,7 +167,11 @@ pub fn container_run_options(
         args.extend(["-p".to_string(), port.0.clone()]);
     }
 
-    args.extend(run_args.iter().cloned());
+    args.extend(
+        run_args
+            .iter()
+            .map(|a| expand_variables(a, local_folder, &workspace_folder, &Default::default())),
+    );
 
     args
 }

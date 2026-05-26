@@ -1,4 +1,7 @@
 import json
+import os
+import random
+import string
 import subprocess
 from pathlib import Path
 
@@ -6,6 +9,10 @@ import pytest
 from pytest_bdd import given, parsers, then, when
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _random_name(length: int = 8) -> str:
+    return "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
 
 @pytest.fixture(scope="session")
@@ -20,9 +27,10 @@ def cyyc_binary():
 
 @pytest.fixture
 def workspace(tmp_path):
-    devcontainer_dir = tmp_path / ".devcontainer"
-    devcontainer_dir.mkdir()
-    yield tmp_path
+    workspace_dir = tmp_path / _random_name()
+    devcontainer_dir = workspace_dir / ".devcontainer"
+    devcontainer_dir.mkdir(parents=True)
+    yield workspace_dir
     for cfg_path in devcontainer_dir.rglob("devcontainer.json"):
         r = subprocess.run(
             [
@@ -43,14 +51,14 @@ def workspace(tmp_path):
             "docker",
             "compose",
             "-p",
-            f"{tmp_path.name}_devcontainer",
+            f"{workspace_dir.name}_devcontainer",
             "down",
             "-v",
             "--remove-orphans",
         ],
         capture_output=True,
     )
-    name = tmp_path.name.lower()
+    name = workspace_dir.name.lower()
     r = subprocess.run(
         ["docker", "images", "-q", "--filter", f"reference=vsc-{name}*"],
         capture_output=True,
@@ -321,6 +329,111 @@ def given_remote_user(workspace, config, value):
 )
 def given_update_remote_user_uid_false(workspace, config):
     new_config = {**config, "updateRemoteUserUID": False}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse('the config has containerEnv "{key}" set to "{value}"'),
+    target_fixture="config",
+)
+def given_container_env_key_value(workspace, config, key, value):
+    container_env = {**config.get("containerEnv", {}), key: value}
+    new_config = {**config, "containerEnv": container_env}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse('the config has remoteEnv "{key}" set to "{value}"'),
+    target_fixture="config",
+)
+def given_remote_env_key_value(workspace, config, key, value):
+    remote_env = {**config.get("remoteEnv", {}), key: value}
+    new_config = {**config, "remoteEnv": remote_env}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse('the config has workspaceFolder "{value}"'),
+    target_fixture="config",
+)
+def given_workspace_folder_config(workspace, config, value):
+    new_config = {**config, "workspaceFolder": value}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse('the config has workspaceMount "{value}"'),
+    target_fixture="config",
+)
+def given_workspace_mount_config(workspace, config, value):
+    new_config = {**config, "workspaceMount": value}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse('the config has mounts with "{value}"'),
+    target_fixture="config",
+)
+def given_config_mounts(workspace, config, value):
+    mounts = [*config.get("mounts", []), value]
+    new_config = {**config, "mounts": mounts}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse('the config has runArgs with env "{key}" set to "{value}"'),
+    target_fixture="config",
+)
+def given_run_args_env(workspace, config, key, value):
+    run_args = [*config.get("runArgs", []), "--env", f"{key}={value}"]
+    new_config = {**config, "runArgs": run_args}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse('the config has containerUser "{value}"'),
+    target_fixture="config",
+)
+def given_container_user_config(workspace, config, value):
+    new_config = {**config, "containerUser": value}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given("the config has a Dockerfile that adds the host user", target_fixture="config")
+def given_dockerfile_adds_host_user(workspace, config):
+    image = config.get("image", "mcr.microsoft.com/devcontainers/base:debian")
+    current_user = os.environ.get("USER", "vscode")
+    dockerfile = (
+        f"FROM {image}\n"
+        f"RUN id {current_user} 2>/dev/null || useradd -ms /bin/bash {current_user}\n"
+    )
+    (workspace / ".devcontainer" / "Dockerfile").write_text(dockerfile)
+    new_config = {k: v for k, v in config.items() if k != "image"}
+    new_config["dockerFile"] = "Dockerfile"
     (workspace / ".devcontainer" / "devcontainer.json").write_text(
         json.dumps(new_config)
     )

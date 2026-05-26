@@ -222,19 +222,18 @@ impl DevcontainerConfig {
     }
 
     pub fn workspace_folder(&self, cwd: &std::path::Path) -> String {
+        let default = format!(
+            "/workspaces/{}",
+            cwd.file_name().unwrap_or_default().to_string_lossy()
+        );
         let raw = match self {
             DevcontainerConfig::Image(c) => c.common.workspace_folder.clone(),
             DevcontainerConfig::Dockerfile(c) => c.common.workspace_folder.clone(),
             DevcontainerConfig::DockerfileBuild(c) => c.common.workspace_folder.clone(),
             DevcontainerConfig::DockerCompose(c) => Some(c.workspace_folder.clone()),
         }
-        .unwrap_or_else(|| {
-            format!(
-                "/workspaces/{}",
-                cwd.file_name().unwrap_or_default().to_string_lossy()
-            )
-        });
-        super::variables::expand_variables(&raw, cwd, "", &Default::default())
+        .unwrap_or_else(|| default.clone());
+        super::variables::expand_variables(&raw, cwd, &default, &Default::default())
     }
 }
 
