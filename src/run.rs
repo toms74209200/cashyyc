@@ -93,9 +93,7 @@ fn shell(name: Option<String>) -> Result<()> {
             {
                 let workdir = config.workspace_folder(&cwd);
                 let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
-                let expanded_remote_user = config.common().remote_user.as_deref().map(|u| {
-                    devcontainer::expand_variables(u, &cwd, &workdir, &Default::default())
-                });
+                let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
                 run_lifecycle_in_container(
                     &cmd,
                     &id,
@@ -120,10 +118,7 @@ fn shell(name: Option<String>) -> Result<()> {
         {
             let workdir = config.workspace_folder(&cwd);
             let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
-            let expanded_remote_user =
-                config.common().remote_user.as_deref().map(|u| {
-                    devcontainer::expand_variables(u, &cwd, &workdir, &Default::default())
-                });
+            let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
             run_lifecycle_in_container(
                 &cmd,
                 &id,
@@ -601,11 +596,7 @@ fn shell(name: Option<String>) -> Result<()> {
     {
         let workdir = config.workspace_folder(&cwd);
         let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
-        let expanded_remote_user = config
-            .common()
-            .remote_user
-            .as_deref()
-            .map(|u| devcontainer::expand_variables(u, &cwd, &workdir, &Default::default()));
+        let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
         run_lifecycle_in_container(
             &cmd,
             &id,
@@ -623,11 +614,7 @@ fn shell(name: Option<String>) -> Result<()> {
     {
         let workdir = config.workspace_folder(&cwd);
         let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
-        let expanded_remote_user = config
-            .common()
-            .remote_user
-            .as_deref()
-            .map(|u| devcontainer::expand_variables(u, &cwd, &workdir, &Default::default()));
+        let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
         run_lifecycle_in_container(
             &cmd,
             &id,
@@ -645,11 +632,7 @@ fn shell(name: Option<String>) -> Result<()> {
     {
         let workdir = config.workspace_folder(&cwd);
         let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
-        let expanded_remote_user = config
-            .common()
-            .remote_user
-            .as_deref()
-            .map(|u| devcontainer::expand_variables(u, &cwd, &workdir, &Default::default()));
+        let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
         run_lifecycle_in_container(
             &cmd,
             &id,
@@ -667,11 +650,7 @@ fn shell(name: Option<String>) -> Result<()> {
     {
         let workdir = config.workspace_folder(&cwd);
         let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
-        let expanded_remote_user = config
-            .common()
-            .remote_user
-            .as_deref()
-            .map(|u| devcontainer::expand_variables(u, &cwd, &workdir, &Default::default()));
+        let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
         run_lifecycle_in_container(
             &cmd,
             &id,
@@ -689,11 +668,7 @@ fn shell(name: Option<String>) -> Result<()> {
     {
         let workdir = config.workspace_folder(&cwd);
         let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
-        let expanded_remote_user = config
-            .common()
-            .remote_user
-            .as_deref()
-            .map(|u| devcontainer::expand_variables(u, &cwd, &workdir, &Default::default()));
+        let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
         run_lifecycle_in_container(
             &cmd,
             &id,
@@ -1385,6 +1360,44 @@ fn run_uid_docker_build(
         return Err(anyhow!("`docker build` for UID update failed"));
     }
     Ok(())
+}
+
+fn resolve_lifecycle_user(
+    config: &devcontainer::DevcontainerConfig,
+    container_id: &str,
+    cwd: &std::path::Path,
+) -> Option<String> {
+    let workdir = config.workspace_folder(cwd);
+    if let Some(u) = config.common().remote_user.as_deref() {
+        return Some(devcontainer::expand_variables(
+            u,
+            cwd,
+            &workdir,
+            &Default::default(),
+        ));
+    }
+    std::process::Command::new("docker")
+        .args([
+            "inspect",
+            "--format",
+            "{{index .Config.Labels \"devcontainer.metadata\"}}",
+            container_id,
+        ])
+        .output()
+        .ok()
+        .and_then(|o| {
+            docker::parse_remote_user_from_metadata(String::from_utf8_lossy(&o.stdout).trim())
+        })
+        .or_else(|| {
+            std::process::Command::new("docker")
+                .args(["inspect", "--format", "{{.Config.User}}", container_id])
+                .output()
+                .ok()
+                .and_then(|o| {
+                    let user = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if user.is_empty() { None } else { Some(user) }
+                })
+        })
 }
 
 fn start_existing(target: &ContainerTarget, id: &str) -> Result<()> {
