@@ -154,10 +154,10 @@ Feature: cyyc shell
 
   Scenario: Execute onCreateCommand as string on new container
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
-    And the config has onCreateCommand "touch /tmp/on-create-ran"
+    And the config has onCreateCommand "whoami > /tmp/on-create-ran"
     And no container exists for this config
     When running "cyyc shell"
-    Then the file "/tmp/on-create-ran" exists in the container
+    Then the file "/tmp/on-create-ran" in the container contains "vscode"
 
   Scenario: onCreateCommand is not rerun on second shell attach
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
