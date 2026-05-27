@@ -121,7 +121,7 @@ pub fn container_run_options(
         format!(
             "type=bind,source={},target={}",
             local_folder.display(),
-            workspace_folder
+            default_workspace_folder
         )
     });
     args.extend(["--mount".to_string(), mount]);
@@ -317,6 +317,25 @@ mod tests {
         );
         let w_idx = args.iter().position(|a| a == "-w").unwrap();
         assert_eq!(args[w_idx + 1], "/workspace");
+    }
+
+    #[test]
+    fn when_container_run_options_with_workspace_folder_then_mount_target_is_still_basename() {
+        let mut common = empty_common();
+        common.workspace_folder = Some("/workspaces/foo".to_string());
+        let args = container_run_options(
+            &common,
+            &[],
+            &[],
+            None,
+            Path::new("/home/user/myproject"),
+            Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
+        );
+        let mount_idx = args.iter().position(|a| a == "--mount").unwrap();
+        assert_eq!(
+            args[mount_idx + 1],
+            "type=bind,source=/home/user/myproject,target=/workspaces/myproject"
+        );
     }
 
     #[test]
