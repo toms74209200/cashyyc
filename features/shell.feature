@@ -397,6 +397,14 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the file "/tmp/wf-result" in the container contains the expansion of "/work/${containerWorkspaceFolder}"
 
+  Scenario: when workspaceFolder is set to a non-default path then the mount target remains at /workspaces/<basename>
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has workspaceFolder "/workspaces/foo"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount destination matching the expansion of "${containerWorkspaceFolder}"
+    And the container has a mount source matching the expansion of "${localWorkspaceFolder}"
+
   Scenario: when mounts source is ${localWorkspaceFolder} then it is expanded
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
     And the config has mounts with "type=bind,source=${localWorkspaceFolder},target=/home/vscode/extra-bind"
