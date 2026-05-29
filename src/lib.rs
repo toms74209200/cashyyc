@@ -3,6 +3,7 @@ pub mod devcontainer;
 pub mod docker;
 pub mod features;
 pub mod lifecycle;
+pub mod oci;
 pub mod run;
 pub mod setup;
 pub mod tui;
