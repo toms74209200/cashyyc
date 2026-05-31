@@ -436,3 +436,34 @@ def then_install_log_beta_before_alpha(workspace, config):
     assert lines.index("beta") < lines.index("alpha"), (
         f"expected beta before alpha, got order: {lines}"
     )
+
+
+@given("the config has a local feature with manifest:", target_fixture="config")
+def given_local_feature_with_manifest(workspace, config, docstring):
+    manifest = json.loads(docstring)
+    feature_id = manifest["id"]
+    feature_dir = workspace / ".devcontainer" / "features" / feature_id
+    feature_dir.mkdir(parents=True, exist_ok=True)
+    (feature_dir / "devcontainer-feature.json").write_text(docstring)
+    (feature_dir / "install.sh").write_text("#!/bin/sh\n")
+    features = {**config.get("features", {}), f"./features/{feature_id}": {}}
+    new_config = {**config, "features": features}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@then("the container runs in privileged mode")
+def then_container_privileged(workspace, config):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    result = subprocess.run(
+        ["docker", "inspect", cid, "--format", "{{.HostConfig.Privileged}}"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"docker inspect failed: {result.stderr}"
+    assert result.stdout.strip() == "true", (
+        f"expected container to be privileged, got: {result.stdout.strip()!r}"
+    )
