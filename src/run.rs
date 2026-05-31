@@ -46,6 +46,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         cli::Command::Shell { name } => shell(name),
         cli::Command::Stop { name } => stop(name),
         cli::Command::Down { name } => down(name),
+        cli::Command::Ps { name } => ps(name),
         cli::Command::Help => {
             println!(
                 "Usage: cyyc <COMMAND>
@@ -54,6 +55,7 @@ Commands:
   shell [name]  Open a shell in the dev container
   stop [name]   Stop the dev container (keeps it for reuse)
   down [name]   Remove the dev container
+  ps [name]     List dev container configs and their statuses
   help          Print this message
   version       Print version information
 
@@ -716,6 +718,56 @@ fn stop(name: Option<String>) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn ps(_name: Option<String>) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let devcontainer_dir = cwd.join(".devcontainer");
+    let configs = discover_configs(&devcontainer_dir);
+
+    if configs.is_empty() {
+        return Err(anyhow!(
+            "No devcontainer.json found in {}",
+            devcontainer_dir.display()
+        ));
+    }
+
+    let root_config = devcontainer_dir.join("devcontainer.json");
+
+    for config_path in &configs {
+        let name = if config_path == &root_config {
+            "default".to_string()
+        } else {
+            config_path
+                .parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        };
+
+        let content = std::fs::read_to_string(config_path)
+            .map_err(|e| anyhow!("Failed to read {}: {e}", config_path.display()))?;
+        let config = devcontainer::parse_config(&content)
+            .ok_or_else(|| anyhow!("Failed to parse {}", config_path.display()))?;
+
+        let config_dir = config_path.parent().unwrap_or(cwd.as_path());
+        let target = setup::from_config(&config, &cwd, config_path, config_dir);
+
+        match lookup_existing(&target, config_path, &cwd)? {
+            Existing::Running { id, .. } => {
+                let short_id = &id[..id.len().min(12)];
+                println!("{name}\trunning\t{short_id}");
+            }
+            Existing::Stopped { .. } => {
+                println!("{name}\tstopped");
+            }
+            Existing::None => {
+                println!("{name}\tnone");
+            }
+        }
+    }
+
     Ok(())
 }
 
