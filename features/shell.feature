@@ -507,3 +507,14 @@ Feature: cyyc shell
     And no container exists for this config
     When running "cyyc shell"
     Then the file "/tmp/remote-user-result" in the container contains the expansion of "${localEnv:USER}"
+
+  Scenario: when a feature sets privileged then the container runs in privileged mode
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature with manifest:
+      """
+      {"id": "myfeature", "version": "1.0.0", "privileged": true}
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the container runs in privileged mode

@@ -162,10 +162,14 @@ fn shell(name: Option<String>) -> Result<()> {
                 let dockerfile_path = fdir.join("Dockerfile.features");
                 std::fs::write(&dockerfile_path, &content)
                     .map_err(|e| anyhow!("failed to write feature Dockerfile: {e}"))?;
+                let mut run_args = s.run_args;
+                if plan.features().iter().any(|f| f.privileged == Some(true)) {
+                    run_args.push("--privileged".to_string());
+                }
                 ContainerTarget::Single(setup::ContainerSetup {
                     image_tag: format!("{}-features", docker::image_tag(&cwd)),
                     dockerfile: Some(dockerfile_path),
-                    run_args: s.run_args,
+                    run_args,
                     override_command: s.override_command,
                 })
             }
@@ -1072,6 +1076,7 @@ fn download_features(
             options: (*options).clone(),
             installs_after: manifest.installs_after,
             container_env: manifest.container_env,
+            privileged: manifest.privileged,
         });
     }
 
