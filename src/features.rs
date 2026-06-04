@@ -46,6 +46,8 @@ pub struct FeatureManifest {
     pub container_env: HashMap<String, String>,
     #[serde(default)]
     pub privileged: Option<bool>,
+    #[serde(default)]
+    pub init: Option<bool>,
 }
 
 impl FeatureManifest {
@@ -62,6 +64,7 @@ pub struct Feature {
     pub installs_after: Vec<String>,
     pub container_env: HashMap<String, String>,
     pub privileged: Option<bool>,
+    pub init: Option<bool>,
 }
 
 pub struct InstallPlan(Vec<Feature>);
@@ -216,6 +219,7 @@ mod tests {
             installs_after: installs_after.into_iter().map(String::from).collect(),
             container_env: HashMap::new(),
             privileged: None,
+            init: None,
         }
     }
 
@@ -341,6 +345,7 @@ mod tests {
             installs_after: vec![],
             container_env: HashMap::new(),
             privileged: None,
+            init: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile("FROM rust:latest", &plan);
@@ -358,6 +363,7 @@ mod tests {
             installs_after: vec![],
             container_env: HashMap::new(),
             privileged: None,
+            init: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile("FROM ubuntu:22.04", &plan);
@@ -384,5 +390,19 @@ mod tests {
         let content = r#"{"id":"myfeature","version":"1.0"}"#;
         let m = FeatureManifest::parse(content).unwrap();
         assert_eq!(m.privileged, None);
+    }
+
+    #[test]
+    fn feature_manifest_parse_init_true() {
+        let content = r#"{"id":"myfeature","version":"1.0","init":true}"#;
+        let m = FeatureManifest::parse(content).unwrap();
+        assert_eq!(m.init, Some(true));
+    }
+
+    #[test]
+    fn feature_manifest_parse_init_absent() {
+        let content = r#"{"id":"myfeature","version":"1.0"}"#;
+        let m = FeatureManifest::parse(content).unwrap();
+        assert_eq!(m.init, None);
     }
 }
