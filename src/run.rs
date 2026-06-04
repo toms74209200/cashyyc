@@ -166,6 +166,9 @@ fn shell(name: Option<String>) -> Result<()> {
                 if plan.features().iter().any(|f| f.privileged == Some(true)) {
                     run_args.push("--privileged".to_string());
                 }
+                if plan.features().iter().any(|f| f.init == Some(true)) {
+                    run_args.push("--init".to_string());
+                }
                 ContainerTarget::Single(setup::ContainerSetup {
                     image_tag: format!("{}-features", docker::image_tag(&cwd)),
                     dockerfile: Some(dockerfile_path),
@@ -1077,6 +1080,7 @@ fn download_features(
             installs_after: manifest.installs_after,
             container_env: manifest.container_env,
             privileged: manifest.privileged,
+            init: manifest.init,
         });
     }
 

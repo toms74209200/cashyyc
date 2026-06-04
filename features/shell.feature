@@ -518,3 +518,14 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the container is running
     And the container runs in privileged mode
+
+  Scenario: when a feature sets init then the container runs with init process
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature with manifest:
+      """
+      {"id": "myfeature", "version": "1.0.0", "init": true}
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the container runs with init process
