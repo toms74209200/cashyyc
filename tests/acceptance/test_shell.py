@@ -467,3 +467,18 @@ def then_container_privileged(workspace, config):
     assert result.stdout.strip() == "true", (
         f"expected container to be privileged, got: {result.stdout.strip()!r}"
     )
+
+
+@then("the container runs with init process")
+def then_container_init(workspace, config):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    result = subprocess.run(
+        ["docker", "inspect", cid, "--format", "{{.HostConfig.Init}}"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"docker inspect failed: {result.stderr}"
+    assert result.stdout.strip() == "true", (
+        f"expected container to have init process, got: {result.stdout.strip()!r}"
+    )
