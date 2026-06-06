@@ -173,6 +173,10 @@ fn shell(name: Option<String>) -> Result<()> {
                     run_args.push("--cap-add".to_string());
                     run_args.push(cap.clone());
                 }
+                for mount in plan.features().iter().flat_map(|f| &f.mounts) {
+                    run_args.push("--mount".to_string());
+                    run_args.push(mount.to_docker_arg());
+                }
                 ContainerTarget::Single(setup::ContainerSetup {
                     image_tag: format!("{}-features", docker::image_tag(&cwd)),
                     dockerfile: Some(dockerfile_path),
@@ -1086,6 +1090,7 @@ fn download_features(
             privileged: manifest.privileged,
             init: manifest.init,
             cap_add: manifest.cap_add,
+            mounts: manifest.mounts,
         });
     }
 
