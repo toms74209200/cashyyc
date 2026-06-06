@@ -540,3 +540,15 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the container is running
     And the container has capability "SYS_PTRACE"
+
+  Scenario: when a feature sets mounts then the container has the mount
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature with manifest:
+      """
+      {"id": "myfeature", "version": "1.0.0", "mounts": [{"type": "bind", "source": "/tmp", "target": "/mnt/feature-mount"}]}
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the container has a mount destination matching the expansion of "/mnt/feature-mount"
+    And the container has a mount source matching the expansion of "/tmp"
