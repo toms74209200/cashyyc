@@ -169,6 +169,10 @@ fn shell(name: Option<String>) -> Result<()> {
                 if plan.features().iter().any(|f| f.init == Some(true)) {
                     run_args.push("--init".to_string());
                 }
+                for cap in plan.features().iter().flat_map(|f| &f.cap_add) {
+                    run_args.push("--cap-add".to_string());
+                    run_args.push(cap.clone());
+                }
                 ContainerTarget::Single(setup::ContainerSetup {
                     image_tag: format!("{}-features", docker::image_tag(&cwd)),
                     dockerfile: Some(dockerfile_path),
@@ -1081,6 +1085,7 @@ fn download_features(
             container_env: manifest.container_env,
             privileged: manifest.privileged,
             init: manifest.init,
+            cap_add: manifest.cap_add,
         });
     }
 

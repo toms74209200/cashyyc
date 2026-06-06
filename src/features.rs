@@ -48,6 +48,8 @@ pub struct FeatureManifest {
     pub privileged: Option<bool>,
     #[serde(default)]
     pub init: Option<bool>,
+    #[serde(rename = "capAdd", default)]
+    pub cap_add: Vec<String>,
 }
 
 impl FeatureManifest {
@@ -65,6 +67,7 @@ pub struct Feature {
     pub container_env: HashMap<String, String>,
     pub privileged: Option<bool>,
     pub init: Option<bool>,
+    pub cap_add: Vec<String>,
 }
 
 pub struct InstallPlan(Vec<Feature>);
@@ -220,6 +223,7 @@ mod tests {
             container_env: HashMap::new(),
             privileged: None,
             init: None,
+            cap_add: vec![],
         }
     }
 
@@ -346,6 +350,7 @@ mod tests {
             container_env: HashMap::new(),
             privileged: None,
             init: None,
+            cap_add: vec![],
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile("FROM rust:latest", &plan);
@@ -364,6 +369,7 @@ mod tests {
             container_env: HashMap::new(),
             privileged: None,
             init: None,
+            cap_add: vec![],
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile("FROM ubuntu:22.04", &plan);
@@ -404,5 +410,19 @@ mod tests {
         let content = r#"{"id":"myfeature","version":"1.0"}"#;
         let m = FeatureManifest::parse(content).unwrap();
         assert_eq!(m.init, None);
+    }
+
+    #[test]
+    fn feature_manifest_parse_cap_add_single() {
+        let content = r#"{"id":"myfeature","version":"1.0","capAdd":["SYS_PTRACE"]}"#;
+        let m = FeatureManifest::parse(content).unwrap();
+        assert_eq!(m.cap_add, vec!["SYS_PTRACE"]);
+    }
+
+    #[test]
+    fn feature_manifest_parse_cap_add_absent() {
+        let content = r#"{"id":"myfeature","version":"1.0"}"#;
+        let m = FeatureManifest::parse(content).unwrap();
+        assert!(m.cap_add.is_empty());
     }
 }
