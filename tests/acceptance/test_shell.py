@@ -482,3 +482,18 @@ def then_container_init(workspace, config):
     assert result.stdout.strip() == "true", (
         f"expected container to have init process, got: {result.stdout.strip()!r}"
     )
+
+
+@then(parsers.parse('the container has capability "{cap}"'))
+def then_container_has_capability(workspace, config, cap):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    result = subprocess.run(
+        ["docker", "inspect", cid, "--format", "{{.HostConfig.CapAdd}}"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"docker inspect failed: {result.stderr}"
+    assert cap in result.stdout, (
+        f"expected capability {cap!r} in CapAdd, got: {result.stdout.strip()!r}"
+    )
