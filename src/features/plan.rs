@@ -158,6 +158,11 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            on_create_command: None,
+            update_content_command: None,
+            post_create_command: None,
+            post_start_command: None,
+            post_attach_command: None,
         }
     }
 
@@ -263,6 +268,11 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            on_create_command: None,
+            update_content_command: None,
+            post_create_command: None,
+            post_start_command: None,
+            post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile("FROM rust:latest", &plan);
@@ -284,6 +294,11 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            on_create_command: None,
+            update_content_command: None,
+            post_create_command: None,
+            post_start_command: None,
+            post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile("FROM ubuntu:22.04", &plan);
@@ -302,6 +317,11 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            on_create_command: None,
+            update_content_command: None,
+            post_create_command: None,
+            post_start_command: None,
+            post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile("FROM ubuntu:22.04", &plan);
@@ -320,6 +340,11 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            on_create_command: None,
+            update_content_command: None,
+            post_create_command: None,
+            post_start_command: None,
+            post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile("FROM ubuntu:22.04", &plan);
@@ -338,6 +363,11 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            on_create_command: None,
+            update_content_command: None,
+            post_create_command: None,
+            post_start_command: None,
+            post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile("FROM ubuntu:22.04", &plan);

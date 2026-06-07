@@ -626,6 +626,28 @@ fn shell(name: Option<String>) -> Result<()> {
                 .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::OnCreateCommand)),
         )?;
     }
+    if let Some((ref plan, _)) = features_plan {
+        for feature in plan.features() {
+            if let Some(value) = feature.on_create_command.as_ref()
+                && let Ok(cmd) = LifecycleCmd::try_from(value)
+            {
+                let workdir = config.workspace_folder(&cwd);
+                let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+                let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+                run_lifecycle_in_container(
+                    &cmd,
+                    &id,
+                    &workdir,
+                    "onCreateCommand",
+                    LifecycleMarker::Once(&created_at),
+                    expanded_remote_user.as_deref(),
+                    wait_for
+                        .as_ref()
+                        .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::OnCreateCommand)),
+                )?;
+            }
+        }
+    }
     if let Some(value) = config.common().update_content_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
@@ -643,6 +665,28 @@ fn shell(name: Option<String>) -> Result<()> {
                 .as_ref()
                 .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::UpdateContentCommand)),
         )?;
+    }
+    if let Some((ref plan, _)) = features_plan {
+        for feature in plan.features() {
+            if let Some(value) = feature.update_content_command.as_ref()
+                && let Ok(cmd) = LifecycleCmd::try_from(value)
+            {
+                let workdir = config.workspace_folder(&cwd);
+                let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+                let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+                run_lifecycle_in_container(
+                    &cmd,
+                    &id,
+                    &workdir,
+                    "updateContentCommand",
+                    LifecycleMarker::Once(&created_at),
+                    expanded_remote_user.as_deref(),
+                    wait_for
+                        .as_ref()
+                        .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::UpdateContentCommand)),
+                )?;
+            }
+        }
     }
     if let Some(value) = config.common().post_create_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
@@ -662,6 +706,28 @@ fn shell(name: Option<String>) -> Result<()> {
                 .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostCreateCommand)),
         )?;
     }
+    if let Some((ref plan, _)) = features_plan {
+        for feature in plan.features() {
+            if let Some(value) = feature.post_create_command.as_ref()
+                && let Ok(cmd) = LifecycleCmd::try_from(value)
+            {
+                let workdir = config.workspace_folder(&cwd);
+                let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+                let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+                run_lifecycle_in_container(
+                    &cmd,
+                    &id,
+                    &workdir,
+                    "postCreateCommand",
+                    LifecycleMarker::Once(&created_at),
+                    expanded_remote_user.as_deref(),
+                    wait_for
+                        .as_ref()
+                        .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostCreateCommand)),
+                )?;
+            }
+        }
+    }
     if let Some(value) = config.common().post_start_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
@@ -680,6 +746,28 @@ fn shell(name: Option<String>) -> Result<()> {
                 .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
         )?;
     }
+    if let Some((ref plan, _)) = features_plan {
+        for feature in plan.features() {
+            if let Some(value) = feature.post_start_command.as_ref()
+                && let Ok(cmd) = LifecycleCmd::try_from(value)
+            {
+                let workdir = config.workspace_folder(&cwd);
+                let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+                let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+                run_lifecycle_in_container(
+                    &cmd,
+                    &id,
+                    &workdir,
+                    "postStartCommand",
+                    LifecycleMarker::Once(&started_at),
+                    expanded_remote_user.as_deref(),
+                    wait_for
+                        .as_ref()
+                        .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
+                )?;
+            }
+        }
+    }
     if let Some(value) = config.common().post_attach_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
@@ -697,6 +785,28 @@ fn shell(name: Option<String>) -> Result<()> {
                 .as_ref()
                 .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
         )?;
+    }
+    if let Some((ref plan, _)) = features_plan {
+        for feature in plan.features() {
+            if let Some(value) = feature.post_attach_command.as_ref()
+                && let Ok(cmd) = LifecycleCmd::try_from(value)
+            {
+                let workdir = config.workspace_folder(&cwd);
+                let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+                let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+                run_lifecycle_in_container(
+                    &cmd,
+                    &id,
+                    &workdir,
+                    "postAttachCommand",
+                    LifecycleMarker::Always,
+                    expanded_remote_user.as_deref(),
+                    wait_for
+                        .as_ref()
+                        .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
+                )?;
+            }
+        }
     }
     exec_in_container(id, None, &config, &cwd)
 }
@@ -1091,6 +1201,11 @@ fn download_features(
             init: manifest.init,
             cap_add: manifest.cap_add,
             mounts: manifest.mounts,
+            on_create_command: manifest.on_create_command,
+            update_content_command: manifest.update_content_command,
+            post_create_command: manifest.post_create_command,
+            post_start_command: manifest.post_start_command,
+            post_attach_command: manifest.post_attach_command,
         });
     }
 
