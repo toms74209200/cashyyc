@@ -20,6 +20,16 @@ pub struct FeatureManifest {
     pub cap_add: Vec<String>,
     #[serde(default)]
     pub mounts: Vec<FeatureMount>,
+    #[serde(rename = "onCreateCommand", default)]
+    pub on_create_command: Option<Value>,
+    #[serde(rename = "updateContentCommand", default)]
+    pub update_content_command: Option<Value>,
+    #[serde(rename = "postCreateCommand", default)]
+    pub post_create_command: Option<Value>,
+    #[serde(rename = "postStartCommand", default)]
+    pub post_start_command: Option<Value>,
+    #[serde(rename = "postAttachCommand", default)]
+    pub post_attach_command: Option<Value>,
 }
 
 impl FeatureManifest {
@@ -39,6 +49,11 @@ pub struct Feature {
     pub init: Option<bool>,
     pub cap_add: Vec<String>,
     pub mounts: Vec<FeatureMount>,
+    pub on_create_command: Option<Value>,
+    pub update_content_command: Option<Value>,
+    pub post_create_command: Option<Value>,
+    pub post_start_command: Option<Value>,
+    pub post_attach_command: Option<Value>,
 }
 
 #[cfg(test)]
@@ -134,5 +149,23 @@ mod tests {
     #[test]
     fn when_parse_with_non_string_id_then_returns_error() {
         assert!(FeatureManifest::parse(r#"{"id":123}"#).is_err());
+    }
+
+    #[test]
+    fn when_parse_with_post_create_command_string_then_parsed_as_value() {
+        let cmd = random_name();
+        let content = format!(r#"{{"id":"f","postCreateCommand":"{cmd}"}}"#);
+        let m = FeatureManifest::parse(&content).unwrap();
+        assert_eq!(m.post_create_command, Some(serde_json::Value::String(cmd)));
+    }
+
+    #[test]
+    fn when_parse_without_lifecycle_commands_then_all_are_none() {
+        let m = FeatureManifest::parse(r#"{"id":"f"}"#).unwrap();
+        assert!(m.on_create_command.is_none());
+        assert!(m.update_content_command.is_none());
+        assert!(m.post_create_command.is_none());
+        assert!(m.post_start_command.is_none());
+        assert!(m.post_attach_command.is_none());
     }
 }
