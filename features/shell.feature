@@ -552,3 +552,14 @@ Feature: cyyc shell
     Then the container is running
     And the container has a mount destination matching the expansion of "/mnt/feature-mount"
     And the container has a mount source matching the expansion of "/tmp"
+
+  Scenario: when a feature sets postCreateCommand then it runs after container creation
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature with manifest:
+      """
+      {"id": "myfeature", "version": "1.0.0", "postCreateCommand": "touch /tmp/feature-post-create-ran"}
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/feature-post-create-ran" exists in the container
