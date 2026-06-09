@@ -563,3 +563,45 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the container is running
     And the file "/tmp/feature-post-create-ran" exists in the container
+
+  Scenario: a feature's install.sh receives _REMOTE_USER and related variables
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has remoteUser "vscode"
+    And the config has a local feature that logs install user variables
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/feature-user-vars.log" in the container contains "_CONTAINER_USER=root"
+    And the file "/tmp/feature-user-vars.log" in the container contains "_REMOTE_USER=vscode"
+    And the file "/tmp/feature-user-vars.log" in the container contains "_CONTAINER_USER_HOME=/root"
+    And the file "/tmp/feature-user-vars.log" in the container contains "_REMOTE_USER_HOME=/home/vscode"
+
+  Scenario: when containerUser and remoteUser are both configured then a feature's install.sh receives both as literal values
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has containerUser "vscode"
+    And the config has remoteUser "root"
+    And the config has a local feature that logs install user variables
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/feature-user-vars.log" in the container contains "_CONTAINER_USER=vscode"
+    And the file "/tmp/feature-user-vars.log" in the container contains "_REMOTE_USER=root"
+
+  Scenario: when only containerUser is configured then a feature's install.sh receives it as both user variables
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has containerUser "vscode"
+    And the config has a local feature that logs install user variables
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/feature-user-vars.log" in the container contains "_CONTAINER_USER=vscode"
+    And the file "/tmp/feature-user-vars.log" in the container contains "_REMOTE_USER=vscode"
+
+  Scenario: when neither containerUser nor remoteUser is configured then a feature's install.sh receives the image default user
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature that logs install user variables
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/feature-user-vars.log" in the container contains "_CONTAINER_USER=root"
+    And the file "/tmp/feature-user-vars.log" in the container contains "_REMOTE_USER=root"
