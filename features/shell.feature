@@ -553,6 +553,17 @@ Feature: cyyc shell
     And the container has a mount destination matching the expansion of "/mnt/feature-mount"
     And the container has a mount source matching the expansion of "/tmp"
 
+  Scenario: when a feature sets entrypoint then the image entrypoint is set
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature with manifest:
+      """
+      {"id": "myfeature", "version": "1.0.0", "entrypoint": "/usr/local/share/myfeature-init.sh"}
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the container image entrypoint includes "/usr/local/share/myfeature-init.sh"
+
   Scenario: when a feature sets postCreateCommand then it runs after container creation
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
     And the config has a local feature with manifest:
