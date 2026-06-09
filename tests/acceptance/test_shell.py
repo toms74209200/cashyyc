@@ -454,6 +454,34 @@ def given_local_feature_with_manifest(workspace, config, docstring):
     return new_config
 
 
+@given(
+    "the config has a local feature that logs install user variables",
+    target_fixture="config",
+)
+def given_local_feature_logs_install_user_variables(workspace, config):
+    feature_id = "logs-install-user-vars"
+    feature_dir = workspace / ".devcontainer" / "features" / feature_id
+    feature_dir.mkdir(parents=True, exist_ok=True)
+    (feature_dir / "devcontainer-feature.json").write_text(
+        json.dumps({"id": feature_id, "version": "1.0.0"})
+    )
+    (feature_dir / "install.sh").write_text(
+        "#!/bin/sh\n"
+        "{\n"
+        '  echo "_CONTAINER_USER=$_CONTAINER_USER"\n'
+        '  echo "_REMOTE_USER=$_REMOTE_USER"\n'
+        '  echo "_CONTAINER_USER_HOME=$_CONTAINER_USER_HOME"\n'
+        '  echo "_REMOTE_USER_HOME=$_REMOTE_USER_HOME"\n'
+        "} >> /tmp/feature-user-vars.log\n"
+    )
+    features = {**config.get("features", {}), f"./features/{feature_id}": {}}
+    new_config = {**config, "features": features}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
 @then("the container runs in privileged mode")
 def then_container_privileged(workspace, config):
     cid = _container_id(workspace, config)
