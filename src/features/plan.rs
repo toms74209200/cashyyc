@@ -179,6 +179,20 @@ pub fn feature_dockerfile(
         steps
     }));
 
+    let entrypoints: Vec<String> = plan
+        .features()
+        .iter()
+        .filter_map(|f| f.entrypoint.clone())
+        .collect();
+    if !entrypoints.is_empty() {
+        let args = entrypoints
+            .iter()
+            .map(|e| format!(r#""{e}""#))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!("ENTRYPOINT [{args}]"));
+    }
+
     format!("{base_content}\n{}", lines.join("\n"))
 }
 
@@ -200,6 +214,7 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            entrypoint: None,
             on_create_command: None,
             update_content_command: None,
             post_create_command: None,
@@ -310,6 +325,7 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            entrypoint: None,
             on_create_command: None,
             update_content_command: None,
             post_create_command: None,
@@ -340,6 +356,7 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            entrypoint: None,
             on_create_command: None,
             update_content_command: None,
             post_create_command: None,
@@ -367,6 +384,7 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            entrypoint: None,
             on_create_command: None,
             update_content_command: None,
             post_create_command: None,
@@ -394,6 +412,7 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            entrypoint: None,
             on_create_command: None,
             update_content_command: None,
             post_create_command: None,
@@ -429,6 +448,7 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            entrypoint: None,
             on_create_command: None,
             update_content_command: None,
             post_create_command: None,
@@ -465,6 +485,7 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            entrypoint: None,
             on_create_command: None,
             update_content_command: None,
             post_create_command: None,
@@ -493,6 +514,7 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            entrypoint: None,
             on_create_command: None,
             update_content_command: None,
             post_create_command: None,
@@ -520,6 +542,7 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            entrypoint: None,
             on_create_command: None,
             update_content_command: None,
             post_create_command: None,
@@ -547,6 +570,7 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            entrypoint: None,
             on_create_command: None,
             update_content_command: None,
             post_create_command: None,
@@ -579,6 +603,7 @@ mod tests {
             init: None,
             cap_add: vec![],
             mounts: vec![],
+            entrypoint: None,
             on_create_command: None,
             update_content_command: None,
             post_create_command: None,
@@ -598,5 +623,110 @@ mod tests {
             "export _CONTAINER_USER=$(cat {FEATURE_IMAGE_USER_FILE})"
         )));
         assert!(df.contains("export _REMOTE_USER=$_CONTAINER_USER"));
+    }
+
+    #[test]
+    fn when_feature_dockerfile_with_entrypoint_then_includes_entrypoint_directive() {
+        let features = vec![Feature {
+            short_id: "docker".to_string(),
+            dir: PathBuf::from("/tmp/0"),
+            options: json!({}),
+            installs_after: vec![],
+            container_env: HashMap::new(),
+            privileged: None,
+            init: None,
+            cap_add: vec![],
+            mounts: vec![],
+            entrypoint: Some("/usr/local/share/docker-init.sh".to_string()),
+            on_create_command: None,
+            update_content_command: None,
+            post_create_command: None,
+            post_start_command: None,
+            post_attach_command: None,
+        }];
+        let plan = InstallPlan::new(features, &[]).unwrap();
+        let df = feature_dockerfile(
+            "FROM ubuntu:22.04",
+            &plan,
+            &FeatureInstallUsers::new(Some("vscode"), Some("vscode")),
+        );
+        assert!(df.contains(r#"ENTRYPOINT ["/usr/local/share/docker-init.sh"]"#));
+    }
+
+    #[test]
+    fn when_feature_dockerfile_with_multiple_entrypoints_then_combines_them() {
+        let features = vec![
+            Feature {
+                short_id: "docker".to_string(),
+                dir: PathBuf::from("/tmp/0"),
+                options: json!({}),
+                installs_after: vec![],
+                container_env: HashMap::new(),
+                privileged: None,
+                init: None,
+                cap_add: vec![],
+                mounts: vec![],
+                entrypoint: Some("/usr/local/share/docker-init.sh".to_string()),
+                on_create_command: None,
+                update_content_command: None,
+                post_create_command: None,
+                post_start_command: None,
+                post_attach_command: None,
+            },
+            Feature {
+                short_id: "ssh".to_string(),
+                dir: PathBuf::from("/tmp/1"),
+                options: json!({}),
+                installs_after: vec![],
+                container_env: HashMap::new(),
+                privileged: None,
+                init: None,
+                cap_add: vec![],
+                mounts: vec![],
+                entrypoint: Some("/usr/local/share/ssh-init.sh".to_string()),
+                on_create_command: None,
+                update_content_command: None,
+                post_create_command: None,
+                post_start_command: None,
+                post_attach_command: None,
+            },
+        ];
+        let plan = InstallPlan::new(features, &[]).unwrap();
+        let df = feature_dockerfile(
+            "FROM ubuntu:22.04",
+            &plan,
+            &FeatureInstallUsers::new(Some("vscode"), Some("vscode")),
+        );
+        assert!(df.contains(
+            r#"ENTRYPOINT ["/usr/local/share/docker-init.sh", "/usr/local/share/ssh-init.sh"]"#
+        ));
+    }
+
+    #[test]
+    fn when_feature_dockerfile_without_entrypoints_then_no_entrypoint_directive() {
+        let features = vec![Feature {
+            short_id: "git".to_string(),
+            dir: PathBuf::from("/tmp/0"),
+            options: json!({}),
+            installs_after: vec![],
+            container_env: HashMap::new(),
+            privileged: None,
+            init: None,
+            cap_add: vec![],
+            mounts: vec![],
+            entrypoint: None,
+            on_create_command: None,
+            update_content_command: None,
+            post_create_command: None,
+            post_start_command: None,
+            post_attach_command: None,
+        }];
+        let plan = InstallPlan::new(features, &[]).unwrap();
+        let df = feature_dockerfile(
+            "FROM ubuntu:22.04",
+            &plan,
+            &FeatureInstallUsers::new(Some("vscode"), Some("vscode")),
+        );
+        assert!(!df.contains("ENTRYPOINT"));
     }
 }
