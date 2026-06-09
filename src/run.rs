@@ -1205,6 +1205,7 @@ fn download_features(
             init: manifest.init,
             cap_add: manifest.cap_add,
             mounts: manifest.mounts,
+            entrypoint: manifest.entrypoint,
             on_create_command: manifest.on_create_command,
             update_content_command: manifest.update_content_command,
             post_create_command: manifest.post_create_command,

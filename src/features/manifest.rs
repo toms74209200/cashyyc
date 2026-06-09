@@ -20,6 +20,8 @@ pub struct FeatureManifest {
     pub cap_add: Vec<String>,
     #[serde(default)]
     pub mounts: Vec<FeatureMount>,
+    #[serde(default)]
+    pub entrypoint: Option<String>,
     #[serde(rename = "onCreateCommand", default)]
     pub on_create_command: Option<Value>,
     #[serde(rename = "updateContentCommand", default)]
@@ -49,6 +51,7 @@ pub struct Feature {
     pub init: Option<bool>,
     pub cap_add: Vec<String>,
     pub mounts: Vec<FeatureMount>,
+    pub entrypoint: Option<String>,
     pub on_create_command: Option<Value>,
     pub update_content_command: Option<Value>,
     pub post_create_command: Option<Value>,
@@ -134,6 +137,20 @@ mod tests {
     fn when_parse_without_mounts_then_mounts_is_empty() {
         let m = FeatureManifest::parse(r#"{"id":"f"}"#).unwrap();
         assert!(m.mounts.is_empty());
+    }
+
+    #[test]
+    fn when_parse_with_entrypoint_then_entrypoint_is_some() {
+        let ep = format!("/usr/local/share/{}-init.sh", random_name());
+        let content = format!(r#"{{"id":"f","entrypoint":"{ep}"}}"#);
+        let m = FeatureManifest::parse(&content).unwrap();
+        assert_eq!(m.entrypoint, Some(ep));
+    }
+
+    #[test]
+    fn when_parse_without_entrypoint_then_entrypoint_is_none() {
+        let m = FeatureManifest::parse(r#"{"id":"f"}"#).unwrap();
+        assert_eq!(m.entrypoint, None);
     }
 
     #[test]

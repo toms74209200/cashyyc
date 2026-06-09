@@ -525,3 +525,35 @@ def then_container_has_capability(workspace, config, cap):
     assert cap in result.stdout, (
         f"expected capability {cap!r} in CapAdd, got: {result.stdout.strip()!r}"
     )
+
+
+@then(parsers.parse('the container image entrypoint includes "{path}"'))
+def then_image_entrypoint_includes(workspace, config, path):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    image_id_result = subprocess.run(
+        ["docker", "inspect", cid, "--format", "{{.Image}}"],
+        capture_output=True,
+        text=True,
+    )
+    assert image_id_result.returncode == 0, (
+        f"docker inspect failed: {image_id_result.stderr}"
+    )
+    image_id = image_id_result.stdout.strip()
+    result = subprocess.run(
+        [
+            "docker",
+            "image",
+            "inspect",
+            image_id,
+            "--format",
+            "{{json .Config.Entrypoint}}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"docker image inspect failed: {result.stderr}"
+    entrypoint = json.loads(result.stdout.strip())
+    assert path in entrypoint, (
+        f"expected {path!r} in image entrypoint, got: {entrypoint!r}"
+    )
