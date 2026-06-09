@@ -1,4 +1,5 @@
 use super::manifest::Feature;
+use super::users::FeatureInstallUsers;
 use anyhow::{Result, anyhow};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -92,51 +93,91 @@ impl InstallPlan {
     }
 }
 
-pub fn feature_dockerfile(base_content: &str, plan: &InstallPlan) -> String {
-    let lines: Vec<String> = std::iter::once("USER root".to_string())
-        .chain(plan.features().iter().flat_map(|feature| {
-            let dir_name = feature
-                .dir
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy();
-            let dest = format!("/tmp/dev-container-features/{}", feature.short_id);
-            let copy = format!("COPY ./{dir_name}/ {dest}/");
-            let exports = match &feature.options {
-                Value::Object(map) => map
-                    .iter()
-                    .map(|(k, v)| {
-                        let val = match v {
-                            Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        };
-                        let env_key = k.to_uppercase().replace('-', "_");
-                        let quoted = format!("'{}'", val.replace('\'', r"'\''"));
-                        format!("export {env_key}={quoted}")
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" && "),
-                _ => String::new(),
-            };
-            let run = if exports.is_empty() {
-                format!(
-                    "RUN chmod -R 0755 {dest} && cd {dest} && chmod +x ./install.sh && ./install.sh"
-                )
-            } else {
-                format!(
-                    "RUN {exports} && chmod -R 0755 {dest} && cd {dest} && chmod +x ./install.sh && ./install.sh"
-                )
-            };
-            let mut steps = vec![copy, run];
-            let mut env_keys: Vec<&String> = feature.container_env.keys().collect();
-            env_keys.sort();
-            for key in env_keys {
-                let value = &feature.container_env[key];
-                steps.push(format!("ENV {key}={value}"));
-            }
-            steps
-        }))
-        .collect();
+const FEATURE_IMAGE_USER_FILE: &str = "/tmp/dev-container-features-image-user";
+const CONTAINER_USER_HOME_LOOKUP: &str = r#""$(getent passwd "$_CONTAINER_USER" 2>/dev/null | cut -d: -f6 || grep -E "^$_CONTAINER_USER:|^[^:]*:[^:]*:$_CONTAINER_USER:" /etc/passwd | cut -d: -f6 || true)""#;
+const REMOTE_USER_HOME_LOOKUP: &str = r#""$(getent passwd "$_REMOTE_USER" 2>/dev/null | cut -d: -f6 || grep -E "^$_REMOTE_USER:|^[^:]*:[^:]*:$_REMOTE_USER:" /etc/passwd | cut -d: -f6 || true)""#;
+
+pub fn feature_dockerfile(
+    base_content: &str,
+    plan: &InstallPlan,
+    users: &FeatureInstallUsers,
+) -> String {
+    let capture_instruction = match users {
+        FeatureInstallUsers::RemoteOnly(_) | FeatureInstallUsers::NeitherNamed => Some(format!(
+            "RUN (id -un 2>/dev/null || id -u 2>/dev/null || echo root) > {FEATURE_IMAGE_USER_FILE}"
+        )),
+        _ => None,
+    };
+
+    let container_user_val = match users {
+        FeatureInstallUsers::BothNamed { container, .. }
+        | FeatureInstallUsers::ContainerOnly(container) => {
+            format!("'{}'", container.replace('\'', r"'\''"))
+        }
+        FeatureInstallUsers::RemoteOnly(_) | FeatureInstallUsers::NeitherNamed => {
+            format!("$(cat {FEATURE_IMAGE_USER_FILE})")
+        }
+    };
+
+    let remote_user_val = match users {
+        FeatureInstallUsers::BothNamed { remote, .. } | FeatureInstallUsers::RemoteOnly(remote) => {
+            format!("'{}'", remote.replace('\'', r"'\''"))
+        }
+        FeatureInstallUsers::ContainerOnly(_) | FeatureInstallUsers::NeitherNamed => {
+            "$_CONTAINER_USER".to_string()
+        }
+    };
+
+    let user_exports = [
+        format!("export _CONTAINER_USER={container_user_val}"),
+        format!("export _REMOTE_USER={remote_user_val}"),
+        format!("export _CONTAINER_USER_HOME={CONTAINER_USER_HOME_LOOKUP}"),
+        format!("export _REMOTE_USER_HOME={REMOTE_USER_HOME_LOOKUP}"),
+    ]
+    .join(" && ");
+
+    let mut lines: Vec<String> = capture_instruction.into_iter().collect();
+    lines.push("USER root".to_string());
+    lines.extend(plan.features().iter().flat_map(|feature| {
+        let dir_name = feature
+            .dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
+        let dest = format!("/tmp/dev-container-features/{}", feature.short_id);
+        let copy = format!("COPY ./{dir_name}/ {dest}/");
+        let option_exports = match &feature.options {
+            Value::Object(map) => map
+                .iter()
+                .map(|(k, v)| {
+                    let val = match v {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    let env_key = k.to_uppercase().replace('-', "_");
+                    format!("export {env_key}='{}'", val.replace('\'', r"'\''"))
+                })
+                .collect::<Vec<_>>()
+                .join(" && "),
+            _ => String::new(),
+        };
+        let exports = if option_exports.is_empty() {
+            user_exports.clone()
+        } else {
+            format!("{user_exports} && {option_exports}")
+        };
+        let run = format!(
+            "RUN {exports} && chmod -R 0755 {dest} && cd {dest} && chmod +x ./install.sh && ./install.sh"
+        );
+        let mut steps = vec![copy, run];
+        let mut env_keys: Vec<&String> = feature.container_env.keys().collect();
+        env_keys.sort();
+        for key in env_keys {
+            let value = &feature.container_env[key];
+            steps.push(format!("ENV {key}={value}"));
+        }
+        steps
+    }));
 
     format!("{base_content}\n{}", lines.join("\n"))
 }
@@ -144,6 +185,7 @@ pub fn feature_dockerfile(base_content: &str, plan: &InstallPlan) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::users::FeatureInstallUsers;
     use serde_json::json;
     use std::path::PathBuf;
 
@@ -275,10 +317,14 @@ mod tests {
             post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
-        let df = feature_dockerfile("FROM rust:latest", &plan);
+        let df = feature_dockerfile(
+            "FROM rust:latest",
+            &plan,
+            &FeatureInstallUsers::new(Some("vscode"), Some("vscode")),
+        );
         assert!(df.contains("COPY ./0/ /tmp/dev-container-features/git/"));
         assert!(df.contains(
-            "RUN chmod -R 0755 /tmp/dev-container-features/git && cd /tmp/dev-container-features/git && chmod +x ./install.sh && ./install.sh"
+            "&& chmod -R 0755 /tmp/dev-container-features/git && cd /tmp/dev-container-features/git && chmod +x ./install.sh && ./install.sh"
         ));
     }
 
@@ -301,7 +347,11 @@ mod tests {
             post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
-        let df = feature_dockerfile("FROM ubuntu:22.04", &plan);
+        let df = feature_dockerfile(
+            "FROM ubuntu:22.04",
+            &plan,
+            &FeatureInstallUsers::new(Some("vscode"), Some("vscode")),
+        );
         assert!(df.contains("export VERSION='18'"));
     }
 
@@ -324,8 +374,138 @@ mod tests {
             post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
-        let df = feature_dockerfile("FROM ubuntu:22.04", &plan);
+        let df = feature_dockerfile(
+            "FROM ubuntu:22.04",
+            &plan,
+            &FeatureInstallUsers::new(Some("vscode"), Some("vscode")),
+        );
         assert!(df.contains("export MOBY='true'"));
+    }
+
+    #[test]
+    fn when_feature_dockerfile_with_configured_users_then_exports_literal_values() {
+        let features = vec![Feature {
+            short_id: "git".to_string(),
+            dir: PathBuf::from("/tmp/0"),
+            options: json!({}),
+            installs_after: vec![],
+            container_env: HashMap::new(),
+            privileged: None,
+            init: None,
+            cap_add: vec![],
+            mounts: vec![],
+            on_create_command: None,
+            update_content_command: None,
+            post_create_command: None,
+            post_start_command: None,
+            post_attach_command: None,
+        }];
+        let plan = InstallPlan::new(features, &[]).unwrap();
+        let df = feature_dockerfile(
+            "FROM ubuntu:22.04",
+            &plan,
+            &FeatureInstallUsers::new(Some("root"), Some("vscode")),
+        );
+        assert!(!df.contains(FEATURE_IMAGE_USER_FILE));
+        assert!(df.contains("export _CONTAINER_USER='root'"));
+        assert!(df.contains("export _REMOTE_USER='vscode'"));
+        assert!(df.contains(
+            r#"export _CONTAINER_USER_HOME="$(getent passwd "$_CONTAINER_USER" 2>/dev/null | cut -d: -f6 || grep -E "^$_CONTAINER_USER:|^[^:]*:[^:]*:$_CONTAINER_USER:" /etc/passwd | cut -d: -f6 || true)""#
+        ));
+        assert!(df.contains(
+            r#"export _REMOTE_USER_HOME="$(getent passwd "$_REMOTE_USER" 2>/dev/null | cut -d: -f6 || grep -E "^$_REMOTE_USER:|^[^:]*:[^:]*:$_REMOTE_USER:" /etc/passwd | cut -d: -f6 || true)""#
+        ));
+    }
+
+    #[test]
+    fn when_feature_dockerfile_with_no_container_user_then_captures_image_default_user() {
+        let features = vec![Feature {
+            short_id: "git".to_string(),
+            dir: PathBuf::from("/tmp/0"),
+            options: json!({}),
+            installs_after: vec![],
+            container_env: HashMap::new(),
+            privileged: None,
+            init: None,
+            cap_add: vec![],
+            mounts: vec![],
+            on_create_command: None,
+            update_content_command: None,
+            post_create_command: None,
+            post_start_command: None,
+            post_attach_command: None,
+        }];
+        let plan = InstallPlan::new(features, &[]).unwrap();
+        let df = feature_dockerfile(
+            "FROM ubuntu:22.04",
+            &plan,
+            &FeatureInstallUsers::new(None, Some("vscode")),
+        );
+        let capture_line = format!(
+            "RUN (id -un 2>/dev/null || id -u 2>/dev/null || echo root) > {FEATURE_IMAGE_USER_FILE}"
+        );
+        let capture_pos = df.find(&capture_line).expect("capture instruction present");
+        let user_root_pos = df.find("\nUSER root").expect("USER root present");
+        assert!(capture_pos < user_root_pos);
+        assert_eq!(df.matches(&capture_line).count(), 1);
+        assert!(df.contains(&format!(
+            "export _CONTAINER_USER=$(cat {FEATURE_IMAGE_USER_FILE})"
+        )));
+    }
+
+    #[test]
+    fn when_feature_dockerfile_with_configured_container_user_then_omits_capture_instruction() {
+        let features = vec![Feature {
+            short_id: "git".to_string(),
+            dir: PathBuf::from("/tmp/0"),
+            options: json!({}),
+            installs_after: vec![],
+            container_env: HashMap::new(),
+            privileged: None,
+            init: None,
+            cap_add: vec![],
+            mounts: vec![],
+            on_create_command: None,
+            update_content_command: None,
+            post_create_command: None,
+            post_start_command: None,
+            post_attach_command: None,
+        }];
+        let plan = InstallPlan::new(features, &[]).unwrap();
+        let df = feature_dockerfile(
+            "FROM ubuntu:22.04",
+            &plan,
+            &FeatureInstallUsers::new(Some("vscode"), Some("vscode")),
+        );
+        assert!(!df.contains("id -un"));
+        assert!(!df.contains(FEATURE_IMAGE_USER_FILE));
+    }
+
+    #[test]
+    fn when_feature_dockerfile_with_no_remote_user_then_remote_user_matches_container_user() {
+        let features = vec![Feature {
+            short_id: "git".to_string(),
+            dir: PathBuf::from("/tmp/0"),
+            options: json!({}),
+            installs_after: vec![],
+            container_env: HashMap::new(),
+            privileged: None,
+            init: None,
+            cap_add: vec![],
+            mounts: vec![],
+            on_create_command: None,
+            update_content_command: None,
+            post_create_command: None,
+            post_start_command: None,
+            post_attach_command: None,
+        }];
+        let plan = InstallPlan::new(features, &[]).unwrap();
+        let df = feature_dockerfile(
+            "FROM ubuntu:22.04",
+            &plan,
+            &FeatureInstallUsers::new(Some("root"), None),
+        );
+        assert!(df.contains("export _REMOTE_USER=$_CONTAINER_USER"));
     }
 
     #[test]
@@ -347,12 +527,16 @@ mod tests {
             post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
-        let df = feature_dockerfile("FROM ubuntu:22.04", &plan);
+        let df = feature_dockerfile(
+            "FROM ubuntu:22.04",
+            &plan,
+            &FeatureInstallUsers::new(Some("vscode"), Some("vscode")),
+        );
         assert!(df.contains("ENV NVM_DIR=/usr/local/nvm"));
     }
 
     #[test]
-    fn when_feature_dockerfile_with_non_object_options_then_no_exports() {
+    fn when_feature_dockerfile_with_non_object_options_then_no_option_exports() {
         let features = vec![Feature {
             short_id: "git".to_string(),
             dir: PathBuf::from("/tmp/0"),
@@ -370,7 +554,49 @@ mod tests {
             post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
-        let df = feature_dockerfile("FROM ubuntu:22.04", &plan);
-        assert!(!df.contains("export"));
+        let df = feature_dockerfile(
+            "FROM ubuntu:22.04",
+            &plan,
+            &FeatureInstallUsers::new(Some("vscode"), Some("vscode")),
+        );
+        let run_line = df
+            .lines()
+            .find(|l| l.starts_with("RUN export _CONTAINER_USER"))
+            .expect("expected RUN line with builtin user exports");
+        assert_eq!(run_line.matches("export ").count(), 4);
+    }
+
+    #[test]
+    fn when_feature_dockerfile_with_no_container_user_and_no_remote_user_then_captures_image_default_user()
+     {
+        let features = vec![Feature {
+            short_id: "git".to_string(),
+            dir: PathBuf::from("/tmp/0"),
+            options: json!({}),
+            installs_after: vec![],
+            container_env: HashMap::new(),
+            privileged: None,
+            init: None,
+            cap_add: vec![],
+            mounts: vec![],
+            on_create_command: None,
+            update_content_command: None,
+            post_create_command: None,
+            post_start_command: None,
+            post_attach_command: None,
+        }];
+        let plan = InstallPlan::new(features, &[]).unwrap();
+        let df = feature_dockerfile(
+            "FROM ubuntu:22.04",
+            &plan,
+            &FeatureInstallUsers::new(None, None),
+        );
+        assert!(df.contains(&format!(
+            "RUN (id -un 2>/dev/null || id -u 2>/dev/null || echo root) > {FEATURE_IMAGE_USER_FILE}"
+        )));
+        assert!(df.contains(&format!(
+            "export _CONTAINER_USER=$(cat {FEATURE_IMAGE_USER_FILE})"
+        )));
+        assert!(df.contains("export _REMOTE_USER=$_CONTAINER_USER"));
     }
 }

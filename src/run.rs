@@ -150,6 +150,10 @@ fn shell(name: Option<String>) -> Result<()> {
             None
         };
 
+    let feature_users = features::FeatureInstallUsers::new(
+        config.common().container_user.as_deref(),
+        config.common().remote_user.as_deref(),
+    );
     let target = if let Some((ref plan, ref fdir)) = features_plan {
         match target {
             ContainerTarget::Single(s) => {
@@ -158,7 +162,7 @@ fn shell(name: Option<String>) -> Result<()> {
                     Some(p) => std::fs::read_to_string(p)
                         .map_err(|e| anyhow!("failed to read Dockerfile: {e}"))?,
                 };
-                let content = features::feature_dockerfile(&base, plan);
+                let content = features::feature_dockerfile(&base, plan, &feature_users);
                 let dockerfile_path = fdir.join("Dockerfile.features");
                 std::fs::write(&dockerfile_path, &content)
                     .map_err(|e| anyhow!("failed to write feature Dockerfile: {e}"))?;
@@ -205,7 +209,7 @@ fn shell(name: Option<String>) -> Result<()> {
                     }
                 })()
                 .ok_or_else(|| anyhow!("failed to resolve compose service base for features"))?;
-                let content = features::feature_dockerfile(&base, plan);
+                let content = features::feature_dockerfile(&base, plan, &feature_users);
                 let dockerfile_path = fdir.join("Dockerfile.features");
                 std::fs::write(&dockerfile_path, &content)
                     .map_err(|e| anyhow!("failed to write feature Dockerfile: {e}"))?;
