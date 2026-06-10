@@ -18,6 +18,8 @@ pub struct FeatureManifest {
     pub init: Option<bool>,
     #[serde(rename = "capAdd", default)]
     pub cap_add: Vec<String>,
+    #[serde(rename = "securityOpt", default)]
+    pub security_opt: Vec<String>,
     #[serde(default)]
     pub mounts: Vec<FeatureMount>,
     #[serde(default)]
@@ -50,6 +52,7 @@ pub struct Feature {
     pub privileged: Option<bool>,
     pub init: Option<bool>,
     pub cap_add: Vec<String>,
+    pub security_opt: Vec<String>,
     pub mounts: Vec<FeatureMount>,
     pub entrypoint: Option<String>,
     pub on_create_command: Option<Value>,
@@ -117,6 +120,20 @@ mod tests {
     fn when_parse_without_cap_add_then_cap_add_is_empty() {
         let m = FeatureManifest::parse(r#"{"id":"f"}"#).unwrap();
         assert!(m.cap_add.is_empty());
+    }
+
+    #[test]
+    fn when_parse_with_security_opt_then_options_are_parsed() {
+        let opt = random_name();
+        let content = format!(r#"{{"id":"f","securityOpt":["{opt}"]}}"#);
+        let m = FeatureManifest::parse(&content).unwrap();
+        assert_eq!(m.security_opt, vec![opt]);
+    }
+
+    #[test]
+    fn when_parse_without_security_opt_then_security_opt_is_empty() {
+        let m = FeatureManifest::parse(r#"{"id":"f"}"#).unwrap();
+        assert!(m.security_opt.is_empty());
     }
 
     #[test]
