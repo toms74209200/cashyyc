@@ -177,6 +177,10 @@ fn shell(name: Option<String>) -> Result<()> {
                     run_args.push("--cap-add".to_string());
                     run_args.push(cap.clone());
                 }
+                for opt in plan.features().iter().flat_map(|f| &f.security_opt) {
+                    run_args.push("--security-opt".to_string());
+                    run_args.push(opt.clone());
+                }
                 for mount in plan.features().iter().flat_map(|f| &f.mounts) {
                     run_args.push("--mount".to_string());
                     run_args.push(mount.to_docker_arg());
@@ -1204,6 +1208,7 @@ fn download_features(
             privileged: manifest.privileged,
             init: manifest.init,
             cap_add: manifest.cap_add,
+            security_opt: manifest.security_opt,
             mounts: manifest.mounts,
             entrypoint: manifest.entrypoint,
             on_create_command: manifest.on_create_command,
