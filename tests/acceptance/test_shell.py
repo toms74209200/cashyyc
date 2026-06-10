@@ -527,6 +527,21 @@ def then_container_has_capability(workspace, config, cap):
     )
 
 
+@then(parsers.parse('the container has security option "{opt}"'))
+def then_container_has_security_option(workspace, config, opt):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    result = subprocess.run(
+        ["docker", "inspect", cid, "--format", "{{.HostConfig.SecurityOpt}}"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"docker inspect failed: {result.stderr}"
+    assert opt in result.stdout, (
+        f"expected security option {opt!r} in SecurityOpt, got: {result.stdout.strip()!r}"
+    )
+
+
 @then(parsers.parse('the container image entrypoint includes "{path}"'))
 def then_image_entrypoint_includes(workspace, config, path):
     cid = _container_id(workspace, config)
