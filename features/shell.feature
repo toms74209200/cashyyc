@@ -541,6 +541,17 @@ Feature: cyyc shell
     Then the container is running
     And the container has capability "SYS_PTRACE"
 
+  Scenario: when a feature sets securityOpt then the container has the security option
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature with manifest:
+      """
+      {"id": "myfeature", "version": "1.0.0", "securityOpt": ["seccomp=unconfined"]}
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the container has security option "seccomp=unconfined"
+
   Scenario: when a feature sets mounts then the container has the mount
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
     And the config has a local feature with manifest:
