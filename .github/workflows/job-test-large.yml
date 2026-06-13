@@ -33,4 +33,14 @@ jobs:
       - name: Sync dependencies
         run: uv sync
       - name: Run acceptance tests
-        run: uv run pytest -vv
+        run: uv run pytest -vv --span-report
+      - name: Generate span timing report
+        if: always()
+        run: |
+          cat << EOF >> $GITHUB_STEP_SUMMARY
+          # Span Timing Report
+
+          \`\`\`
+          $(cat reports/spanTiming/spanTiming.txt)
+          \`\`\`
+          EOF
