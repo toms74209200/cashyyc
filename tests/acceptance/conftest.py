@@ -8,7 +8,69 @@ from pathlib import Path
 import pytest
 from pytest_bdd import given, parsers, then, when
 
+from lib.tracing import StepTimer, TestTiming, get_collector, render_table
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+_SPAN_REPORT_OPTION = "--span-report"
+_REPORT_FILE = Path(__file__).parent / "reports" / "spanTiming" / "spanTiming.txt"
+_step_timer = StepTimer()
+_span_report_enabled = False
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(_SPAN_REPORT_OPTION, action="store_true", default=False)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    global _span_report_enabled
+    _span_report_enabled = config.getoption(_SPAN_REPORT_OPTION)
+
+
+def pytest_bdd_before_step_call(
+    request, feature, scenario, step, step_func, step_func_args
+):
+    if _span_report_enabled:
+        _step_timer.start_step(step.type)
+
+
+def pytest_bdd_after_step(request, feature, scenario, step, step_func, step_func_args):
+    if _span_report_enabled:
+        _step_timer.end_step()
+
+
+def pytest_bdd_step_error(
+    request, feature, scenario, step, step_func, step_func_args, exception
+):
+    if _span_report_enabled:
+        _step_timer.end_step()
+
+
+def pytest_bdd_after_scenario(request, feature, scenario):
+    if not _span_report_enabled:
+        return
+    nanos = _step_timer.collect_phase_nanos()
+    get_collector().record(
+        TestTiming(
+            test_module=request.node.module.__name__,
+            test_name=request.node.name,
+            given_nanos=nanos["given"],
+            when_nanos=nanos["when"],
+            then_nanos=nanos["then"],
+        )
+    )
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    if not _span_report_enabled:
+        return
+    timings = get_collector().all()
+    if not timings:
+        return
+    table = render_table(timings)
+    print(f"\n{table}")
+    _REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _REPORT_FILE.write_text(table)
 
 
 def _random_name(length: int = 8) -> str:
