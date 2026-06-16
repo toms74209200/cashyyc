@@ -404,6 +404,18 @@ def then_container_user_is_expansion(workspace, config, template):
     _assert_expansion(result.stdout, workspace, template)
 
 
+@then("the build log is not in stderr")
+def then_build_log_not_in_stderr(run_result):
+    assert "FROM" not in run_result["stderr"]
+
+
+@then("the build log is in stderr")
+def then_build_log_in_stderr(run_result):
+    assert "FROM" in run_result["stderr"] or "exit 1" in run_result["stderr"], (
+        f"expected build log in stderr, got: {run_result['stderr']!r}"
+    )
+
+
 @given(
     'the config overrides feature install order with "beta" first',
     target_fixture="config",

@@ -627,3 +627,24 @@ Feature: cyyc shell
     Then the container is running
     And the file "/tmp/feature-user-vars.log" in the container contains "_CONTAINER_USER=root"
     And the file "/tmp/feature-user-vars.log" in the container contains "_REMOTE_USER=root"
+
+  Scenario: Build log is not printed to stderr on successful Dockerfile build
+    Given a devcontainer config with Dockerfile:
+      """
+      FROM mcr.microsoft.com/devcontainers/base:debian
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the build log is not in stderr
+
+  Scenario: Build log is printed to stderr on failed Dockerfile build
+    Given a devcontainer config with Dockerfile:
+      """
+      FROM mcr.microsoft.com/devcontainers/base:debian
+      RUN exit 1
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the command exits with a non-zero status
+    And the build log is in stderr

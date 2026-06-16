@@ -5,8 +5,10 @@ use crate::features;
 use crate::lifecycle::LifecycleCmd;
 use crate::setup;
 use crate::setup::ContainerTarget;
+use crate::tui;
 use crate::uid::{UidContext, UidUpdate};
 use anyhow::{Result, anyhow};
+use std::process::Stdio;
 
 fn expand_lifecycle_cmd(
     cmd: &LifecycleCmd,
@@ -280,7 +282,7 @@ fn shell(name: Option<String>) -> Result<()> {
     let id: String = match target {
         ContainerTarget::Single(s) => {
             if let Some((_, ref fdir)) = features_plan {
-                let status = std::process::Command::new("docker")
+                let mut child = std::process::Command::new("docker")
                     .args([
                         "build",
                         "-f",
@@ -289,17 +291,25 @@ fn shell(name: Option<String>) -> Result<()> {
                         &s.image_tag,
                         &fdir.display().to_string(),
                     ])
-                    .status()
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
                     .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                let status =
+                    tui::build_log(&mut child).map_err(|e| anyhow!("Failed to run docker: {e}"))?;
                 if !status.success() {
                     return Err(anyhow!("`docker build` for features failed"));
                 }
             } else {
                 match &config {
                     devcontainer::DevcontainerConfig::Image(c) => {
-                        let status = std::process::Command::new("docker")
+                        let mut child = std::process::Command::new("docker")
                             .args(["pull", &c.image])
-                            .status()
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .spawn()
+                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        let status = tui::build_log(&mut child)
                             .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
                         if !status.success() {
                             return Err(anyhow!("`docker pull` failed"));
@@ -309,10 +319,14 @@ fn shell(name: Option<String>) -> Result<()> {
                         let build = devcontainer::normalize_dockerfile_config(c);
                         let build_args =
                             devcontainer::container_build_args(&build, config_dir, &s.image_tag);
-                        let status = std::process::Command::new("docker")
+                        let mut child = std::process::Command::new("docker")
                             .arg("build")
                             .args(&build_args)
-                            .status()
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .spawn()
+                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        let status = tui::build_log(&mut child)
                             .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
                         if !status.success() {
                             return Err(anyhow!("`docker build` failed"));
@@ -321,10 +335,14 @@ fn shell(name: Option<String>) -> Result<()> {
                     devcontainer::DevcontainerConfig::DockerfileBuild(c) => {
                         let build_args =
                             devcontainer::container_build_args(&c.build, config_dir, &s.image_tag);
-                        let status = std::process::Command::new("docker")
+                        let mut child = std::process::Command::new("docker")
                             .arg("build")
                             .args(&build_args)
-                            .status()
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .spawn()
+                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        let status = tui::build_log(&mut child)
                             .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
                         if !status.success() {
                             return Err(anyhow!("`docker build` failed"));
@@ -565,10 +583,14 @@ fn shell(name: Option<String>) -> Result<()> {
                     build_args.extend(["-f".to_string(), p.display().to_string()]);
                     build_args.push("build".to_string());
                     build_args.extend(c.services.iter().cloned());
-                    let status = std::process::Command::new("docker")
+                    let mut child = std::process::Command::new("docker")
                         .arg("compose")
                         .args(&build_args)
-                        .status()
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                    let status = tui::build_log(&mut child)
                         .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
                     if !status.success() {
                         return Err(anyhow!("`docker compose build` failed"));
@@ -1531,7 +1553,7 @@ fn run_uid_docker_build(
     let dockerfile_path = uid_dir.join("updateUID.Dockerfile");
     std::fs::write(&dockerfile_path, crate::uid::UPDATE_UID_DOCKERFILE)
         .map_err(|e| anyhow!("Failed to write updateUID.Dockerfile: {e}"))?;
-    let status = std::process::Command::new("docker")
+    let mut child = std::process::Command::new("docker")
         .args([
             "build",
             "-f",
@@ -1550,8 +1572,11 @@ fn run_uid_docker_build(
             &format!("IMAGE_USER={image_user}"),
             &uid_dir.display().to_string(),
         ])
-        .status()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+    let status = tui::build_log(&mut child).map_err(|e| anyhow!("Failed to run docker: {e}"))?;
     if !status.success() {
         return Err(anyhow!("`docker build` for UID update failed"));
     }
