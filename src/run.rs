@@ -295,8 +295,8 @@ fn shell(name: Option<String>) -> Result<()> {
                     .stderr(Stdio::piped())
                     .spawn()
                     .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-                let status = tui::build_log(&mut child)
-                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                let status =
+                    tui::build_log(&mut child).map_err(|e| anyhow!("Failed to run docker: {e}"))?;
                 if !status.success() {
                     return Err(anyhow!("`docker build` for features failed"));
                 }
@@ -1576,8 +1576,7 @@ fn run_uid_docker_build(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-    let status = tui::build_log(&mut child)
-        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+    let status = tui::build_log(&mut child).map_err(|e| anyhow!("Failed to run docker: {e}"))?;
     if !status.success() {
         return Err(anyhow!("`docker build` for UID update failed"));
     }

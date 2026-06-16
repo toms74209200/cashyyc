@@ -67,7 +67,7 @@ fn terminal_width() -> usize {
     tty.and_then(|tty| Command::new("stty").arg("size").stdin(tty).output().ok())
         .and_then(|o| {
             let s = String::from_utf8_lossy(&o.stdout);
-            let mut parts = s.trim().split_whitespace();
+            let mut parts = s.split_whitespace();
             parts.next();
             parts.next()?.parse().ok()
         })
@@ -118,7 +118,7 @@ fn fallback_build_log(child: &mut std::process::Child) -> Result<std::process::E
 
     let t1 = stdout_pipe.map(|pipe| {
         thread::spawn(move || {
-            for line in BufReader::new(pipe).lines().flatten() {
+            for line in BufReader::new(pipe).lines().map_while(Result::ok) {
                 let _ = tx1.send(line);
             }
         })
@@ -126,13 +126,15 @@ fn fallback_build_log(child: &mut std::process::Child) -> Result<std::process::E
 
     let t2 = stderr_pipe.map(|pipe| {
         thread::spawn(move || {
-            for line in BufReader::new(pipe).lines().flatten() {
+            for line in BufReader::new(pipe).lines().map_while(Result::ok) {
                 let _ = tx2.send(line);
             }
         })
     });
 
-    let status = child.wait().map_err(|e| anyhow::anyhow!("Failed to wait for build: {e}"))?;
+    let status = child
+        .wait()
+        .map_err(|e| anyhow::anyhow!("Failed to wait for build: {e}"))?;
     if let Some(t) = t1 {
         let _ = t.join();
     }
@@ -152,13 +154,9 @@ fn fallback_build_log(child: &mut std::process::Child) -> Result<std::process::E
 pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitStatus> {
     let term_width = terminal_width();
 
-    let raw_and_tty = RawTerminal::enter().ok().and_then(|raw| {
-        OpenOptions::new()
-            .read(true)
-            .open("/dev/tty")
-            .ok()
-            .map(|tty| (raw, tty))
-    });
+    let raw_and_tty = RawTerminal::enter()
+        .ok()
+        .zip(OpenOptions::new().read(true).open("/dev/tty").ok());
 
     let (_raw, mut tty) = match raw_and_tty {
         Some(pair) => pair,
@@ -181,29 +179,27 @@ pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitSt
     let tx2 = log_tx;
 
     thread::spawn(move || {
-        for line in BufReader::new(stdout_pipe).lines() {
-            if let Ok(line) = line {
-                if tx1.send(line).is_err() {
-                    break;
-                }
+        for line in BufReader::new(stdout_pipe).lines().map_while(Result::ok) {
+            if tx1.send(line).is_err() {
+                break;
             }
         }
     });
 
     thread::spawn(move || {
-        for line in BufReader::new(stderr_pipe).lines() {
-            if let Ok(line) = line {
-                if tx2.send(line).is_err() {
-                    break;
-                }
+        for line in BufReader::new(stderr_pipe).lines().map_while(Result::ok) {
+            if tx2.send(line).is_err() {
+                break;
             }
         }
     });
 
-    thread::spawn(move || loop {
-        let key = next_key(&mut tty);
-        if key_tx.send(key).is_err() {
-            break;
+    thread::spawn(move || {
+        loop {
+            let key = next_key(&mut tty);
+            if key_tx.send(key).is_err() {
+                break;
+            }
         }
     });
 
@@ -252,33 +248,27 @@ pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitSt
             break;
         }
 
-        loop {
-            match key_rx.try_recv() {
-                Ok(Key::CtrlO) => {
-                    expanded = !expanded;
-                    erase_lines(lines_drawn);
-                    if expanded {
-                        for line in &log_buffer {
-                            print!("{line}\r\n");
-                        }
-                        print!("{}", build_status_line(true));
-                        lines_drawn = 1;
-                    } else {
-                        print!("{}", render_collapsed(&log_buffer, term_width));
-                        lines_drawn = COLLAPSED_LINES + 1;
+        match key_rx.try_recv() {
+            Ok(Key::CtrlO) => {
+                expanded = !expanded;
+                erase_lines(lines_drawn);
+                if expanded {
+                    for line in &log_buffer {
+                        print!("{line}\r\n");
                     }
-                    let _ = stdout().flush();
-                    break;
+                    print!("{}", build_status_line(true));
+                    lines_drawn = 1;
+                } else {
+                    print!("{}", render_collapsed(&log_buffer, term_width));
+                    lines_drawn = COLLAPSED_LINES + 1;
                 }
-                Ok(Key::CtrlC) => {
-                    let pid = child.id().to_string();
-                    let _ = Command::new("kill").args(["-INT", &pid]).status();
-                    break;
-                }
-                Ok(Key::Other) | Err(mpsc::TryRecvError::Empty) | Err(mpsc::TryRecvError::Disconnected) => {
-                    break;
-                }
+                let _ = stdout().flush();
             }
+            Ok(Key::CtrlC) => {
+                let pid = child.id().to_string();
+                let _ = Command::new("kill").args(["-INT", &pid]).status();
+            }
+            Ok(Key::Other) | Err(_) => {}
         }
 
         thread::sleep(Duration::from_millis(10));
