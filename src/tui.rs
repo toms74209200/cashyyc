@@ -10,6 +10,94 @@ const HIDE_CURSOR: &str = "\x1b[?25l";
 const SHOW_CURSOR: &str = "\x1b[?25h";
 const CLEAR_LINE: &str = "\x1b[2K";
 const COLLAPSED_LINES: usize = 3;
+const EXPAND_HINT: &str = "Building...  Ctrl-O expand";
+const COLLAPSE_HINT: &str = "Building...  Ctrl-O collapse";
+
+#[derive(Debug, Default, PartialEq)]
+struct Frame {
+    commit: Vec<String>,
+    live: Vec<String>,
+}
+
+struct BuildLogView {
+    buffer: Vec<String>,
+    expanded: bool,
+    emitted: usize,
+    width: usize,
+}
+
+impl BuildLogView {
+    fn new(width: usize) -> Self {
+        Self {
+            buffer: Vec::new(),
+            expanded: false,
+            emitted: 0,
+            width,
+        }
+    }
+
+    fn on_lines(mut self, lines: Vec<String>) -> (Self, Frame) {
+        self.buffer.extend(lines.into_iter().map(|line| {
+            let mut stripped = String::with_capacity(line.len());
+            let mut chars = line.chars();
+            while let Some(c) = chars.next() {
+                if c != '\x1b' {
+                    stripped.push(c);
+                    continue;
+                }
+                match chars.next() {
+                    Some('[') => {
+                        for c2 in chars.by_ref() {
+                            if c2.is_ascii_alphabetic() {
+                                break;
+                            }
+                        }
+                    }
+                    Some(']') => {
+                        for c2 in chars.by_ref() {
+                            if c2 == '\x07' || c2 == '\u{9C}' {
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            stripped
+        }));
+        self.advance()
+    }
+
+    fn toggle(mut self) -> (Self, Frame) {
+        self.expanded = !self.expanded;
+        self.advance()
+    }
+
+    fn advance(mut self) -> (Self, Frame) {
+        let (commit, live) = if self.expanded {
+            let committed = self.buffer[self.emitted..].to_vec();
+            self.emitted = self.buffer.len();
+            (committed, vec![COLLAPSE_HINT.to_string()])
+        } else {
+            let mut live = collapsed_window(&self.buffer, self.width);
+            live.push(EXPAND_HINT.to_string());
+            (Vec::new(), live)
+        };
+        (self, Frame { commit, live })
+    }
+}
+
+fn collapsed_window(buffer: &[String], width: usize) -> Vec<String> {
+    let start = buffer.len().saturating_sub(COLLAPSED_LINES);
+    (0..COLLAPSED_LINES)
+        .map(|i| {
+            buffer
+                .get(start + i)
+                .map(|line| line.chars().take(width).collect())
+                .unwrap_or_default()
+        })
+        .collect()
+}
 
 struct RawTerminal {
     saved: String,
@@ -18,8 +106,10 @@ struct RawTerminal {
 impl RawTerminal {
     fn enter() -> Result<Self> {
         let tty = OpenOptions::new().read(true).open("/dev/tty")?;
-        let out = Command::new("stty").arg("-g").stdin(tty).output()?;
-        let saved = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let saved_state = Command::new("stty").arg("-g").stdin(tty).output()?;
+        let saved = String::from_utf8_lossy(&saved_state.stdout)
+            .trim()
+            .to_string();
         let tty = OpenOptions::new().read(true).open("/dev/tty")?;
         Command::new("stty")
             .args(["raw", "-echo"])
@@ -54,8 +144,16 @@ fn next_key(tty: &mut impl Read) -> Key {
         3 => Key::CtrlC,
         15 => Key::CtrlO,
         27 => {
-            let _ = tty.read(&mut b);
-            let _ = tty.read(&mut b);
+            if tty.read(&mut b).unwrap_or(0) > 0 && b[0] == b'[' {
+                loop {
+                    if tty.read(&mut b).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if b[0].is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
             Key::Other
         }
         _ => Key::Other,
@@ -74,38 +172,23 @@ fn terminal_width() -> usize {
         .unwrap_or(80)
 }
 
-fn build_status_line(expanded: bool) -> String {
-    if expanded {
-        "Building...  Ctrl-O collapse\r\n".to_string()
-    } else {
-        "Building...  Ctrl-O expand\r\n".to_string()
+fn write_frame(out: &mut impl Write, frame: &Frame, prev_live: usize) -> usize {
+    if prev_live > 0 {
+        let _ = write!(out, "\x1b[{prev_live}A");
     }
-}
-
-fn render_collapsed(log_buffer: &[String], term_width: usize) -> String {
-    let mut buf = String::new();
-    let start = log_buffer.len().saturating_sub(COLLAPSED_LINES);
-    for i in 0..COLLAPSED_LINES {
-        buf.push_str(&format!("{CLEAR_LINE}\r"));
-        if let Some(line) = log_buffer.get(start + i) {
-            let truncated: String = line.chars().take(term_width).collect();
-            buf.push_str(truncated.as_str());
+    for line in frame.commit.iter().chain(frame.live.iter()) {
+        let _ = write!(out, "{CLEAR_LINE}\r{line}\r\n");
+    }
+    let written = frame.commit.len() + frame.live.len();
+    if prev_live > written {
+        let extra = prev_live - written;
+        for _ in 0..extra {
+            let _ = write!(out, "{CLEAR_LINE}\r\n");
         }
-        buf.push_str("\r\n");
+        let _ = write!(out, "\x1b[{extra}A");
     }
-    buf.push_str(&build_status_line(false));
-    buf
-}
-
-fn erase_lines(n: usize) {
-    if n == 0 {
-        return;
-    }
-    print!("\x1b[{n}A");
-    for _ in 0..n {
-        print!("{CLEAR_LINE}\r\n");
-    }
-    print!("\x1b[{n}A");
+    let _ = out.flush();
+    frame.live.len()
 }
 
 fn fallback_build_log(child: &mut std::process::Child) -> Result<std::process::ExitStatus> {
@@ -203,13 +286,10 @@ pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitSt
         }
     });
 
-    let mut expanded = false;
-    let mut log_buffer: Vec<String> = Vec::new();
-
+    let mut out = stdout();
     print!("{HIDE_CURSOR}");
-    print!("{}", render_collapsed(&log_buffer, term_width));
-    let _ = stdout().flush();
-    let mut lines_drawn = COLLAPSED_LINES + 1;
+    let (mut view, frame) = BuildLogView::new(term_width).advance();
+    let mut prev_live = write_frame(&mut out, &frame, 0);
 
     let mut log_done = false;
 
@@ -218,10 +298,7 @@ pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitSt
 
         loop {
             match log_rx.try_recv() {
-                Ok(line) => {
-                    log_buffer.push(line.clone());
-                    new_lines.push(line);
-                }
+                Ok(line) => new_lines.push(line),
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     log_done = true;
@@ -231,17 +308,9 @@ pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitSt
         }
 
         if !new_lines.is_empty() {
-            if expanded {
-                print!("\x1b[1A{CLEAR_LINE}\r");
-                for line in &new_lines {
-                    print!("{line}\r\n");
-                }
-                print!("{}", build_status_line(true));
-            } else {
-                print!("\x1b[{lines_drawn}A");
-                print!("{}", render_collapsed(&log_buffer, term_width));
-            }
-            let _ = stdout().flush();
+            let (next, frame) = view.on_lines(new_lines);
+            view = next;
+            prev_live = write_frame(&mut out, &frame, prev_live);
         }
 
         if log_done {
@@ -250,19 +319,9 @@ pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitSt
 
         match key_rx.try_recv() {
             Ok(Key::CtrlO) => {
-                expanded = !expanded;
-                erase_lines(lines_drawn);
-                if expanded {
-                    for line in &log_buffer {
-                        print!("{line}\r\n");
-                    }
-                    print!("{}", build_status_line(true));
-                    lines_drawn = 1;
-                } else {
-                    print!("{}", render_collapsed(&log_buffer, term_width));
-                    lines_drawn = COLLAPSED_LINES + 1;
-                }
-                let _ = stdout().flush();
+                let (next, frame) = view.toggle();
+                view = next;
+                prev_live = write_frame(&mut out, &frame, prev_live);
             }
             Ok(Key::CtrlC) => {
                 let pid = child.id().to_string();
@@ -278,12 +337,11 @@ pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitSt
         .wait()
         .map_err(|e| anyhow::anyhow!("Failed to wait for build: {e}"))?;
 
-    erase_lines(lines_drawn);
-    let _ = stdout().flush();
+    write_frame(&mut out, &Frame::default(), prev_live);
 
     if !exit_status.success() {
         drop(_raw);
-        for line in &log_buffer {
+        for line in &view.buffer {
             eprintln!("{line}");
         }
     }
@@ -296,42 +354,85 @@ mod tests {
     use super::*;
 
     #[test]
-    fn when_build_status_line_collapsed_then_shows_expand_hint() {
-        let s = build_status_line(false);
-        assert!(s.contains("Building..."));
-        assert!(s.contains("Ctrl-O expand"));
-    }
-
-    #[test]
-    fn when_build_status_line_expanded_then_shows_collapse_hint() {
-        let s = build_status_line(true);
-        assert!(s.contains("Building..."));
-        assert!(s.contains("Ctrl-O collapse"));
-    }
-
-    #[test]
-    fn when_render_collapsed_with_empty_buffer_then_shows_status_line() {
-        let s = render_collapsed(&[], 80);
-        assert!(s.contains("Building..."));
-        assert!(s.contains("Ctrl-O expand"));
-    }
-
-    #[test]
-    fn when_render_collapsed_with_lines_then_shows_last_n() {
+    fn when_collapsed_window_with_lines_then_returns_last_n() {
         let buf: Vec<String> = (1..=5).map(|i| format!("line {i}")).collect();
-        let s = render_collapsed(&buf, 80);
-        assert!(!s.contains("line 1"));
-        assert!(!s.contains("line 2"));
-        assert!(s.contains("line 3"));
-        assert!(s.contains("line 4"));
-        assert!(s.contains("line 5"));
+        let w = collapsed_window(&buf, 80);
+        assert_eq!(w, vec!["line 3", "line 4", "line 5"]);
     }
 
     #[test]
-    fn when_render_collapsed_with_long_line_then_truncates_to_term_width() {
+    fn when_collapsed_window_with_fewer_lines_then_returns_padded_empty() {
+        let buf = vec!["a".to_string(), "b".to_string()];
+        let w = collapsed_window(&buf, 80);
+        assert_eq!(w, vec!["a", "b", ""]);
+    }
+
+    #[test]
+    fn when_collapsed_window_with_long_line_then_returns_truncated() {
         let buf = vec!["x".repeat(200)];
-        let s = render_collapsed(&buf, 80);
-        assert!(s.contains(&"x".repeat(80)));
-        assert!(!s.contains(&"x".repeat(81)));
+        let w = collapsed_window(&buf, 80);
+        assert_eq!(w[0], "x".repeat(80));
+    }
+
+    #[test]
+    fn when_on_lines_with_collapsed_then_returns_window_without_commit() {
+        let view = BuildLogView::new(80);
+        let (_view, frame) = view.on_lines(vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ]);
+        assert!(frame.commit.is_empty());
+        assert_eq!(
+            frame.live,
+            vec![
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string(),
+                EXPAND_HINT.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn when_toggle_with_buffered_lines_then_returns_committed_lines() {
+        let view = BuildLogView::new(80);
+        let (view, _) = view.on_lines(vec!["a".to_string(), "b".to_string()]);
+        let (_view, frame) = view.toggle();
+        assert_eq!(frame.commit, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(frame.live, vec![COLLAPSE_HINT.to_string()]);
+    }
+
+    #[test]
+    fn when_on_lines_with_expanded_then_returns_appended_lines() {
+        let view = BuildLogView::new(80);
+        let (view, _) = view.on_lines(vec!["a".to_string(), "b".to_string()]);
+        let (view, _) = view.toggle();
+        let (_view, frame) = view.on_lines(vec!["c".to_string()]);
+        assert_eq!(frame.commit, vec!["c".to_string()]);
+        assert_eq!(frame.live, vec![COLLAPSE_HINT.to_string()]);
+    }
+
+    #[test]
+    fn when_toggle_with_expanded_then_returns_no_recommit() {
+        let view = BuildLogView::new(80);
+        let (view, _) = view.on_lines(vec!["a".to_string(), "b".to_string()]);
+        let (view, _) = view.toggle();
+        let (view, frame) = view.toggle();
+        assert!(frame.commit.is_empty());
+        let (_view, next) = view.on_lines(vec!["c".to_string()]);
+        assert!(next.commit.is_empty());
+    }
+
+    #[test]
+    fn when_toggle_with_reexpansion_then_returns_only_new_lines() {
+        let view = BuildLogView::new(80);
+        let (view, _) = view.on_lines(vec!["a".to_string(), "b".to_string()]);
+        let (view, _) = view.toggle();
+        let (view, _) = view.toggle();
+        let (view, _) = view.on_lines(vec!["c".to_string()]);
+        let (_view, frame) = view.toggle();
+        assert_eq!(frame.commit, vec!["c".to_string()]);
     }
 }
