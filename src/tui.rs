@@ -1,10 +1,13 @@
 use anyhow::Result;
-use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Read, Write, stdout};
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+
+const O_NONBLOCK: i32 = 0o4000;
 
 const HIDE_CURSOR: &str = "\x1b[?25l";
 const SHOW_CURSOR: &str = "\x1b[?25h";
@@ -99,6 +102,17 @@ fn collapsed_window(buffer: &[String], width: usize) -> Vec<String> {
         .collect()
 }
 
+fn open_output() -> Result<File> {
+    Ok(OpenOptions::new().write(true).open("/dev/tty")?)
+}
+
+fn open_input() -> Result<File> {
+    Ok(OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NONBLOCK)
+        .open("/dev/tty")?)
+}
+
 struct RawTerminal {
     saved: String,
 }
@@ -124,8 +138,10 @@ impl Drop for RawTerminal {
         if let Ok(tty) = OpenOptions::new().read(true).open("/dev/tty") {
             let _ = Command::new("stty").arg(&self.saved).stdin(tty).status();
         }
-        print!("{SHOW_CURSOR}");
-        let _ = stdout().flush();
+        if let Ok(mut out) = open_output() {
+            let _ = write!(out, "{SHOW_CURSOR}");
+            let _ = out.flush();
+        }
     }
 }
 
@@ -237,17 +253,19 @@ fn fallback_build_log(child: &mut std::process::Child) -> Result<std::process::E
 pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitStatus> {
     let term_width = terminal_width();
 
-    let raw_and_tty = RawTerminal::enter()
-        .ok()
-        .zip(OpenOptions::new().read(true).open("/dev/tty").ok());
+    let raw_and_tty = RawTerminal::enter().ok().zip(open_input().ok());
 
-    let (_raw, mut tty) = match raw_and_tty {
+    let (raw, mut tty) = match raw_and_tty {
         Some(pair) => pair,
         None => return fallback_build_log(child),
     };
 
+    let mut out = match open_output() {
+        Ok(out) => out,
+        Err(_) => return fallback_build_log(child),
+    };
+
     let (log_tx, log_rx) = mpsc::channel::<String>();
-    let (key_tx, key_rx) = mpsc::channel::<Key>();
 
     let stdout_pipe = match child.stdout.take() {
         Some(p) => p,
@@ -277,17 +295,7 @@ pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitSt
         }
     });
 
-    thread::spawn(move || {
-        loop {
-            let key = next_key(&mut tty);
-            if key_tx.send(key).is_err() {
-                break;
-            }
-        }
-    });
-
-    let mut out = stdout();
-    print!("{HIDE_CURSOR}");
+    let _ = write!(out, "{HIDE_CURSOR}");
     let (mut view, frame) = BuildLogView::new(term_width).advance();
     let mut prev_live = write_frame(&mut out, &frame, 0);
 
@@ -317,17 +325,17 @@ pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitSt
             break;
         }
 
-        match key_rx.try_recv() {
-            Ok(Key::CtrlO) => {
+        match next_key(&mut tty) {
+            Key::CtrlO => {
                 let (next, frame) = view.toggle();
                 view = next;
                 prev_live = write_frame(&mut out, &frame, prev_live);
             }
-            Ok(Key::CtrlC) => {
+            Key::CtrlC => {
                 let pid = child.id().to_string();
                 let _ = Command::new("kill").args(["-INT", &pid]).status();
             }
-            Ok(Key::Other) | Err(_) => {}
+            Key::Other => {}
         }
 
         thread::sleep(Duration::from_millis(10));
@@ -340,7 +348,7 @@ pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitSt
     write_frame(&mut out, &Frame::default(), prev_live);
 
     if !exit_status.success() {
-        drop(_raw);
+        drop(raw);
         for line in &view.buffer {
             eprintln!("{line}");
         }
