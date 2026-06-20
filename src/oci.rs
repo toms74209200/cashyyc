@@ -102,7 +102,8 @@ mod tests {
 
     #[test]
     fn when_parse_templates_with_invalid_entry_then_skips_it() {
-        let json = r#"{"templates":[{"id":"go","name":"Go","description":"Go template"},{"name":"bad"}]}"#;
+        let json =
+            r#"{"templates":[{"id":"go","name":"Go","description":"Go template"},{"name":"bad"}]}"#;
         let templates = parse_templates(json);
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0].id, "go");
