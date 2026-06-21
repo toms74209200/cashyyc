@@ -7,7 +7,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use super::view::{write_frame, BuildLogView, Frame, Key, HIDE_CURSOR, SHOW_CURSOR};
+use super::view::{BuildLogView, Frame, HIDE_CURSOR, Key, SHOW_CURSOR, write_frame};
 
 const O_NONBLOCK: i32 = 0o4000;
 

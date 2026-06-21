@@ -234,8 +234,7 @@ mod tests {
     #[test]
     fn when_on_lines_with_ansi_csi_then_strips_escape_sequences() {
         let view = BuildLogView::new(80);
-        let (_view, frame) =
-            view.on_lines(vec!["\x1b[31mred\x1b[0m normal".to_string()]);
+        let (_view, frame) = view.on_lines(vec!["\x1b[31mred\x1b[0m normal".to_string()]);
         assert!(frame.live.iter().any(|l| l.contains("red normal")));
     }
 
