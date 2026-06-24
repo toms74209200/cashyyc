@@ -194,7 +194,7 @@ pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitSt
                 let pid = child.id().to_string();
                 let _ = Command::new("kill").args(["-INT", &pid]).status();
             }
-            Key::Other => {}
+            _ => {}
         }
 
         thread::sleep(Duration::from_millis(10));
@@ -214,4 +214,62 @@ pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitSt
     }
 
     Ok(exit_status)
+}
+
+pub fn select(label: &str, items: &[String]) -> Result<Option<usize>> {
+    use super::view::{SelectResult, SelectView, next_key};
+
+    let _raw = RawTerminal::enter()?;
+    let mut input = OpenOptions::new().read(true).open("/dev/tty")?;
+    let mut out = open_output()?;
+
+    let _ = write!(out, "{HIDE_CURSOR}");
+
+    let (mut view, frame) = SelectView::new(label, items);
+    let _ = write!(out, "{frame}");
+    let _ = out.flush();
+
+    loop {
+        match view.on_key(next_key(&mut input)) {
+            SelectResult::Continue(next, frame) => {
+                view = next;
+                let _ = write!(out, "{frame}");
+                let _ = out.flush();
+            }
+            SelectResult::Done(result, erase) => {
+                let _ = write!(out, "{erase}");
+                let _ = out.flush();
+                return Ok(result);
+            }
+        }
+    }
+}
+
+pub fn multi_select(label: &str, items: &[String]) -> Result<Option<Vec<usize>>> {
+    use super::view::{MultiSelectResult, MultiSelectView, next_key};
+
+    let _raw = RawTerminal::enter()?;
+    let mut input = OpenOptions::new().read(true).open("/dev/tty")?;
+    let mut out = open_output()?;
+
+    let _ = write!(out, "{HIDE_CURSOR}");
+
+    let (mut view, frame) = MultiSelectView::new(label, items);
+    let _ = write!(out, "{frame}");
+    let _ = out.flush();
+
+    loop {
+        match view.on_key(next_key(&mut input)) {
+            MultiSelectResult::Continue(next, frame) => {
+                view = next;
+                let _ = write!(out, "{frame}");
+                let _ = out.flush();
+            }
+            MultiSelectResult::Done(result, erase) => {
+                let _ = write!(out, "{erase}");
+                let _ = out.flush();
+                return Ok(result);
+            }
+        }
+    }
 }
