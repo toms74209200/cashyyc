@@ -5,6 +5,7 @@ pub mod features;
 pub mod lifecycle;
 pub mod oci;
 pub mod run;
+pub mod search;
 pub mod setup;
 pub mod tui;
 pub mod uid;
