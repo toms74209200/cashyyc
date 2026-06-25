@@ -167,13 +167,13 @@ fn filtered_indices(items: &[String], query: &str) -> Vec<usize> {
     if query.is_empty() {
         return (0..items.len()).collect();
     }
-    let query_lower = query.to_lowercase();
-    items
+    let mut scored: Vec<(usize, i32)> = items
         .iter()
         .enumerate()
-        .filter(|(_, name)| name.to_lowercase().contains(&query_lower))
-        .map(|(i, _)| i)
-        .collect()
+        .filter_map(|(i, name)| crate::search::score(name, query).map(|s| (i, s)))
+        .collect();
+    scored.sort_by_key(|b| std::cmp::Reverse(b.1));
+    scored.into_iter().map(|(i, _)| i).collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -629,6 +629,24 @@ mod tests {
 
     fn items(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn when_filtered_indices_with_empty_query_then_returns_all_in_order() {
+        let names = items(&["go", "rust", "python"]);
+        assert_eq!(filtered_indices(&names, ""), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn when_filtered_indices_excludes_non_matching() {
+        let names = items(&["go", "rust", "python"]);
+        assert_eq!(filtered_indices(&names, "go"), vec![0]);
+    }
+
+    #[test]
+    fn when_filtered_indices_ranks_better_match_first() {
+        let names = items(&["axc", "acb"]);
+        assert_eq!(filtered_indices(&names, "ac"), vec![1, 0]);
     }
 
     #[test]
