@@ -46,6 +46,29 @@ pub fn parse_templates(json: &str) -> Vec<Template> {
         .collect()
 }
 
+pub fn build_devcontainer_json(
+    template_json: &str,
+    feature_ids: &[String],
+) -> anyhow::Result<String> {
+    let mut value: serde_json::Value = serde_json::from_str(template_json)?;
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("template devcontainer.json is not a JSON object"))?;
+    if !feature_ids.is_empty() {
+        let features: serde_json::Map<String, serde_json::Value> = feature_ids
+            .iter()
+            .map(|id| {
+                (
+                    format!("ghcr.io/devcontainers/features/{id}:1"),
+                    serde_json::json!({}),
+                )
+            })
+            .collect();
+        obj.insert("features".to_string(), serde_json::Value::Object(features));
+    }
+    serde_json::to_string_pretty(&value).map_err(Into::into)
+}
+
 pub fn parse_features(json: &str) -> Vec<Feature> {
     let entries: Vec<serde_json::Value> = serde_json::from_str::<serde_json::Value>(json)
         .ok()
@@ -107,6 +130,56 @@ mod tests {
         let templates = parse_templates(json);
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0].id, "go");
+    }
+
+    #[test]
+    fn when_build_devcontainer_json_with_no_features_then_omits_features_key() {
+        let template = r#"{"image":"mcr.microsoft.com/devcontainers/rust:1-trixie"}"#;
+        let result = build_devcontainer_json(template, &[]).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(value.get("features"), None);
+        assert_eq!(
+            value["image"],
+            "mcr.microsoft.com/devcontainers/rust:1-trixie"
+        );
+    }
+
+    #[test]
+    fn when_build_devcontainer_json_with_one_feature_then_adds_features_key() {
+        let template = r#"{"image":"mcr.microsoft.com/devcontainers/rust:1-trixie"}"#;
+        let result = build_devcontainer_json(template, &["git".to_string()]).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(
+            value["features"]["ghcr.io/devcontainers/features/git:1"],
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn when_build_devcontainer_json_with_multiple_features_then_adds_all() {
+        let template = r#"{"image":"mcr.microsoft.com/devcontainers/rust:1-trixie"}"#;
+        let result =
+            build_devcontainer_json(template, &["git".to_string(), "github-cli".to_string()])
+                .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(
+            value["features"]["ghcr.io/devcontainers/features/git:1"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            value["features"]["ghcr.io/devcontainers/features/github-cli:1"],
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn when_build_devcontainer_json_with_invalid_json_then_returns_err() {
+        assert!(build_devcontainer_json("not json", &[]).is_err());
+    }
+
+    #[test]
+    fn when_build_devcontainer_json_with_non_object_then_returns_err() {
+        assert!(build_devcontainer_json("[1,2,3]", &["git".to_string()]).is_err());
     }
 
     #[test]
