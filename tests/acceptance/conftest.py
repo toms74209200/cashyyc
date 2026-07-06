@@ -474,6 +474,19 @@ def given_run_args_env(workspace, config, key, value):
 
 
 @given(
+    parsers.parse('the config has runArgs with user "{value}"'),
+    target_fixture="config",
+)
+def given_run_args_user(workspace, config, value):
+    run_args = [*config.get("runArgs", []), "-u", value]
+    new_config = {**config, "runArgs": run_args}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
     parsers.parse('the config has containerUser "{value}"'),
     target_fixture="config",
 )
