@@ -289,6 +289,17 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the container user "vscode" UID matches the host UID
 
+  Scenario: updateRemoteUserUid syncs host UID when runArgs has -u flag
+    Given a devcontainer config with Dockerfile:
+      """
+      FROM mcr.microsoft.com/devcontainers/base:debian
+      RUN usermod -u 9999 vscode
+      """
+    And the config has runArgs with user "vscode"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container user "vscode" UID matches the host UID
+
   Scenario: updateRemoteUserUid false skips UID sync for Single config
     Given a devcontainer config with Dockerfile:
       """
