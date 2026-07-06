@@ -3,6 +3,7 @@ use crate::devcontainer;
 use crate::docker;
 use crate::features;
 use crate::lifecycle::LifecycleCmd;
+use crate::oci;
 use crate::setup;
 use crate::setup::ContainerTarget;
 use crate::tui;
@@ -49,6 +50,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         cli::Command::Stop { name } => stop(name),
         cli::Command::Down { name } => down(name),
         cli::Command::Ps { name } => ps(name),
+        cli::Command::New => new(),
         cli::Command::Help => {
             println!(
                 "Usage: cyyc <COMMAND>
@@ -73,6 +75,252 @@ Options:
         }
         cli::Command::Unknown(msg) => Err(anyhow!(msg)),
     }
+}
+
+fn new() -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let target_path = cwd.join(".devcontainer").join("devcontainer.json");
+    if target_path.exists() {
+        return Err(anyhow!("{} already exists", target_path.display()));
+    }
+
+    let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+    let tmp_dir = std::env::temp_dir()
+        .join(format!("cyyc-{username}"))
+        .join("new");
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| anyhow!("failed to create temp dir: {e}"))?;
+
+    let token = {
+        let output = std::process::Command::new("curl")
+            .args([
+                "-sf",
+                "https://ghcr.io/token?scope=repository:devcontainers/templates:pull&service=ghcr.io",
+            ])
+            .output()
+            .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+        if !output.status.success() {
+            return Err(anyhow!("failed to fetch OCI token for templates"));
+        }
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|e| anyhow!("failed to parse OCI token response: {e}"))?;
+        json["token"]
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| anyhow!("OCI token response missing 'token' field"))?
+    };
+
+    let manifest_output = std::process::Command::new("curl")
+        .args([
+            "-sf",
+            "-H",
+            &format!("Authorization: Bearer {token}"),
+            "-H",
+            "Accept: application/vnd.oci.image.manifest.v1+json",
+            "https://ghcr.io/v2/devcontainers/templates/manifests/latest",
+        ])
+        .output()
+        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+    if !manifest_output.status.success() {
+        return Err(anyhow!("failed to fetch template collection manifest"));
+    }
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest_output.stdout)
+        .map_err(|e| anyhow!("failed to parse template collection manifest: {e}"))?;
+    let digest = manifest["layers"][0]["digest"]
+        .as_str()
+        .ok_or_else(|| anyhow!("template collection manifest missing layers[0].digest"))?;
+
+    let collection_output = std::process::Command::new("curl")
+        .args([
+            "-sfL",
+            "-H",
+            &format!("Authorization: Bearer {token}"),
+            &format!("https://ghcr.io/v2/devcontainers/templates/blobs/{digest}"),
+        ])
+        .output()
+        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+    if !collection_output.status.success() {
+        return Err(anyhow!("failed to download template collection blob"));
+    }
+
+    let collection_json = String::from_utf8(collection_output.stdout)
+        .map_err(|e| anyhow!("template collection is not valid UTF-8: {e}"))?;
+    let templates = oci::parse_templates(&collection_json);
+    if templates.is_empty() {
+        return Err(anyhow!("no templates found in collection"));
+    }
+
+    let template_names: Vec<String> = templates.iter().map(|t| t.id.clone()).collect();
+    let selected_idx =
+        tui::select("Template", &template_names)?.ok_or_else(|| anyhow!("cancelled"))?;
+    let selected_template = &templates[selected_idx];
+
+    let template_token = {
+        let scope = format!(
+            "repository:devcontainers/templates/{}:pull",
+            selected_template.id
+        );
+        let output = std::process::Command::new("curl")
+            .args([
+                "-sf",
+                &format!("https://ghcr.io/token?scope={scope}&service=ghcr.io"),
+            ])
+            .output()
+            .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+        if !output.status.success() {
+            return Err(anyhow!(
+                "failed to fetch OCI token for template {}",
+                selected_template.id
+            ));
+        }
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|e| anyhow!("failed to parse OCI token response: {e}"))?;
+        json["token"]
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| anyhow!("OCI token response missing 'token' field"))?
+    };
+
+    let manifest_output = std::process::Command::new("curl")
+        .args([
+            "-sf",
+            "-H",
+            &format!("Authorization: Bearer {template_token}"),
+            "-H",
+            "Accept: application/vnd.oci.image.manifest.v1+json",
+            &format!(
+                "https://ghcr.io/v2/devcontainers/templates/{}/manifests/latest",
+                selected_template.id
+            ),
+        ])
+        .output()
+        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+    if !manifest_output.status.success() {
+        return Err(anyhow!(
+            "failed to fetch manifest for template {}",
+            selected_template.id
+        ));
+    }
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest_output.stdout)
+        .map_err(|e| anyhow!("failed to parse template manifest: {e}"))?;
+    let digest = manifest["layers"][0]["digest"]
+        .as_str()
+        .ok_or_else(|| anyhow!("template manifest missing layers[0].digest"))?;
+
+    let template_tar = tmp_dir.join("template.tar");
+    let status = std::process::Command::new("curl")
+        .args([
+            "-sfL",
+            "-H",
+            &format!("Authorization: Bearer {template_token}"),
+            "-o",
+            &template_tar.display().to_string(),
+            &format!(
+                "https://ghcr.io/v2/devcontainers/templates/{}/blobs/{digest}",
+                selected_template.id
+            ),
+        ])
+        .status()
+        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+    if !status.success() {
+        return Err(anyhow!(
+            "failed to download template {}",
+            selected_template.id
+        ));
+    }
+
+    let template_dir = tmp_dir.join("template");
+    std::fs::create_dir_all(&template_dir)
+        .map_err(|e| anyhow!("failed to create temp dir: {e}"))?;
+    let status = std::process::Command::new("tar")
+        .args([
+            "xf",
+            &template_tar.display().to_string(),
+            "-C",
+            &template_dir.display().to_string(),
+        ])
+        .status()
+        .map_err(|e| anyhow!("failed to run tar: {e}"))?;
+    if !status.success() {
+        return Err(anyhow!("failed to extract template"));
+    }
+
+    let template_json =
+        std::fs::read_to_string(template_dir.join(".devcontainer/devcontainer.json"))
+            .map_err(|e| anyhow!("devcontainer.json not found in template: {e}"))?;
+
+    let feature_token = {
+        let output = std::process::Command::new("curl")
+            .args([
+                "-sf",
+                "https://ghcr.io/token?scope=repository:devcontainers/features:pull&service=ghcr.io",
+            ])
+            .output()
+            .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+        if !output.status.success() {
+            return Err(anyhow!("failed to fetch OCI token for features"));
+        }
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|e| anyhow!("failed to parse OCI token response: {e}"))?;
+        json["token"]
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| anyhow!("OCI token response missing 'token' field"))?
+    };
+
+    let manifest_output = std::process::Command::new("curl")
+        .args([
+            "-sf",
+            "-H",
+            &format!("Authorization: Bearer {feature_token}"),
+            "-H",
+            "Accept: application/vnd.oci.image.manifest.v1+json",
+            "https://ghcr.io/v2/devcontainers/features/manifests/latest",
+        ])
+        .output()
+        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+    if !manifest_output.status.success() {
+        return Err(anyhow!("failed to fetch feature collection manifest"));
+    }
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest_output.stdout)
+        .map_err(|e| anyhow!("failed to parse feature collection manifest: {e}"))?;
+    let digest = manifest["layers"][0]["digest"]
+        .as_str()
+        .ok_or_else(|| anyhow!("feature collection manifest missing layers[0].digest"))?;
+
+    let feature_collection_output = std::process::Command::new("curl")
+        .args([
+            "-sfL",
+            "-H",
+            &format!("Authorization: Bearer {feature_token}"),
+            &format!("https://ghcr.io/v2/devcontainers/features/blobs/{digest}"),
+        ])
+        .output()
+        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+    if !feature_collection_output.status.success() {
+        return Err(anyhow!("failed to download feature collection blob"));
+    }
+
+    let feature_json = String::from_utf8(feature_collection_output.stdout)
+        .map_err(|e| anyhow!("feature collection is not valid UTF-8: {e}"))?;
+    let features = oci::parse_features(&feature_json);
+
+    let feature_ids: Vec<String> = if features.is_empty() {
+        vec![]
+    } else {
+        let feature_names: Vec<String> = features.iter().map(|f| f.id.clone()).collect();
+        match tui::multi_select("Features", &feature_names)? {
+            Some(indices) => indices.iter().map(|&i| features[i].id.clone()).collect(),
+            None => return Err(anyhow!("cancelled")),
+        }
+    };
+
+    let output = oci::build_devcontainer_json(&template_json, &feature_ids)?;
+    std::fs::create_dir_all(target_path.parent().unwrap())
+        .map_err(|e| anyhow!("failed to create .devcontainer directory: {e}"))?;
+    std::fs::write(&target_path, &output)
+        .map_err(|e| anyhow!("failed to write {}: {e}", target_path.display()))?;
+
+    Ok(())
 }
 
 fn shell(name: Option<String>) -> Result<()> {
