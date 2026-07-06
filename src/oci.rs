@@ -46,11 +46,44 @@ pub fn parse_templates(json: &str) -> Vec<Template> {
         .collect()
 }
 
+fn strip_json_comments(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_string = false;
+    let mut escape = false;
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if in_string {
+            out.push(bytes[i] as char);
+            if escape {
+                escape = false;
+            } else if bytes[i] == b'\\' {
+                escape = true;
+            } else if bytes[i] == b'"' {
+                in_string = false;
+            }
+            i += 1;
+        } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else {
+            if bytes[i] == b'"' {
+                in_string = true;
+            }
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
 pub fn build_devcontainer_json(
     template_json: &str,
     feature_ids: &[String],
 ) -> anyhow::Result<String> {
-    let mut value: serde_json::Value = serde_json::from_str(template_json)?;
+    let stripped = strip_json_comments(template_json);
+    let mut value: serde_json::Value = serde_json::from_str(&stripped)?;
     let obj = value
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("template devcontainer.json is not a JSON object"))?;
@@ -180,6 +213,20 @@ mod tests {
     #[test]
     fn when_build_devcontainer_json_with_non_object_then_returns_err() {
         assert!(build_devcontainer_json("[1,2,3]", &["git".to_string()]).is_err());
+    }
+
+    #[test]
+    fn when_build_devcontainer_json_with_comments_then_strips_them() {
+        let template = "// comment\n{\"image\":\"alpine\"}\n";
+        let result = build_devcontainer_json(template, &[]).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(value["image"], "alpine");
+    }
+
+    #[test]
+    fn when_strip_json_comments_preserves_url_in_string() {
+        let input = r#"{"url":"https://example.com"}"#;
+        assert_eq!(strip_json_comments(input), input);
     }
 
     #[test]
