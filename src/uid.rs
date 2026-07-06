@@ -71,6 +71,7 @@ impl UidUpdate {
     pub fn resolve(
         ctx: UidContext,
         common: &CommonConfig,
+        run_args: &[String],
         host_uid: u32,
         host_gid: u32,
         cwd: &Path,
@@ -91,6 +92,7 @@ impl UidUpdate {
 
         let remote_user = match resolve_remote_user(
             common.remote_user.as_deref(),
+            run_args,
             common.container_user.as_deref(),
             image_user,
         ) {
@@ -157,10 +159,29 @@ enum RemoteUserResolution {
 
 fn resolve_remote_user(
     config_user: Option<&str>,
+    run_args: &[String],
     container_user: Option<&str>,
     image_user: &str,
 ) -> RemoteUserResolution {
-    let user = config_user.or(container_user).unwrap_or(image_user);
+    let run_args_user = {
+        let mut found = None;
+        let mut iter = run_args.iter();
+        while let Some(arg) = iter.next() {
+            if arg == "-u" || arg == "--user" {
+                found = iter.next().map(|s| s.as_str());
+                break;
+            }
+            if let Some(value) = arg.strip_prefix("--user=") {
+                found = Some(value);
+                break;
+            }
+        }
+        found
+    };
+    let user = config_user
+        .or(run_args_user)
+        .or(container_user)
+        .unwrap_or(image_user);
     let user = if user.is_empty() { "root" } else { user };
 
     if user == "root" {
@@ -224,7 +245,7 @@ mod tests {
     #[test]
     fn when_config_user_is_root_then_returns_root() {
         assert_eq!(
-            resolve_remote_user(Some("root"), None, "vscode"),
+            resolve_remote_user(Some("root"), &[], None, "vscode"),
             RemoteUserResolution::Root
         );
     }
@@ -232,7 +253,7 @@ mod tests {
     #[test]
     fn when_config_user_is_numeric_then_returns_numeric() {
         assert_eq!(
-            resolve_remote_user(Some("1000"), None, "vscode"),
+            resolve_remote_user(Some("1000"), &[], None, "vscode"),
             RemoteUserResolution::Numeric
         );
     }
@@ -240,7 +261,7 @@ mod tests {
     #[test]
     fn when_config_user_is_named_then_returns_update() {
         assert_eq!(
-            resolve_remote_user(Some("vscode"), None, "root"),
+            resolve_remote_user(Some("vscode"), &[], None, "root"),
             RemoteUserResolution::Update {
                 user: "vscode".to_string()
             }
@@ -250,7 +271,7 @@ mod tests {
     #[test]
     fn when_no_config_user_and_container_user_is_root_then_returns_root() {
         assert_eq!(
-            resolve_remote_user(None, Some("root"), "vscode"),
+            resolve_remote_user(None, &[], Some("root"), "vscode"),
             RemoteUserResolution::Root
         );
     }
@@ -258,7 +279,7 @@ mod tests {
     #[test]
     fn when_no_config_user_and_container_user_is_named_then_returns_update() {
         assert_eq!(
-            resolve_remote_user(None, Some("vscode"), "root"),
+            resolve_remote_user(None, &[], Some("vscode"), "root"),
             RemoteUserResolution::Update {
                 user: "vscode".to_string()
             }
@@ -268,7 +289,7 @@ mod tests {
     #[test]
     fn when_no_config_user_and_no_container_user_and_image_user_is_root_then_returns_root() {
         assert_eq!(
-            resolve_remote_user(None, None, "root"),
+            resolve_remote_user(None, &[], None, "root"),
             RemoteUserResolution::Root
         );
     }
@@ -276,7 +297,7 @@ mod tests {
     #[test]
     fn when_no_config_user_and_no_container_user_and_image_user_is_named_then_returns_update() {
         assert_eq!(
-            resolve_remote_user(None, None, "vscode"),
+            resolve_remote_user(None, &[], None, "vscode"),
             RemoteUserResolution::Update {
                 user: "vscode".to_string()
             }
@@ -286,7 +307,7 @@ mod tests {
     #[test]
     fn when_all_empty_then_returns_root() {
         assert_eq!(
-            resolve_remote_user(None, None, ""),
+            resolve_remote_user(None, &[], None, ""),
             RemoteUserResolution::Root
         );
     }
@@ -294,7 +315,7 @@ mod tests {
     #[test]
     fn when_config_user_takes_priority_over_container_user() {
         assert_eq!(
-            resolve_remote_user(Some("alice"), Some("root"), "root"),
+            resolve_remote_user(Some("alice"), &[], Some("root"), "root"),
             RemoteUserResolution::Update {
                 user: "alice".to_string()
             }
@@ -304,7 +325,7 @@ mod tests {
     #[test]
     fn when_container_user_takes_priority_over_image_user() {
         assert_eq!(
-            resolve_remote_user(None, Some("bob"), "root"),
+            resolve_remote_user(None, &[], Some("bob"), "root"),
             RemoteUserResolution::Update {
                 user: "bob".to_string()
             }
@@ -314,7 +335,7 @@ mod tests {
     #[test]
     fn when_no_config_user_and_container_user_is_numeric_then_returns_numeric() {
         assert_eq!(
-            resolve_remote_user(None, Some("1000"), "vscode"),
+            resolve_remote_user(None, &[], Some("1000"), "vscode"),
             RemoteUserResolution::Numeric
         );
     }
@@ -322,8 +343,72 @@ mod tests {
     #[test]
     fn when_no_config_user_and_no_container_user_and_image_user_is_numeric_then_returns_numeric() {
         assert_eq!(
-            resolve_remote_user(None, None, "1000"),
+            resolve_remote_user(None, &[], None, "1000"),
             RemoteUserResolution::Numeric
+        );
+    }
+
+    #[test]
+    fn when_run_args_short_u_flag_then_returns_update() {
+        let args = vec!["-u".to_string(), "vscode".to_string()];
+        assert_eq!(
+            resolve_remote_user(None, &args, None, "root"),
+            RemoteUserResolution::Update {
+                user: "vscode".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn when_run_args_long_user_flag_then_returns_update() {
+        let args = vec!["--user".to_string(), "vscode".to_string()];
+        assert_eq!(
+            resolve_remote_user(None, &args, None, "root"),
+            RemoteUserResolution::Update {
+                user: "vscode".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn when_run_args_user_equals_then_returns_update() {
+        let args = vec!["--user=vscode".to_string()];
+        assert_eq!(
+            resolve_remote_user(None, &args, None, "root"),
+            RemoteUserResolution::Update {
+                user: "vscode".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn when_run_args_user_takes_priority_over_container_user() {
+        let args = vec!["-u".to_string(), "alice".to_string()];
+        assert_eq!(
+            resolve_remote_user(None, &args, Some("bob"), "root"),
+            RemoteUserResolution::Update {
+                user: "alice".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn when_config_user_takes_priority_over_run_args_user() {
+        let args = vec!["-u".to_string(), "alice".to_string()];
+        assert_eq!(
+            resolve_remote_user(Some("bob"), &args, None, "root"),
+            RemoteUserResolution::Update {
+                user: "bob".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn when_run_args_has_no_user_flag_then_falls_through() {
+        let args = vec!["--rm".to_string(), "-d".to_string()];
+        assert_eq!(
+            resolve_remote_user(None, &args, None, "root"),
+            RemoteUserResolution::Root
         );
     }
 
@@ -340,6 +425,7 @@ mod tests {
                 image_user: "root",
             },
             &common,
+            &[],
             1000,
             1000,
             Path::new("/home/user/proj"),
@@ -356,6 +442,7 @@ mod tests {
                 image_user: "root",
             },
             &common,
+            &[],
             1000,
             1000,
             Path::new("/home/user/proj"),
@@ -373,6 +460,7 @@ mod tests {
                 image_user: "root",
             },
             &common,
+            &[],
             1000,
             1001,
             cwd,
@@ -408,6 +496,7 @@ mod tests {
                 image_user: "root",
             },
             &common,
+            &[],
             1000,
             1000,
             cwd,
@@ -429,6 +518,7 @@ mod tests {
                 image_user: "root",
             },
             &common,
+            &[],
             1000,
             1001,
             cwd,
@@ -467,6 +557,7 @@ mod tests {
                 image_user: "root",
             },
             &common,
+            &[],
             1000,
             1000,
             Path::new("/home/user/proj"),
@@ -484,6 +575,7 @@ mod tests {
                 image_user: "",
             },
             &common,
+            &[],
             1000,
             1000,
             cwd,
