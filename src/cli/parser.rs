@@ -4,6 +4,7 @@ pub enum Command {
     Stop { name: Option<String> },
     Down { name: Option<String> },
     Ps { name: Option<String> },
+    New,
     Help,
     Version,
     Unknown(String),
@@ -17,6 +18,7 @@ pub fn parse_args(args: &[String]) -> Command {
             "stop" => Command::Stop { name: None },
             "down" => Command::Down { name: None },
             "ps" => Command::Ps { name: None },
+            "new" => Command::New,
             "help" | "--help" | "-h" => Command::Help,
             "version" | "--version" | "-V" => Command::Version,
             cmd => Command::Unknown(cmd.to_string()),
@@ -34,6 +36,7 @@ pub fn parse_args(args: &[String]) -> Command {
             "ps" => Command::Ps {
                 name: Some(args[2].clone()),
             },
+            "new" => Command::New,
             "help" | "--help" | "-h" => Command::Help,
             "version" | "--version" | "-V" => Command::Version,
             cmd => Command::Unknown(cmd.to_string()),
@@ -137,6 +140,18 @@ mod tests {
         );
         let args = vec!["cyyc".to_string(), "ps".to_string(), name.clone()];
         assert_eq!(parse_args(&args), Command::Ps { name: Some(name) });
+    }
+
+    #[test]
+    fn when_parse_args_with_new_command_then_returns_new() {
+        let args = vec!["cyyc".to_string(), "new".to_string()];
+        assert_eq!(parse_args(&args), Command::New);
+    }
+
+    #[test]
+    fn when_parse_args_with_new_command_and_extra_arg_then_returns_new() {
+        let args = vec!["cyyc".to_string(), "new".to_string(), "extra".to_string()];
+        assert_eq!(parse_args(&args), Command::New);
     }
 
     #[test]
