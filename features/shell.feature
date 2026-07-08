@@ -300,6 +300,17 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the container user "vscode" UID matches the host UID
 
+  Scenario: updateRemoteUserUid syncs host UID when remoteUser is only in image metadata label
+    Given a devcontainer config with Dockerfile:
+      """
+      FROM alpine
+      RUN adduser -D -u 9999 testuser
+      LABEL devcontainer.metadata='[{"remoteUser":"testuser"}]'
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container user "testuser" UID matches the host UID
+
   Scenario: updateRemoteUserUid false skips UID sync for Single config
     Given a devcontainer config with Dockerfile:
       """

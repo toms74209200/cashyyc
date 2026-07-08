@@ -609,6 +609,20 @@ fn shell(name: Option<String>) -> Result<()> {
                     .filter(|o| o.status.success())
                     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                     .unwrap_or_default();
+                let metadata_remote_user = std::process::Command::new("docker")
+                    .args([
+                        "inspect",
+                        "--format",
+                        "{{index .Config.Labels \"devcontainer.metadata\"}}",
+                        &s.image_tag,
+                    ])
+                    .output()
+                    .ok()
+                    .and_then(|o| {
+                        docker::parse_remote_user_from_metadata(
+                            String::from_utf8_lossy(&o.stdout).trim(),
+                        )
+                    });
                 let meta = std::fs::metadata("/proc/self")
                     .map_err(|e| anyhow!("Failed to get process metadata: {e}"))?;
                 let host_uid = meta.uid();
@@ -617,6 +631,7 @@ fn shell(name: Option<String>) -> Result<()> {
                     UidContext::Single {
                         base_image: &s.image_tag,
                         image_user: &image_user,
+                        metadata_remote_user: metadata_remote_user.as_deref(),
                     },
                     config.common(),
                     &s.run_args,
@@ -781,6 +796,20 @@ fn shell(name: Option<String>) -> Result<()> {
                             .filter(|o| o.status.success())
                             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                             .unwrap_or_default();
+                        let metadata_remote_user = std::process::Command::new("docker")
+                            .args([
+                                "inspect",
+                                "--format",
+                                "{{index .Config.Labels \"devcontainer.metadata\"}}",
+                                &image,
+                            ])
+                            .output()
+                            .ok()
+                            .and_then(|o| {
+                                docker::parse_remote_user_from_metadata(
+                                    String::from_utf8_lossy(&o.stdout).trim(),
+                                )
+                            });
                         let meta = std::fs::metadata("/proc/self").ok()?;
                         let host_uid = meta.uid();
                         let host_gid = meta.gid();
@@ -790,6 +819,7 @@ fn shell(name: Option<String>) -> Result<()> {
                                 service: &c.service,
                                 image: &image,
                                 image_user: &image_user,
+                                metadata_remote_user: metadata_remote_user.as_deref(),
                             },
                             config.common(),
                             &[],
