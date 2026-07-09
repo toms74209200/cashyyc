@@ -13,6 +13,7 @@ from lib.tracing import StepTimer, TestTiming, get_collector, render_table
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _SPAN_REPORT_OPTION = "--span-report"
+_CYYC_BIN_OPTION = "--cyyc-bin"
 _REPORT_FILE = Path(__file__).parent / "reports" / "spanTiming" / "spanTiming.txt"
 _step_timer = StepTimer()
 _span_report_enabled = False
@@ -20,6 +21,7 @@ _span_report_enabled = False
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(_SPAN_REPORT_OPTION, action="store_true", default=False)
+    parser.addoption(_CYYC_BIN_OPTION, action="store", default=None)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -78,7 +80,12 @@ def _random_name(length: int = 8) -> str:
 
 
 @pytest.fixture(scope="session")
-def cyyc_binary():
+def cyyc_binary(request):
+    bin_option = request.config.getoption(_CYYC_BIN_OPTION)
+    if bin_option:
+        bin_path = Path(bin_option).resolve()
+        assert bin_path.is_file(), f"binary not found: {bin_path}"
+        return bin_path
     subprocess.run(
         ["cargo", "build", "--bin", "cyyc"],
         cwd=REPO_ROOT,
