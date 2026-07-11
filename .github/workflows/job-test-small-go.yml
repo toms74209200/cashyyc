@@ -1,0 +1,22 @@
+name: Job - Test Small (Go)
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.mod
+      - name: Verify dependencies
+        run: go mod verify
+      - name: Run tests
+        run: go test -tags=small ./...
