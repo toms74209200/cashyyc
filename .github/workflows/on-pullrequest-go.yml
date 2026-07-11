@@ -1,0 +1,18 @@
+name: On Pull Request(Go)
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - '**/*.go'
+      - '**/go.mod'
+      - '**/go.sum'
+      - '.github/workflows/on-pullrequest-go.yml'
+
+jobs:
+  lint:
+    uses: ./.github/workflows/job-lint-go.yml
+    permissions:
+      contents: write
+  small-test:
+    uses: ./.github/workflows/job-test-small-go.yml
