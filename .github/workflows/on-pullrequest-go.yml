@@ -16,3 +16,11 @@ jobs:
       contents: write
   small-test:
     uses: ./.github/workflows/job-test-small-go.yml
+    with:
+      with-coverage: true
+  coverage:
+    needs:
+      - small-test
+    uses: ./.github/workflows/job-coverage-go.yml
+    with:
+      coverage-threshold: 80
