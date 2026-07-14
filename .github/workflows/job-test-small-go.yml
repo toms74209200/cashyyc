@@ -2,6 +2,12 @@ name: Job - Test Small (Go)
 
 on:
   workflow_call:
+    inputs:
+      with-coverage:
+        description: 'Run with coverage'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   test:
@@ -19,4 +25,13 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
       - name: Run tests
+        if: ${{ !inputs.with-coverage }}
         run: go test -tags=small ./...
+      - name: Run tests with coverage
+        if: ${{ inputs.with-coverage }}
+        run: go test -tags=small -race -coverprofile=coverage.txt -covermode=atomic $(cat scripts/coverage_pkgs.txt)
+      - if: ${{ inputs.with-coverage }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: go/coverage.txt

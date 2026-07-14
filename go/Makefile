@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt clean help
+.PHONY: all build test test-cover lint fmt clean help
 
 all: lint test build
 
@@ -7,6 +7,10 @@ build: ## Build the project
 
 test: ## Run small size tests
 	go test -tags=small -v ./...
+
+test-cover: ## Run tests with coverage
+	go test -tags=small -race -coverprofile=coverage.txt -covermode=atomic `cat scripts/coverage_pkgs.txt`
+	go tool cover -func=coverage.txt
 
 lint: ## Run lint
 	golangci-lint run

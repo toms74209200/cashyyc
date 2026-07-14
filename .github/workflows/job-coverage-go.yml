@@ -1,0 +1,74 @@
+name: Job - Coverage Check (Go)
+
+on:
+  workflow_call:
+    inputs:
+      coverage-threshold:
+        required: true
+        type: number
+        description: 'Minimum coverage threshold percentage'
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.mod
+      - uses: actions/download-artifact@v7
+        with:
+          name: coverage-report
+          path: go
+      - name: Calculate coverage
+        id: calc-coverage
+        run: |
+          if [ ! -f coverage.txt ]; then
+            echo "Error: coverage.txt file not found"
+            exit 1
+          fi
+          coverage=$(go tool cover -func=coverage.txt | grep total | awk '{print substr($3, 1, length($3)-1)}')
+          if [ -z "$coverage" ]; then
+            echo "Error: failed to calculate coverage"
+            exit 1
+          fi
+          echo "coverage=$coverage" >> $GITHUB_OUTPUT
+      - name: Generate coverage report
+        run: |
+          cat << EOF > $GITHUB_STEP_SUMMARY
+          # Test Coverage Report
+
+          ## File Coverage Details
+          \`\`\`
+          $(go tool cover -func=coverage.txt)
+          \`\`\`
+
+          ## Coverage Status
+          EOF
+      - name: Check coverage threshold
+        run: |
+          coverage=${{ steps.calc-coverage.outputs.coverage }}
+
+          if (( $(echo "$coverage < ${{ inputs.coverage-threshold }}" | bc -l) )); then
+            cat << EOF >> $GITHUB_STEP_SUMMARY
+          ### ⚠️ Coverage Alert
+
+          Test coverage is below required threshold:
+          - Current: $coverage%
+          - Required: ${{ inputs.coverage-threshold }}%
+          EOF
+            exit 1
+          else
+            cat << EOF >> $GITHUB_STEP_SUMMARY
+          ### ✅ Coverage Check Passed
+
+          Coverage requirements met:
+          - Current: $coverage%
+          - Required: ${{ inputs.coverage-threshold }}%
+          EOF
+          fi
