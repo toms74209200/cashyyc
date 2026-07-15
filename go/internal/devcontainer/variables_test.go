@@ -202,6 +202,13 @@ func TestExpandVariables(t *testing.T) {
 			containerFolder: "/workspaces/x",
 			want:            "${unknownVariable}",
 		},
+		{
+			name:            "when expand variables with unknown scope then treats literally",
+			value:           "${unknownScope:NAME}",
+			localFolder:     "/home/user",
+			containerFolder: "/workspaces/x",
+			want:            "${unknownScope:NAME}",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
