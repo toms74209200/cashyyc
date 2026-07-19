@@ -1,45 +1,114 @@
 use super::mount::FeatureMount;
-use anyhow::{Result, anyhow};
-use serde::Deserialize;
-use serde_json::Value;
+use crate::devcontainer::jsonc::{self, Value};
+use crate::err;
+use crate::error::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Deserialize)]
 pub struct FeatureManifest {
     pub id: String,
-    #[serde(rename = "installsAfter", default)]
     pub installs_after: Vec<String>,
-    #[serde(rename = "containerEnv", default)]
     pub container_env: HashMap<String, String>,
-    #[serde(default)]
     pub privileged: Option<bool>,
-    #[serde(default)]
     pub init: Option<bool>,
-    #[serde(rename = "capAdd", default)]
     pub cap_add: Vec<String>,
-    #[serde(rename = "securityOpt", default)]
     pub security_opt: Vec<String>,
-    #[serde(default)]
     pub mounts: Vec<FeatureMount>,
-    #[serde(default)]
     pub entrypoint: Option<String>,
-    #[serde(rename = "onCreateCommand", default)]
     pub on_create_command: Option<Value>,
-    #[serde(rename = "updateContentCommand", default)]
     pub update_content_command: Option<Value>,
-    #[serde(rename = "postCreateCommand", default)]
     pub post_create_command: Option<Value>,
-    #[serde(rename = "postStartCommand", default)]
     pub post_start_command: Option<Value>,
-    #[serde(rename = "postAttachCommand", default)]
     pub post_attach_command: Option<Value>,
+}
+
+fn opt_string(value: &Value, key: &str) -> Result<Option<String>, String> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(format!("invalid type for field `{key}`")),
+    }
+}
+
+fn opt_bool(value: &Value, key: &str) -> Result<Option<bool>, String> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(format!("invalid type for field `{key}`")),
+    }
+}
+
+fn string_vec(value: &Value, key: &str) -> Result<Vec<String>, String> {
+    match value.get(key) {
+        None => Ok(vec![]),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(String::from)
+                    .ok_or_else(|| format!("invalid type for field `{key}`"))
+            })
+            .collect(),
+        Some(_) => Err(format!("invalid type for field `{key}`")),
+    }
+}
+
+fn opt_value(value: &Value, key: &str) -> Option<Value> {
+    value
+        .get(key)
+        .filter(|v| !matches!(v, Value::Null))
+        .cloned()
+}
+
+fn string_map(value: &Value, key: &str) -> Result<HashMap<String, String>, String> {
+    match value.get(key) {
+        None => Ok(HashMap::new()),
+        Some(v) => v
+            .to_string_map()
+            .ok_or_else(|| format!("invalid type for field `{key}`")),
+    }
 }
 
 impl FeatureManifest {
     pub fn parse(content: &str) -> Result<Self> {
-        serde_json::from_str(content)
-            .map_err(|e| anyhow!("failed to parse devcontainer-feature.json: {e}"))
+        Self::from_value_content(content)
+            .map_err(|e| err!("failed to parse devcontainer-feature.json: {e}"))
+    }
+
+    fn from_value_content(content: &str) -> Result<Self, String> {
+        let value = jsonc::parse(content).map_err(|e| e.to_string())?;
+        let id = match value.get("id") {
+            Some(Value::String(s)) => s.clone(),
+            Some(_) => return Err("invalid type for field `id`".to_string()),
+            None => return Err("missing field `id`".to_string()),
+        };
+        let mounts = match value.get("mounts") {
+            None => vec![],
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|v| {
+                    FeatureMount::from_value(v)
+                        .ok_or_else(|| "invalid type for field `mounts`".to_string())
+                })
+                .collect::<Result<_, _>>()?,
+            Some(_) => return Err("invalid type for field `mounts`".to_string()),
+        };
+        Ok(FeatureManifest {
+            id,
+            installs_after: string_vec(&value, "installsAfter")?,
+            container_env: string_map(&value, "containerEnv")?,
+            privileged: opt_bool(&value, "privileged")?,
+            init: opt_bool(&value, "init")?,
+            cap_add: string_vec(&value, "capAdd")?,
+            security_opt: string_vec(&value, "securityOpt")?,
+            mounts,
+            entrypoint: opt_string(&value, "entrypoint")?,
+            on_create_command: opt_value(&value, "onCreateCommand"),
+            update_content_command: opt_value(&value, "updateContentCommand"),
+            post_create_command: opt_value(&value, "postCreateCommand"),
+            post_start_command: opt_value(&value, "postStartCommand"),
+            post_attach_command: opt_value(&value, "postAttachCommand"),
+        })
     }
 }
 
@@ -190,7 +259,7 @@ mod tests {
         let cmd = random_name();
         let content = format!(r#"{{"id":"f","postCreateCommand":"{cmd}"}}"#);
         let m = FeatureManifest::parse(&content).unwrap();
-        assert_eq!(m.post_create_command, Some(serde_json::Value::String(cmd)));
+        assert_eq!(m.post_create_command, Some(Value::String(cmd)));
     }
 
     #[test]

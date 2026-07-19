@@ -1,4 +1,4 @@
-use serde_json::Value;
+use crate::devcontainer::jsonc::Value;
 
 #[derive(Debug, PartialEq)]
 pub enum LifecycleCmd {
@@ -18,11 +18,16 @@ impl TryFrom<&Value> for LifecycleCmd {
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect(),
             )),
-            Value::Object(map) => Ok(LifecycleCmd::Parallel(
-                map.values()
-                    .filter_map(|v| Self::try_from(v).ok())
-                    .collect(),
-            )),
+            Value::Object(members) => {
+                let mut sorted: Vec<&(String, Value)> = members.iter().collect();
+                sorted.sort_by_key(|(k, _)| k.as_str());
+                Ok(LifecycleCmd::Parallel(
+                    sorted
+                        .iter()
+                        .filter_map(|(_, v)| Self::try_from(v).ok())
+                        .collect(),
+                ))
+            }
             _ => Err(()),
         }
     }
@@ -31,12 +36,16 @@ impl TryFrom<&Value> for LifecycleCmd {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use crate::devcontainer::jsonc;
+
+    fn value(json: &str) -> Value {
+        jsonc::parse(json).unwrap()
+    }
 
     #[test]
     fn when_string_value_then_becomes_shell() {
         assert_eq!(
-            LifecycleCmd::try_from(&json!("npm install")).unwrap(),
+            LifecycleCmd::try_from(&value(r#""npm install""#)).unwrap(),
             LifecycleCmd::Shell("npm install".to_string())
         );
     }
@@ -44,7 +53,7 @@ mod tests {
     #[test]
     fn when_array_value_then_becomes_exec() {
         assert_eq!(
-            LifecycleCmd::try_from(&json!(["npm", "install"])).unwrap(),
+            LifecycleCmd::try_from(&value(r#"["npm", "install"]"#)).unwrap(),
             LifecycleCmd::Exec(vec!["npm".to_string(), "install".to_string()])
         );
     }
@@ -52,8 +61,10 @@ mod tests {
     #[test]
     fn when_object_value_then_becomes_parallel_of_shell() {
         assert_eq!(
-            LifecycleCmd::try_from(&json!({"install": "npm install", "build": "npm run build"}))
-                .unwrap(),
+            LifecycleCmd::try_from(&value(
+                r#"{"install": "npm install", "build": "npm run build"}"#
+            ))
+            .unwrap(),
             LifecycleCmd::Parallel(vec![
                 LifecycleCmd::Shell("npm run build".to_string()),
                 LifecycleCmd::Shell("npm install".to_string()),
@@ -64,7 +75,7 @@ mod tests {
     #[test]
     fn when_object_with_array_value_then_becomes_parallel_of_exec() {
         assert_eq!(
-            LifecycleCmd::try_from(&json!({"run": ["npm", "install"]})).unwrap(),
+            LifecycleCmd::try_from(&value(r#"{"run": ["npm", "install"]}"#)).unwrap(),
             LifecycleCmd::Parallel(vec![LifecycleCmd::Exec(vec![
                 "npm".to_string(),
                 "install".to_string(),
@@ -75,7 +86,7 @@ mod tests {
     #[test]
     fn when_array_with_non_string_elements_then_non_strings_are_skipped() {
         assert_eq!(
-            LifecycleCmd::try_from(&json!(["npm", 1, "install"])).unwrap(),
+            LifecycleCmd::try_from(&value(r#"["npm", 1, "install"]"#)).unwrap(),
             LifecycleCmd::Exec(vec!["npm".to_string(), "install".to_string()])
         );
     }
@@ -83,13 +94,13 @@ mod tests {
     #[test]
     fn when_object_with_invalid_sub_value_then_it_is_excluded_from_parallel() {
         assert_eq!(
-            LifecycleCmd::try_from(&json!({"valid": "echo hi", "invalid": null})).unwrap(),
+            LifecycleCmd::try_from(&value(r#"{"valid": "echo hi", "invalid": null}"#)).unwrap(),
             LifecycleCmd::Parallel(vec![LifecycleCmd::Shell("echo hi".to_string())])
         );
     }
 
     #[test]
     fn when_null_value_then_returns_err() {
-        assert!(LifecycleCmd::try_from(&json!(null)).is_err());
+        assert!(LifecycleCmd::try_from(&value("null")).is_err());
     }
 }

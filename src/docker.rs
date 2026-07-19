@@ -22,10 +22,11 @@ pub fn image_tag(local_folder: &std::path::Path) -> String {
 }
 
 pub fn parse_image_config_json(json: &str) -> Vec<String> {
-    serde_json::from_str::<serde_json::Value>(json.trim())
+    use crate::devcontainer::jsonc::{self, Value};
+    jsonc::parse(json.trim())
         .ok()
         .and_then(|v| {
-            if v.is_null() {
+            if matches!(v, Value::Null) {
                 Some(vec![])
             } else {
                 v.as_array().map(|arr| {
@@ -45,10 +46,11 @@ pub struct ImageConfig {
 
 impl ImageConfig {
     pub fn parse(json: &str) -> Self {
-        let v: serde_json::Value = serde_json::from_str(json.trim()).unwrap_or_default();
+        use crate::devcontainer::jsonc::{self, Value};
+        let v = jsonc::parse(json.trim()).unwrap_or(Value::Null);
         let strings = |key: &str| -> Vec<String> {
-            v[key]
-                .as_array()
+            v.get(key)
+                .and_then(|v| v.as_array())
                 .map(|a| {
                     a.iter()
                         .filter_map(|e| e.as_str().map(str::to_string))
@@ -64,7 +66,7 @@ impl ImageConfig {
 }
 
 pub fn parse_remote_user_from_metadata(metadata: &str) -> Option<String> {
-    let arr = serde_json::from_str::<serde_json::Value>(metadata).ok()?;
+    let arr = crate::devcontainer::jsonc::parse(metadata).ok()?;
     arr.as_array()?.iter().find_map(|obj| {
         obj.get("remoteUser")
             .and_then(|v| v.as_str())
@@ -98,7 +100,7 @@ pub fn find_container(
     config_path: &std::path::Path,
     cwd: &std::path::Path,
 ) -> Option<Container> {
-    let arr = serde_json::from_str::<serde_json::Value>(inspect_json).ok()?;
+    let arr = crate::devcontainer::jsonc::parse(inspect_json).ok()?;
     let arr = arr.as_array()?;
     let cwd_basename = cwd.file_name()?.to_string_lossy().to_string();
     let rel = config_path.strip_prefix(cwd).ok()?;

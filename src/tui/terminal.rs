@@ -1,4 +1,5 @@
-use anyhow::Result;
+use crate::err;
+use crate::error::Result;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -92,7 +93,7 @@ fn fallback_build_log(child: &mut std::process::Child) -> Result<std::process::E
 
     let status = child
         .wait()
-        .map_err(|e| anyhow::anyhow!("Failed to wait for build: {e}"))?;
+        .map_err(|e| err!("Failed to wait for build: {e}"))?;
     if let Some(t) = t1 {
         let _ = t.join();
     }
@@ -202,7 +203,7 @@ pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitSt
 
     let exit_status = child
         .wait()
-        .map_err(|e| anyhow::anyhow!("Failed to wait for build: {e}"))?;
+        .map_err(|e| err!("Failed to wait for build: {e}"))?;
 
     write_frame(&mut out, &Frame::default(), prev_live);
 

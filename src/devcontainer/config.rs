@@ -1,44 +1,10 @@
-use serde::Deserialize;
-use serde_json::Value;
+use super::jsonc::Value;
 use std::collections::HashMap;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct AppPort(pub String);
 
-fn deserialize_app_port<'de, D>(deserializer: D) -> Result<Vec<AppPort>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum PortSpec {
-        Number(u64),
-        Str(String),
-    }
-
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum SingleOrVec {
-        Single(PortSpec),
-        Vec(Vec<PortSpec>),
-    }
-
-    fn normalize(p: PortSpec) -> AppPort {
-        match p {
-            PortSpec::Number(n) => AppPort(format!("127.0.0.1:{}:{}", n, n)),
-            PortSpec::Str(s) => AppPort(s),
-        }
-    }
-
-    match Option::<SingleOrVec>::deserialize(deserializer)? {
-        None => Ok(vec![]),
-        Some(SingleOrVec::Single(p)) => Ok(vec![normalize(p)]),
-        Some(SingleOrVec::Vec(arr)) => Ok(arr.into_iter().map(normalize).collect()),
-    }
-}
-
-#[derive(Debug, Deserialize, PartialEq, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, PartialEq, Clone)]
 pub enum UserEnvProbe {
     None,
     LoginInteractiveShell,
@@ -46,8 +12,19 @@ pub enum UserEnvProbe {
     LoginShell,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
-#[serde(rename_all = "camelCase")]
+impl UserEnvProbe {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "none" => Some(UserEnvProbe::None),
+            "loginInteractiveShell" => Some(UserEnvProbe::LoginInteractiveShell),
+            "interactiveShell" => Some(UserEnvProbe::InteractiveShell),
+            "loginShell" => Some(UserEnvProbe::LoginShell),
+            _ => Option::None,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum WaitFor {
     InitializeCommand,
     OnCreateCommand,
@@ -71,17 +48,39 @@ impl WaitFor {
         let pos = |x: &WaitFor| Self::CHAIN.iter().position(|c| c == x);
         matches!((pos(cmd), pos(self)), (Some(c), Some(s)) if c <= s)
     }
+
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "initializeCommand" => Some(WaitFor::InitializeCommand),
+            "onCreateCommand" => Some(WaitFor::OnCreateCommand),
+            "updateContentCommand" => Some(WaitFor::UpdateContentCommand),
+            "postCreateCommand" => Some(WaitFor::PostCreateCommand),
+            "postStartCommand" => Some(WaitFor::PostStartCommand),
+            "postAttachCommand" => Some(WaitFor::PostAttachCommand),
+            _ => None,
+        }
+    }
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, PartialEq, Clone)]
 pub struct PortAttributes {
     pub label: Option<String>,
     pub on_auto_forward: Option<String>,
     pub elevate_if_needed: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
+impl PortAttributes {
+    fn from_value(value: &Value) -> Option<Self> {
+        value.as_object()?;
+        Some(PortAttributes {
+            label: opt_string(value, "label")?,
+            on_auto_forward: opt_string(value, "onAutoForward")?,
+            elevate_if_needed: opt_bool(value, "elevateIfNeeded")?,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct HostRequirements {
     pub cpus: Option<u32>,
     pub memory: Option<String>,
@@ -89,11 +88,25 @@ pub struct HostRequirements {
     pub gpu: Option<Value>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
-#[serde(rename_all = "camelCase")]
+impl HostRequirements {
+    fn from_value(value: &Value) -> Option<Self> {
+        value.as_object()?;
+        let cpus = match value.get("cpus") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(u32::try_from(v.as_u64()?).ok()?),
+        };
+        Some(HostRequirements {
+            cpus,
+            memory: opt_string(value, "memory")?,
+            storage: opt_string(value, "storage")?,
+            gpu: opt_value(value, "gpu"),
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct CommonConfig {
     pub name: Option<String>,
-    #[serde(default)]
     pub forward_ports: Vec<Value>,
     pub ports_attributes: Option<HashMap<String, PortAttributes>>,
     pub other_ports_attributes: Option<PortAttributes>,
@@ -106,101 +119,223 @@ pub struct CommonConfig {
     pub post_attach_command: Option<Value>,
     pub wait_for: Option<WaitFor>,
     pub workspace_folder: Option<String>,
-    #[serde(default)]
     pub mounts: Vec<Value>,
-    #[serde(default)]
     pub container_env: HashMap<String, String>,
     pub container_user: Option<String>,
     pub init: Option<bool>,
     pub privileged: Option<bool>,
-    #[serde(default)]
     pub cap_add: Vec<String>,
-    #[serde(default)]
     pub security_opt: Vec<String>,
     pub remote_env: Option<HashMap<String, Option<String>>>,
     pub remote_user: Option<String>,
-    #[serde(rename = "updateRemoteUserUID")]
     pub update_remote_user_uid: Option<bool>,
     pub user_env_probe: Option<UserEnvProbe>,
-    #[serde(default)]
     pub features: HashMap<String, Value>,
-    #[serde(default)]
     pub override_feature_install_order: Vec<String>,
     pub host_requirements: Option<HostRequirements>,
-    #[serde(default)]
     pub customizations: HashMap<String, Value>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
-#[serde(rename_all = "camelCase")]
+impl CommonConfig {
+    pub(super) fn from_value(value: &Value) -> Option<Self> {
+        let ports_attributes = match value.get("portsAttributes") {
+            None | Some(Value::Null) => None,
+            Some(v) => {
+                let members = v.as_object()?;
+                let mut map = HashMap::new();
+                for (k, attr) in members {
+                    map.insert(k.clone(), PortAttributes::from_value(attr)?);
+                }
+                Some(map)
+            }
+        };
+        let other_ports_attributes = match value.get("otherPortsAttributes") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(PortAttributes::from_value(v)?),
+        };
+        let wait_for = match opt_string(value, "waitFor")? {
+            None => None,
+            Some(s) => Some(WaitFor::from_name(&s)?),
+        };
+        let user_env_probe = match opt_string(value, "userEnvProbe")? {
+            None => None,
+            Some(s) => Some(UserEnvProbe::from_name(&s)?),
+        };
+        let remote_env = match value.get("remoteEnv") {
+            None | Some(Value::Null) => None,
+            Some(v) => {
+                let members = v.as_object()?;
+                let mut map = HashMap::new();
+                for (k, entry) in members {
+                    let entry = match entry {
+                        Value::Null => None,
+                        Value::String(s) => Some(s.clone()),
+                        _ => return None,
+                    };
+                    map.insert(k.clone(), entry);
+                }
+                Some(map)
+            }
+        };
+        let host_requirements = match value.get("hostRequirements") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(HostRequirements::from_value(v)?),
+        };
+        Some(CommonConfig {
+            name: opt_string(value, "name")?,
+            forward_ports: value_vec(value, "forwardPorts")?,
+            ports_attributes,
+            other_ports_attributes,
+            override_command: opt_bool(value, "overrideCommand")?,
+            initialize_command: opt_value(value, "initializeCommand"),
+            on_create_command: opt_value(value, "onCreateCommand"),
+            update_content_command: opt_value(value, "updateContentCommand"),
+            post_create_command: opt_value(value, "postCreateCommand"),
+            post_start_command: opt_value(value, "postStartCommand"),
+            post_attach_command: opt_value(value, "postAttachCommand"),
+            wait_for,
+            workspace_folder: opt_string(value, "workspaceFolder")?,
+            mounts: value_vec(value, "mounts")?,
+            container_env: string_map(value, "containerEnv")?,
+            container_user: opt_string(value, "containerUser")?,
+            init: opt_bool(value, "init")?,
+            privileged: opt_bool(value, "privileged")?,
+            cap_add: string_vec(value, "capAdd")?,
+            security_opt: string_vec(value, "securityOpt")?,
+            remote_env,
+            remote_user: opt_string(value, "remoteUser")?,
+            update_remote_user_uid: opt_bool(value, "updateRemoteUserUID")?,
+            user_env_probe,
+            features: value_map(value, "features")?,
+            override_feature_install_order: string_vec(value, "overrideFeatureInstallOrder")?,
+            host_requirements,
+            customizations: value_map(value, "customizations")?,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct BuildConfig {
     pub dockerfile: Option<String>,
     pub context: Option<String>,
     pub target: Option<String>,
-    #[serde(default)]
     pub args: HashMap<String, String>,
-    #[serde(deserialize_with = "deserialize_optional_string_or_vec", default)]
     pub cache_from: Option<Vec<String>>,
-    #[serde(default)]
     pub options: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
-#[serde(rename_all = "camelCase")]
+impl BuildConfig {
+    fn from_value(value: &Value) -> Option<Self> {
+        value.as_object()?;
+        Some(BuildConfig {
+            dockerfile: opt_string(value, "dockerfile")?,
+            context: opt_string(value, "context")?,
+            target: opt_string(value, "target")?,
+            args: string_map(value, "args")?,
+            cache_from: opt_string_or_vec(value, "cacheFrom")?,
+            options: string_vec(value, "options")?,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct DockerComposeConfig {
-    #[serde(deserialize_with = "deserialize_string_or_vec")]
     pub docker_compose_file: Vec<String>,
     pub service: String,
     pub workspace_folder: String,
-    #[serde(default)]
     pub run_services: Vec<String>,
     pub shutdown_action: Option<String>,
-    #[serde(flatten)]
     pub common: CommonConfig,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
-#[serde(rename_all = "camelCase")]
+impl DockerComposeConfig {
+    pub(super) fn from_value(value: &Value) -> Option<Self> {
+        Some(DockerComposeConfig {
+            docker_compose_file: opt_string_or_vec(value, "dockerComposeFile")??,
+            service: req_string(value, "service")?,
+            workspace_folder: req_string(value, "workspaceFolder")?,
+            run_services: string_vec(value, "runServices")?,
+            shutdown_action: opt_string(value, "shutdownAction")?,
+            common: CommonConfig::from_value(value)?,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct DockerfileConfig {
     pub docker_file: String,
     pub context: Option<String>,
     pub build: Option<BuildConfig>,
-    #[serde(default, deserialize_with = "deserialize_app_port")]
     pub app_port: Vec<AppPort>,
-    #[serde(default)]
     pub run_args: Vec<String>,
     pub workspace_mount: Option<String>,
     pub shutdown_action: Option<String>,
-    #[serde(flatten)]
     pub common: CommonConfig,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
-#[serde(rename_all = "camelCase")]
+impl DockerfileConfig {
+    pub(super) fn from_value(value: &Value) -> Option<Self> {
+        let build = match value.get("build") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(BuildConfig::from_value(v)?),
+        };
+        Some(DockerfileConfig {
+            docker_file: req_string(value, "dockerFile")?,
+            context: opt_string(value, "context")?,
+            build,
+            app_port: app_port(value)?,
+            run_args: string_vec(value, "runArgs")?,
+            workspace_mount: opt_string(value, "workspaceMount")?,
+            shutdown_action: opt_string(value, "shutdownAction")?,
+            common: CommonConfig::from_value(value)?,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct DockerfileBuildConfig {
     pub build: BuildConfig,
-    #[serde(default, deserialize_with = "deserialize_app_port")]
     pub app_port: Vec<AppPort>,
-    #[serde(default)]
     pub run_args: Vec<String>,
     pub workspace_mount: Option<String>,
     pub shutdown_action: Option<String>,
-    #[serde(flatten)]
     pub common: CommonConfig,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
-#[serde(rename_all = "camelCase")]
+impl DockerfileBuildConfig {
+    pub(super) fn from_value(value: &Value) -> Option<Self> {
+        Some(DockerfileBuildConfig {
+            build: BuildConfig::from_value(value.get("build")?)?,
+            app_port: app_port(value)?,
+            run_args: string_vec(value, "runArgs")?,
+            workspace_mount: opt_string(value, "workspaceMount")?,
+            shutdown_action: opt_string(value, "shutdownAction")?,
+            common: CommonConfig::from_value(value)?,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct ImageConfig {
     pub image: String,
-    #[serde(default, deserialize_with = "deserialize_app_port")]
     pub app_port: Vec<AppPort>,
-    #[serde(default)]
     pub run_args: Vec<String>,
     pub workspace_mount: Option<String>,
     pub shutdown_action: Option<String>,
-    #[serde(flatten)]
     pub common: CommonConfig,
+}
+
+impl ImageConfig {
+    pub(super) fn from_value(value: &Value) -> Option<Self> {
+        Some(ImageConfig {
+            image: req_string(value, "image")?,
+            app_port: app_port(value)?,
+            run_args: string_vec(value, "runArgs")?,
+            workspace_mount: opt_string(value, "workspaceMount")?,
+            shutdown_action: opt_string(value, "shutdownAction")?,
+            common: CommonConfig::from_value(value)?,
+        })
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -221,7 +356,11 @@ impl DevcontainerConfig {
         }
     }
 
-    pub fn workspace_folder(&self, cwd: &std::path::Path) -> String {
+    pub fn workspace_folder(
+        &self,
+        cwd: &std::path::Path,
+        local_env: &HashMap<String, String>,
+    ) -> String {
         let default = format!(
             "/workspaces/{}",
             cwd.file_name().unwrap_or_default().to_string_lossy()
@@ -233,66 +372,130 @@ impl DevcontainerConfig {
             DevcontainerConfig::DockerCompose(c) => Some(c.workspace_folder.clone()),
         }
         .unwrap_or_else(|| default.clone());
-        super::variables::expand_variables(&raw, cwd, &default, &Default::default())
+        super::variables::expand_variables(&raw, cwd, &default, &Default::default(), local_env)
     }
 }
 
-fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum StringOrVec {
-        String(String),
-        Vec(Vec<String>),
-    }
-    match StringOrVec::deserialize(deserializer)? {
-        StringOrVec::String(s) => Ok(vec![s]),
-        StringOrVec::Vec(v) => Ok(v),
+fn opt_string(value: &Value, key: &str) -> Option<Option<String>> {
+    match value.get(key) {
+        None | Some(Value::Null) => Some(None),
+        Some(Value::String(s)) => Some(Some(s.clone())),
+        Some(_) => None,
     }
 }
 
-fn deserialize_optional_string_or_vec<'de, D>(
-    deserializer: D,
-) -> Result<Option<Vec<String>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum StringOrVec {
-        String(String),
-        Vec(Vec<String>),
+fn req_string(value: &Value, key: &str) -> Option<String> {
+    value.get(key)?.as_str().map(String::from)
+}
+
+fn opt_bool(value: &Value, key: &str) -> Option<Option<bool>> {
+    match value.get(key) {
+        None | Some(Value::Null) => Some(None),
+        Some(Value::Bool(b)) => Some(Some(*b)),
+        Some(_) => None,
     }
-    match Option::<StringOrVec>::deserialize(deserializer)? {
-        None => Ok(None),
-        Some(StringOrVec::String(s)) => Ok(Some(vec![s])),
-        Some(StringOrVec::Vec(v)) => Ok(Some(v)),
+}
+
+fn opt_value(value: &Value, key: &str) -> Option<Value> {
+    value
+        .get(key)
+        .filter(|v| !matches!(v, Value::Null))
+        .cloned()
+}
+
+fn string_vec(value: &Value, key: &str) -> Option<Vec<String>> {
+    match value.get(key) {
+        None => Some(vec![]),
+        Some(Value::Array(items)) => items.iter().map(|v| v.as_str().map(String::from)).collect(),
+        Some(_) => None,
+    }
+}
+
+fn value_vec(value: &Value, key: &str) -> Option<Vec<Value>> {
+    match value.get(key) {
+        None => Some(vec![]),
+        Some(Value::Array(items)) => Some(items.to_vec()),
+        Some(_) => None,
+    }
+}
+
+fn string_map(value: &Value, key: &str) -> Option<HashMap<String, String>> {
+    match value.get(key) {
+        None => Some(HashMap::new()),
+        Some(v) => v.to_string_map(),
+    }
+}
+
+fn value_map(value: &Value, key: &str) -> Option<HashMap<String, Value>> {
+    match value.get(key) {
+        None => Some(HashMap::new()),
+        Some(v) => {
+            let members = v.as_object()?;
+            Some(
+                members
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            )
+        }
+    }
+}
+
+fn opt_string_or_vec(value: &Value, key: &str) -> Option<Option<Vec<String>>> {
+    match value.get(key) {
+        None | Some(Value::Null) => Some(None),
+        Some(Value::String(s)) => Some(Some(vec![s.clone()])),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| v.as_str().map(String::from))
+            .collect::<Option<Vec<String>>>()
+            .map(Some),
+        Some(_) => None,
+    }
+}
+
+fn app_port(value: &Value) -> Option<Vec<AppPort>> {
+    fn normalize(v: &Value) -> Option<AppPort> {
+        match v {
+            Value::String(s) => Some(AppPort(s.clone())),
+            Value::Number(_) => {
+                let n = v.as_u64()?;
+                Some(AppPort(format!("127.0.0.1:{}:{}", n, n)))
+            }
+            _ => None,
+        }
+    }
+    match value.get("appPort") {
+        None | Some(Value::Null) => Some(vec![]),
+        Some(Value::Array(items)) => items.iter().map(normalize).collect(),
+        Some(v) => normalize(v).map(|p| vec![p]),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::devcontainer::jsonc;
+
+    fn value(json: &str) -> Value {
+        jsonc::parse(json).unwrap()
+    }
 
     #[test]
-    fn when_deserialize_app_port_with_number_then_normalizes_to_loopback_mapping() {
-        let result = deserialize_app_port(&mut serde_json::Deserializer::from_str("8080")).unwrap();
+    fn when_app_port_with_number_then_normalizes_to_loopback_mapping() {
+        let result = app_port(&value(r#"{"appPort": 8080}"#)).unwrap();
         assert_eq!(result, vec![AppPort("127.0.0.1:8080:8080".to_string())]);
     }
 
     #[test]
-    fn when_deserialize_app_port_with_string_then_uses_as_is() {
-        let result =
-            deserialize_app_port(&mut serde_json::Deserializer::from_str(r#""8080:80""#)).unwrap();
+    fn when_app_port_with_string_then_uses_as_is() {
+        let result = app_port(&value(r#"{"appPort": "8080:80"}"#)).unwrap();
         assert_eq!(result, vec![AppPort("8080:80".to_string())]);
     }
 
     #[test]
-    fn when_deserialize_app_port_with_array_of_numbers_then_normalizes_each() {
-        let result =
-            deserialize_app_port(&mut serde_json::Deserializer::from_str("[3000, 4000]")).unwrap();
+    fn when_app_port_with_array_of_numbers_then_normalizes_each() {
+        let result = app_port(&value(r#"{"appPort": [3000, 4000]}"#)).unwrap();
         assert_eq!(
             result,
             vec![
@@ -303,11 +506,8 @@ mod tests {
     }
 
     #[test]
-    fn when_deserialize_app_port_with_array_of_strings_then_uses_each_as_is() {
-        let result = deserialize_app_port(&mut serde_json::Deserializer::from_str(
-            r#"["3000:3000", "4000:80"]"#,
-        ))
-        .unwrap();
+    fn when_app_port_with_array_of_strings_then_uses_each_as_is() {
+        let result = app_port(&value(r#"{"appPort": ["3000:3000", "4000:80"]}"#)).unwrap();
         assert_eq!(
             result,
             vec![
@@ -318,51 +518,26 @@ mod tests {
     }
 
     #[test]
-    fn when_deserialize_app_port_with_null_then_returns_empty() {
-        let result = deserialize_app_port(&mut serde_json::Deserializer::from_str("null")).unwrap();
+    fn when_app_port_with_null_then_returns_empty() {
+        let result = app_port(&value(r#"{"appPort": null}"#)).unwrap();
         assert_eq!(result, vec![]);
     }
 
     #[test]
-    fn when_deserialize_string_or_vec_with_string_then_returns_single_element_vec() {
-        let result =
-            deserialize_string_or_vec(&mut serde_json::Deserializer::from_str(r#""hello""#))
-                .unwrap();
-        assert_eq!(result, vec!["hello".to_string()]);
-    }
-
-    #[test]
-    fn when_deserialize_string_or_vec_with_array_then_returns_vec() {
-        let result = deserialize_string_or_vec(&mut serde_json::Deserializer::from_str(
-            r#"["hello", "world"]"#,
-        ))
-        .unwrap();
-        assert_eq!(result, vec!["hello".to_string(), "world".to_string()]);
-    }
-
-    #[test]
-    fn when_deserialize_optional_string_or_vec_with_string_then_returns_some_single_element_vec() {
-        let result = deserialize_optional_string_or_vec(&mut serde_json::Deserializer::from_str(
-            r#""hello""#,
-        ))
-        .unwrap();
+    fn when_opt_string_or_vec_with_string_then_returns_some_single_element_vec() {
+        let result = opt_string_or_vec(&value(r#"{"k": "hello"}"#), "k").unwrap();
         assert_eq!(result, Some(vec!["hello".to_string()]));
     }
 
     #[test]
-    fn when_deserialize_optional_string_or_vec_with_array_then_returns_some_vec() {
-        let result = deserialize_optional_string_or_vec(&mut serde_json::Deserializer::from_str(
-            r#"["hello", "world"]"#,
-        ))
-        .unwrap();
+    fn when_opt_string_or_vec_with_array_then_returns_some_vec() {
+        let result = opt_string_or_vec(&value(r#"{"k": ["hello", "world"]}"#), "k").unwrap();
         assert_eq!(result, Some(vec!["hello".to_string(), "world".to_string()]));
     }
 
     #[test]
-    fn when_deserialize_optional_string_or_vec_with_null_then_returns_none() {
-        let result =
-            deserialize_optional_string_or_vec(&mut serde_json::Deserializer::from_str("null"))
-                .unwrap();
+    fn when_opt_string_or_vec_with_null_then_returns_none() {
+        let result = opt_string_or_vec(&value(r#"{"k": null}"#), "k").unwrap();
         assert_eq!(result, None);
     }
 
@@ -490,7 +665,10 @@ mod tests {
             },
         });
         assert_eq!(
-            config.workspace_folder(std::path::Path::new("/home/user/myproject")),
+            config.workspace_folder(
+                std::path::Path::new("/home/user/myproject"),
+                &HashMap::new()
+            ),
             "/workspace"
         );
     }
@@ -506,7 +684,10 @@ mod tests {
             common: empty_common(),
         });
         assert_eq!(
-            config.workspace_folder(std::path::Path::new("/home/user/myproject")),
+            config.workspace_folder(
+                std::path::Path::new("/home/user/myproject"),
+                &HashMap::new()
+            ),
             "/workspaces/myproject"
         );
     }
@@ -527,7 +708,10 @@ mod tests {
             },
         });
         assert_eq!(
-            config.workspace_folder(std::path::Path::new("/home/user/myproject")),
+            config.workspace_folder(
+                std::path::Path::new("/home/user/myproject"),
+                &HashMap::new()
+            ),
             "/workspace"
         );
     }
@@ -546,7 +730,10 @@ mod tests {
             },
         });
         assert_eq!(
-            config.workspace_folder(std::path::Path::new("/home/user/myproject")),
+            config.workspace_folder(
+                std::path::Path::new("/home/user/myproject"),
+                &HashMap::new()
+            ),
             "/workspace"
         );
     }
@@ -565,7 +752,10 @@ mod tests {
             },
         });
         assert_eq!(
-            config.workspace_folder(std::path::Path::new("/home/user/myproject")),
+            config.workspace_folder(
+                std::path::Path::new("/home/user/myproject"),
+                &HashMap::new()
+            ),
             "/workspaces/myproject"
         );
     }
@@ -581,7 +771,10 @@ mod tests {
             common: empty_common(),
         });
         assert_eq!(
-            config.workspace_folder(std::path::Path::new("/home/user/myproject")),
+            config.workspace_folder(
+                std::path::Path::new("/home/user/myproject"),
+                &HashMap::new()
+            ),
             "/workspace"
         );
     }

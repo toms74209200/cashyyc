@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod devcontainer;
 pub mod docker;
+pub mod error;
 pub mod features;
 pub mod lifecycle;
 pub mod oci;

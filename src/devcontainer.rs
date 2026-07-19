@@ -1,6 +1,7 @@
 pub mod config;
 pub mod docker_args;
 pub mod docker_compose;
+pub mod jsonc;
 pub mod parser;
 pub mod shell;
 pub mod variables;
