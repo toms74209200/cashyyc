@@ -66,9 +66,7 @@ pub fn build_devcontainer_json(
     let mut members = match value {
         jsonc::Value::Object(members) => members,
         _ => {
-            return Err(err!(
-                "template devcontainer.json is not a JSON object"
-            ));
+            return Err(err!("template devcontainer.json is not a JSON object"));
         }
     };
     if !feature_ids.is_empty() {

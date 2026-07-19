@@ -1,6 +1,8 @@
 use crate::cli;
 use crate::devcontainer;
 use crate::docker;
+use crate::err;
+use crate::error::Result;
 use crate::features;
 use crate::lifecycle::LifecycleCmd;
 use crate::oci;
@@ -8,8 +10,6 @@ use crate::setup;
 use crate::setup::ContainerTarget;
 use crate::tui;
 use crate::uid::{UidContext, UidUpdate};
-use crate::err;
-use crate::error::Result;
 use std::process::Stdio;
 
 fn expand_lifecycle_cmd(
@@ -246,15 +246,11 @@ fn new() -> Result<()> {
         .status()
         .map_err(|e| err!("failed to run curl: {e}"))?;
     if !status.success() {
-        return Err(err!(
-            "failed to download template {}",
-            selected_template.id
-        ));
+        return Err(err!("failed to download template {}", selected_template.id));
     }
 
     let template_dir = tmp_dir.join("template");
-    std::fs::create_dir_all(&template_dir)
-        .map_err(|e| err!("failed to create temp dir: {e}"))?;
+    std::fs::create_dir_all(&template_dir).map_err(|e| err!("failed to create temp dir: {e}"))?;
     let status = std::process::Command::new("tar")
         .args([
             "xf",
@@ -1442,10 +1438,7 @@ fn download_features(
                     .status()
                     .map_err(|e| err!("failed to copy local feature: {e}"))?;
                 if !status.success() {
-                    return Err(err!(
-                        "failed to copy local feature from {}",
-                        path.display()
-                    ));
+                    return Err(err!("failed to copy local feature from {}", path.display()));
                 }
             }
             features::FeatureSource::Tarball(url) => {
@@ -1652,10 +1645,7 @@ fn select_config(
             if cs.iter().any(|c| c == &path) {
                 Ok(path)
             } else {
-                Err(err!(
-                    "Dev container config ({}) not found.",
-                    path.display()
-                ))
+                Err(err!("Dev container config ({}) not found.", path.display()))
             }
         }
         (cs, None) => {
@@ -1849,8 +1839,7 @@ fn run_lifecycle_in_container(
                     }
                     LifecycleCmd::Parallel(_) => {}
                 }
-                proc.spawn()
-                    .map_err(|e| err!("Failed to run docker: {e}"))
+                proc.spawn().map_err(|e| err!("Failed to run docker: {e}"))
             })
             .collect::<Result<_>>()?,
     };
