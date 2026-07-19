@@ -1,6 +1,7 @@
 use crate::cli;
 use crate::devcontainer;
 use crate::docker;
+use crate::docker::{Docker, DockerCli};
 use crate::err;
 use crate::error::Result;
 use crate::features;
@@ -10,7 +11,6 @@ use crate::setup;
 use crate::setup::ContainerTarget;
 use crate::tui;
 use crate::uid::{UidContext, UidUpdate};
-use std::process::Stdio;
 
 fn expand_lifecycle_cmd(
     cmd: &LifecycleCmd,
@@ -61,11 +61,12 @@ fn local_env_snapshot() -> std::collections::HashMap<String, String> {
 }
 
 pub fn run(args: Vec<String>) -> Result<()> {
+    let mut docker = DockerCli;
     match cli::parse_args(&args) {
-        cli::Command::Shell { name } => shell(name),
-        cli::Command::Stop { name } => stop(name),
-        cli::Command::Down { name } => down(name),
-        cli::Command::Ps { name } => ps(name),
+        cli::Command::Shell { name } => shell(&mut docker, name),
+        cli::Command::Stop { name } => stop(&mut docker, name),
+        cli::Command::Down { name } => down(&mut docker, name),
+        cli::Command::Ps { name } => ps(&mut docker, name),
         cli::Command::New => new(),
         cli::Command::Help => {
             println!(
@@ -347,7 +348,7 @@ fn new() -> Result<()> {
     Ok(())
 }
 
-fn shell(name: Option<String>) -> Result<()> {
+fn shell(docker: &mut impl Docker, name: Option<String>) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let local_env = local_env_snapshot();
     let (config_path, config) = open_config(&cwd, name.as_deref())?;
@@ -355,39 +356,39 @@ fn shell(name: Option<String>) -> Result<()> {
 
     let target = setup::from_config(&config, &cwd, &config_path, config_dir, &local_env);
 
-    let (found_container, container_id) = match lookup_existing(&target, &config_path, &cwd)? {
-        Existing::Running { id, meta } => (meta, Some(id)),
-        Existing::Stopped { id, meta } => {
-            start_existing(&target, &id)?;
-            let started_at = std::process::Command::new("docker")
-                .args(["inspect", "--format", "{{.State.StartedAt}}", &id])
-                .output()
-                .map_err(|e| err!("Failed to run docker: {e}"))
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
-            let wait_for = config.common().wait_for.clone();
-            if let Some(value) = config.common().post_start_command.as_ref()
-                && let Ok(cmd) = LifecycleCmd::try_from(value)
-            {
-                let workdir = config.workspace_folder(&cwd, &local_env);
-                let cmd =
-                    expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-                let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
-                run_lifecycle_in_container(
-                    &cmd,
-                    &id,
-                    &workdir,
-                    "postStartCommand",
-                    LifecycleMarker::Once(&started_at),
-                    expanded_remote_user.as_deref(),
-                    wait_for
-                        .as_ref()
-                        .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
-                )?;
+    let (found_container, container_id) =
+        match lookup_existing(docker, &target, &config_path, &cwd)? {
+            Existing::Running { id, meta } => (meta, Some(id)),
+            Existing::Stopped { id, meta } => {
+                start_existing(docker, &target, &id)?;
+                let started_at = docker
+                    .inspect_format(&id, "{{.State.StartedAt}}")
+                    .map(|o| o.stdout.trim().to_string())?;
+                let wait_for = config.common().wait_for.clone();
+                if let Some(value) = config.common().post_start_command.as_ref()
+                    && let Ok(cmd) = LifecycleCmd::try_from(value)
+                {
+                    let workdir = config.workspace_folder(&cwd, &local_env);
+                    let cmd =
+                        expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
+                    let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
+                    run_lifecycle_in_container(
+                        docker,
+                        &cmd,
+                        &id,
+                        &workdir,
+                        "postStartCommand",
+                        LifecycleMarker::Once(&started_at),
+                        expanded_remote_user.as_deref(),
+                        wait_for
+                            .as_ref()
+                            .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
+                    )?;
+                }
+                (meta, Some(id))
             }
-            (meta, Some(id))
-        }
-        Existing::None => (None, None),
-    };
+            Existing::None => (None, None),
+        };
 
     if let Some(id) = container_id {
         let wait_for = config.common().wait_for.clone();
@@ -396,8 +397,9 @@ fn shell(name: Option<String>) -> Result<()> {
         {
             let workdir = config.workspace_folder(&cwd, &local_env);
             let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-            let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+            let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
             run_lifecycle_in_container(
+                docker,
                 &cmd,
                 &id,
                 &workdir,
@@ -409,7 +411,7 @@ fn shell(name: Option<String>) -> Result<()> {
                     .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
             )?;
         }
-        return exec_in_container(id, found_container, &config, &cwd);
+        return exec_in_container(docker, id, found_container, &config, &cwd);
     }
 
     let features_map = &config.common().features;
@@ -470,18 +472,11 @@ fn shell(name: Option<String>) -> Result<()> {
             }
             ContainerTarget::Compose(c) => {
                 let base = (|| -> Option<String> {
-                    let out = std::process::Command::new("docker")
-                        .arg("compose")
-                        .args(&c.global_args)
-                        .args(["config", "--format", "json"])
-                        .output()
-                        .ok()?;
-                    if !out.status.success() {
+                    let out = docker.compose_config_json(&c.global_args).ok()?;
+                    if !out.success {
                         return None;
                     }
-                    let cfg = devcontainer::ComposeResolved::parse(&String::from_utf8_lossy(
-                        &out.stdout,
-                    ))?;
+                    let cfg = devcontainer::ComposeResolved::parse(&out.stdout)?;
                     match cfg.services.get(&c.service)?.feature_base_source() {
                         devcontainer::FeatureBaseSource::Image(img) => Some(format!("FROM {img}")),
                         devcontainer::FeatureBaseSource::DockerfilePath(p) => {
@@ -557,36 +552,21 @@ fn shell(name: Option<String>) -> Result<()> {
     let id: String = match target {
         ContainerTarget::Single(s) => {
             if let Some((_, ref fdir)) = features_plan {
-                let mut child = std::process::Command::new("docker")
-                    .args([
-                        "build",
-                        "-f",
-                        &s.dockerfile.as_ref().unwrap().display().to_string(),
-                        "-t",
-                        &s.image_tag,
-                        &fdir.display().to_string(),
-                    ])
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|e| err!("Failed to run docker: {e}"))?;
-                let status =
-                    tui::build_log(&mut child).map_err(|e| err!("Failed to run docker: {e}"))?;
-                if !status.success() {
+                let build_args = [
+                    "-f",
+                    &s.dockerfile.as_ref().unwrap().display().to_string(),
+                    "-t",
+                    &s.image_tag,
+                    &fdir.display().to_string(),
+                ]
+                .map(String::from);
+                if !docker.build_streamed(&build_args)? {
                     return Err(err!("`docker build` for features failed"));
                 }
             } else {
                 match &config {
                     devcontainer::DevcontainerConfig::Image(c) => {
-                        let mut child = std::process::Command::new("docker")
-                            .args(["pull", &c.image])
-                            .stdout(Stdio::piped())
-                            .stderr(Stdio::piped())
-                            .spawn()
-                            .map_err(|e| err!("Failed to run docker: {e}"))?;
-                        let status = tui::build_log(&mut child)
-                            .map_err(|e| err!("Failed to run docker: {e}"))?;
-                        if !status.success() {
+                        if !docker.pull_streamed(&c.image)? {
                             return Err(err!("`docker pull` failed"));
                         }
                     }
@@ -594,32 +574,14 @@ fn shell(name: Option<String>) -> Result<()> {
                         let build = devcontainer::normalize_dockerfile_config(c);
                         let build_args =
                             devcontainer::container_build_args(&build, config_dir, &s.image_tag);
-                        let mut child = std::process::Command::new("docker")
-                            .arg("build")
-                            .args(&build_args)
-                            .stdout(Stdio::piped())
-                            .stderr(Stdio::piped())
-                            .spawn()
-                            .map_err(|e| err!("Failed to run docker: {e}"))?;
-                        let status = tui::build_log(&mut child)
-                            .map_err(|e| err!("Failed to run docker: {e}"))?;
-                        if !status.success() {
+                        if !docker.build_streamed(&build_args)? {
                             return Err(err!("`docker build` failed"));
                         }
                     }
                     devcontainer::DevcontainerConfig::DockerfileBuild(c) => {
                         let build_args =
                             devcontainer::container_build_args(&c.build, config_dir, &s.image_tag);
-                        let mut child = std::process::Command::new("docker")
-                            .arg("build")
-                            .args(&build_args)
-                            .stdout(Stdio::piped())
-                            .stderr(Stdio::piped())
-                            .spawn()
-                            .map_err(|e| err!("Failed to run docker: {e}"))?;
-                        let status = tui::build_log(&mut child)
-                            .map_err(|e| err!("Failed to run docker: {e}"))?;
-                        if !status.success() {
+                        if !docker.build_streamed(&build_args)? {
                             return Err(err!("`docker build` failed"));
                         }
                     }
@@ -629,27 +591,19 @@ fn shell(name: Option<String>) -> Result<()> {
             #[cfg(target_os = "linux")]
             let image_tag = {
                 use std::os::unix::fs::MetadataExt;
-                let image_user = std::process::Command::new("docker")
-                    .args(["inspect", "--format", "{{.Config.User}}", &s.image_tag])
-                    .output()
+                let image_user = docker
+                    .inspect_format(&s.image_tag, "{{.Config.User}}")
                     .ok()
-                    .filter(|o| o.status.success())
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .filter(|o| o.success)
+                    .map(|o| o.stdout.trim().to_string())
                     .unwrap_or_default();
-                let metadata_remote_user = std::process::Command::new("docker")
-                    .args([
-                        "inspect",
-                        "--format",
-                        "{{index .Config.Labels \"devcontainer.metadata\"}}",
+                let metadata_remote_user = docker
+                    .inspect_format(
                         &s.image_tag,
-                    ])
-                    .output()
+                        "{{index .Config.Labels \"devcontainer.metadata\"}}",
+                    )
                     .ok()
-                    .and_then(|o| {
-                        docker::parse_remote_user_from_metadata(
-                            String::from_utf8_lossy(&o.stdout).trim(),
-                        )
-                    });
+                    .and_then(|o| docker::parse_remote_user_from_metadata(o.stdout.trim()));
                 let meta = std::fs::metadata("/proc/self")
                     .map_err(|e| err!("Failed to get process metadata: {e}"))?;
                 let host_uid = meta.uid();
@@ -676,6 +630,7 @@ fn shell(name: Option<String>) -> Result<()> {
                         } = &update
                         {
                             run_uid_docker_build(
+                                docker,
                                 uid_tag,
                                 remote_user,
                                 *new_uid,
@@ -696,24 +651,14 @@ fn shell(name: Option<String>) -> Result<()> {
             run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
             run_args.push(image_tag.clone());
             let image_config = if s.override_command == Some(false) {
-                let output = std::process::Command::new("docker")
-                    .args([
-                        "image",
-                        "inspect",
-                        "--format",
-                        "{{json .Config}}",
-                        &image_tag,
-                    ])
-                    .output()
-                    .map_err(|e| err!("Failed to run docker: {e}"))?;
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
+                let output = docker.image_config(&image_tag)?;
+                if !output.success {
                     return Err(err!(
                         "Failed to inspect image (overrideCommand: false): {}",
-                        stderr.trim()
+                        output.stderr.trim()
                     ));
                 }
-                docker::ImageConfig::parse(String::from_utf8_lossy(&output.stdout).trim())
+                docker::ImageConfig::parse(output.stdout.trim())
             } else {
                 docker::ImageConfig {
                     entrypoint: vec![],
@@ -725,16 +670,11 @@ fn shell(name: Option<String>) -> Result<()> {
                 &image_config.entrypoint,
                 &image_config.cmd,
             ));
-            let output = std::process::Command::new("docker")
-                .arg("run")
-                .args(&run_args)
-                .output()
-                .map_err(|e| err!("Failed to run docker: {e}"))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(err!("`docker run` failed: {}", stderr.trim()));
+            let output = docker.run_container(&run_args)?;
+            if !output.success {
+                return Err(err!("`docker run` failed: {}", output.stderr.trim()));
             }
-            docker::parse_container_id(&String::from_utf8_lossy(&output.stdout))
+            docker::parse_container_id(&output.stdout)
                 .ok_or_else(|| err!("Failed to get container ID from `docker run`"))?
         }
         ContainerTarget::Compose(c) => {
@@ -745,34 +685,24 @@ fn shell(name: Option<String>) -> Result<()> {
             std::fs::create_dir_all(&compose_dir)
                 .map_err(|e| err!("Failed to create compose override directory: {e}"))?;
             let existing_id = {
-                let output = std::process::Command::new("docker")
-                    .args([
-                        "ps", "-a", "--filter", &c.filter1, "--filter", &c.filter2, "--format",
-                        "{{.ID}}",
-                    ])
-                    .output()
-                    .map_err(|e| err!("Failed to run docker: {e}"))?;
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
+                let output = docker.ps_ids(&[c.filter1.clone(), c.filter2.clone()], true)?;
+                if !output.success {
                     return Err(err!(
                         "`docker ps` failed with status {}: {}",
                         output.status,
-                        stderr.trim()
+                        output.stderr.trim()
                     ));
                 }
-                docker::parse_container_id(&String::from_utf8_lossy(&output.stdout))
+                docker::parse_container_id(&output.stdout)
             };
             let persisted_override = existing_id.as_deref().and_then(|id| {
-                let out = std::process::Command::new("docker")
-                    .args([
-                        "inspect",
-                        "--format",
-                        "{{index .Config.Labels \"com.docker.compose.project.config_files\"}}",
+                let out = docker
+                    .inspect_format(
                         id,
-                    ])
-                    .output()
+                        "{{index .Config.Labels \"com.docker.compose.project.config_files\"}}",
+                    )
                     .ok()?;
-                let config_files = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let config_files = out.stdout.trim().to_string();
                 config_files.split(',').find_map(|f| {
                     let p = std::path::Path::new(f.trim());
                     let is_features_override = p
@@ -803,41 +733,28 @@ fn shell(name: Option<String>) -> Result<()> {
                 let override_content = if !no_recreate {
                     (|| -> Option<String> {
                         use std::os::unix::fs::MetadataExt;
-                        let out = std::process::Command::new("docker")
-                            .arg("compose")
-                            .args(&c.global_args)
-                            .args(["config", "--format", "json"])
-                            .output()
+                        let out = docker
+                            .compose_config_json(&c.global_args)
                             .ok()
-                            .filter(|o| o.status.success())?;
-                        let cfg = devcontainer::ComposeResolved::parse(&String::from_utf8_lossy(
-                            &out.stdout,
-                        ))?;
+                            .filter(|o| o.success)?;
+                        let cfg = devcontainer::ComposeResolved::parse(&out.stdout)?;
                         let image = match cfg.services.get(&c.service)?.feature_base_source() {
                             devcontainer::FeatureBaseSource::Image(img) => img,
                             devcontainer::FeatureBaseSource::DockerfilePath(_) => return None,
                         };
-                        let image_user = std::process::Command::new("docker")
-                            .args(["inspect", "--format", "{{.Config.User}}", &image])
-                            .output()
+                        let image_user = docker
+                            .inspect_format(&image, "{{.Config.User}}")
                             .ok()
-                            .filter(|o| o.status.success())
-                            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                            .filter(|o| o.success)
+                            .map(|o| o.stdout.trim().to_string())
                             .unwrap_or_default();
-                        let metadata_remote_user = std::process::Command::new("docker")
-                            .args([
-                                "inspect",
-                                "--format",
-                                "{{index .Config.Labels \"devcontainer.metadata\"}}",
+                        let metadata_remote_user = docker
+                            .inspect_format(
                                 &image,
-                            ])
-                            .output()
+                                "{{index .Config.Labels \"devcontainer.metadata\"}}",
+                            )
                             .ok()
-                            .and_then(|o| {
-                                docker::parse_remote_user_from_metadata(
-                                    String::from_utf8_lossy(&o.stdout).trim(),
-                                )
-                            });
+                            .and_then(|o| docker::parse_remote_user_from_metadata(o.stdout.trim()));
                         let meta = std::fs::metadata("/proc/self").ok()?;
                         let host_uid = meta.uid();
                         let host_gid = meta.gid();
@@ -865,6 +782,7 @@ fn shell(name: Option<String>) -> Result<()> {
                         } = update
                         {
                             run_uid_docker_build(
+                                docker,
                                 &uid_tag,
                                 &remote_user,
                                 new_uid,
@@ -891,16 +809,7 @@ fn shell(name: Option<String>) -> Result<()> {
                     build_args.extend(["-f".to_string(), p.display().to_string()]);
                     build_args.push("build".to_string());
                     build_args.extend(c.services.iter().cloned());
-                    let mut child = std::process::Command::new("docker")
-                        .arg("compose")
-                        .args(&build_args)
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn()
-                        .map_err(|e| err!("Failed to run docker: {e}"))?;
-                    let status = tui::build_log(&mut child)
-                        .map_err(|e| err!("Failed to run docker: {e}"))?;
-                    if !status.success() {
+                    if !docker.compose_build_streamed(&build_args)? {
                         return Err(err!("`docker compose build` failed"));
                     }
                 }
@@ -913,46 +822,32 @@ fn shell(name: Option<String>) -> Result<()> {
                 up_args.push("--no-recreate".to_string());
             }
             up_args.extend(c.services.iter().cloned());
-            let status = std::process::Command::new("docker")
-                .arg("compose")
-                .args(&up_args)
-                .status()
-                .map_err(|e| err!("Failed to run docker: {e}"))?;
-            if !status.success() {
+            if !docker.compose(&up_args)? {
                 return Err(err!("`docker compose up` failed"));
             }
-            let output = std::process::Command::new("docker")
-                .args([
-                    "ps", "--filter", &c.filter1, "--filter", &c.filter2, "--format", "{{.ID}}",
-                ])
-                .output()
-                .map_err(|e| err!("Failed to run docker: {e}"))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(err!("`docker ps` failed: {}", stderr.trim()));
+            let output = docker.ps_ids(&[c.filter1.clone(), c.filter2.clone()], false)?;
+            if !output.success {
+                return Err(err!("`docker ps` failed: {}", output.stderr.trim()));
             }
-            docker::parse_container_id(&String::from_utf8_lossy(&output.stdout))
+            docker::parse_container_id(&output.stdout)
                 .ok_or_else(|| err!("Failed to get container ID from `docker compose up`"))?
         }
     };
-    let created_at = std::process::Command::new("docker")
-        .args(["inspect", "--format", "{{.Created}}", &id])
-        .output()
-        .map_err(|e| err!("Failed to run docker: {e}"))
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
-    let started_at = std::process::Command::new("docker")
-        .args(["inspect", "--format", "{{.State.StartedAt}}", &id])
-        .output()
-        .map_err(|e| err!("Failed to run docker: {e}"))
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
+    let created_at = docker
+        .inspect_format(&id, "{{.Created}}")
+        .map(|o| o.stdout.trim().to_string())?;
+    let started_at = docker
+        .inspect_format(&id, "{{.State.StartedAt}}")
+        .map(|o| o.stdout.trim().to_string())?;
     let wait_for = config.common().wait_for.clone();
     if let Some(value) = config.common().on_create_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
         let workdir = config.workspace_folder(&cwd, &local_env);
         let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-        let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+        let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
         run_lifecycle_in_container(
+            docker,
             &cmd,
             &id,
             &workdir,
@@ -972,8 +867,9 @@ fn shell(name: Option<String>) -> Result<()> {
                 let workdir = config.workspace_folder(&cwd, &local_env);
                 let cmd =
                     expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-                let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+                let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
                 run_lifecycle_in_container(
+                    docker,
                     &cmd,
                     &id,
                     &workdir,
@@ -992,8 +888,9 @@ fn shell(name: Option<String>) -> Result<()> {
     {
         let workdir = config.workspace_folder(&cwd, &local_env);
         let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-        let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+        let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
         run_lifecycle_in_container(
+            docker,
             &cmd,
             &id,
             &workdir,
@@ -1013,8 +910,9 @@ fn shell(name: Option<String>) -> Result<()> {
                 let workdir = config.workspace_folder(&cwd, &local_env);
                 let cmd =
                     expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-                let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+                let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
                 run_lifecycle_in_container(
+                    docker,
                     &cmd,
                     &id,
                     &workdir,
@@ -1033,8 +931,9 @@ fn shell(name: Option<String>) -> Result<()> {
     {
         let workdir = config.workspace_folder(&cwd, &local_env);
         let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-        let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+        let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
         run_lifecycle_in_container(
+            docker,
             &cmd,
             &id,
             &workdir,
@@ -1054,8 +953,9 @@ fn shell(name: Option<String>) -> Result<()> {
                 let workdir = config.workspace_folder(&cwd, &local_env);
                 let cmd =
                     expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-                let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+                let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
                 run_lifecycle_in_container(
+                    docker,
                     &cmd,
                     &id,
                     &workdir,
@@ -1074,8 +974,9 @@ fn shell(name: Option<String>) -> Result<()> {
     {
         let workdir = config.workspace_folder(&cwd, &local_env);
         let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-        let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+        let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
         run_lifecycle_in_container(
+            docker,
             &cmd,
             &id,
             &workdir,
@@ -1095,8 +996,9 @@ fn shell(name: Option<String>) -> Result<()> {
                 let workdir = config.workspace_folder(&cwd, &local_env);
                 let cmd =
                     expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-                let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+                let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
                 run_lifecycle_in_container(
+                    docker,
                     &cmd,
                     &id,
                     &workdir,
@@ -1115,8 +1017,9 @@ fn shell(name: Option<String>) -> Result<()> {
     {
         let workdir = config.workspace_folder(&cwd, &local_env);
         let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-        let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+        let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
         run_lifecycle_in_container(
+            docker,
             &cmd,
             &id,
             &workdir,
@@ -1136,8 +1039,9 @@ fn shell(name: Option<String>) -> Result<()> {
                 let workdir = config.workspace_folder(&cwd, &local_env);
                 let cmd =
                     expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-                let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
+                let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
                 run_lifecycle_in_container(
+                    docker,
                     &cmd,
                     &id,
                     &workdir,
@@ -1151,24 +1055,20 @@ fn shell(name: Option<String>) -> Result<()> {
             }
         }
     }
-    exec_in_container(id, None, &config, &cwd)
+    exec_in_container(docker, id, None, &config, &cwd)
 }
 
-fn stop(name: Option<String>) -> Result<()> {
+fn stop(docker: &mut impl Docker, name: Option<String>) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let local_env = local_env_snapshot();
     let (config_path, config) = open_config(&cwd, name.as_deref())?;
     let config_dir = config_path.parent().unwrap_or(cwd.as_path());
     let target = setup::from_config(&config, &cwd, &config_path, config_dir, &local_env);
 
-    if let Existing::Running { id, .. } = lookup_existing(&target, &config_path, &cwd)? {
+    if let Existing::Running { id, .. } = lookup_existing(docker, &target, &config_path, &cwd)? {
         match &target {
             ContainerTarget::Single(_) => {
-                let status = std::process::Command::new("docker")
-                    .args(["stop", &id])
-                    .status()
-                    .map_err(|e| err!("Failed to run docker: {e}"))?;
-                if !status.success() {
+                if !docker.stop(&id)? {
                     return Err(err!("`docker stop` failed"));
                 }
             }
@@ -1176,12 +1076,7 @@ fn stop(name: Option<String>) -> Result<()> {
                 let mut stop_args = c.global_args.clone();
                 stop_args.push("stop".to_string());
                 stop_args.extend(c.services.iter().cloned());
-                let status = std::process::Command::new("docker")
-                    .arg("compose")
-                    .args(&stop_args)
-                    .status()
-                    .map_err(|e| err!("Failed to run docker: {e}"))?;
-                if !status.success() {
+                if !docker.compose(&stop_args)? {
                     return Err(err!("`docker compose stop` failed"));
                 }
             }
@@ -1190,7 +1085,7 @@ fn stop(name: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn ps(_name: Option<String>) -> Result<()> {
+fn ps(docker: &mut impl Docker, _name: Option<String>) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let local_env = local_env_snapshot();
     let devcontainer_dir = cwd.join(".devcontainer");
@@ -1224,7 +1119,7 @@ fn ps(_name: Option<String>) -> Result<()> {
         let config_dir = config_path.parent().unwrap_or(cwd.as_path());
         let target = setup::from_config(&config, &cwd, config_path, config_dir, &local_env);
 
-        match lookup_existing(&target, config_path, &cwd)? {
+        match lookup_existing(docker, &target, config_path, &cwd)? {
             Existing::Running { id, .. } => {
                 let short_id = &id[..id.len().min(12)];
                 println!("{name}\trunning\t{short_id}");
@@ -1241,7 +1136,7 @@ fn ps(_name: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn down(name: Option<String>) -> Result<()> {
+fn down(docker: &mut impl Docker, name: Option<String>) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let local_env = local_env_snapshot();
     let (config_path, config) = open_config(&cwd, name.as_deref())?;
@@ -1249,13 +1144,9 @@ fn down(name: Option<String>) -> Result<()> {
     let target = setup::from_config(&config, &cwd, &config_path, config_dir, &local_env);
 
     match &target {
-        ContainerTarget::Single(_) => match lookup_existing(&target, &config_path, &cwd)? {
+        ContainerTarget::Single(_) => match lookup_existing(docker, &target, &config_path, &cwd)? {
             Existing::Running { id, .. } | Existing::Stopped { id, .. } => {
-                let status = std::process::Command::new("docker")
-                    .args(["rm", "-f", &id])
-                    .status()
-                    .map_err(|e| err!("Failed to run docker: {e}"))?;
-                if !status.success() {
+                if !docker.remove(&id)? {
                     return Err(err!("`docker rm` failed"));
                 }
             }
@@ -1264,12 +1155,7 @@ fn down(name: Option<String>) -> Result<()> {
         ContainerTarget::Compose(c) => {
             let mut down_args = c.global_args.clone();
             down_args.push("down".to_string());
-            let status = std::process::Command::new("docker")
-                .arg("compose")
-                .args(&down_args)
-                .status()
-                .map_err(|e| err!("Failed to run docker: {e}"))?;
-            if !status.success() {
+            if !docker.compose(&down_args)? {
                 return Err(err!("`docker compose down` failed"));
             }
         }
@@ -1278,6 +1164,7 @@ fn down(name: Option<String>) -> Result<()> {
 }
 
 fn exec_in_container(
+    d: &mut impl Docker,
     id: String,
     found_container: Option<docker::Container>,
     config: &devcontainer::DevcontainerConfig,
@@ -1285,25 +1172,23 @@ fn exec_in_container(
 ) -> Result<()> {
     let local_env = local_env_snapshot();
     let container_workspace_folder = config.workspace_folder(cwd, &local_env);
-    let container_env: std::collections::HashMap<String, String> =
-        std::process::Command::new("docker")
-            .args(["exec", &id, "printenv"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .filter_map(|line| {
-                        let mut parts = line.splitn(2, '=');
-                        Some((
-                            parts.next()?.to_string(),
-                            parts.next().unwrap_or("").to_string(),
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+    let container_env: std::collections::HashMap<String, String> = d
+        .exec_capture(&[id.as_str(), "printenv"].map(String::from))
+        .ok()
+        .filter(|o| o.success)
+        .map(|o| {
+            o.stdout
+                .lines()
+                .filter_map(|line| {
+                    let mut parts = line.splitn(2, '=');
+                    Some((
+                        parts.next()?.to_string(),
+                        parts.next().unwrap_or("").to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let remote_user_from_config = config.common().remote_user.as_deref().map(|u| {
         devcontainer::expand_variables(
             u,
@@ -1316,54 +1201,36 @@ fn exec_in_container(
     let remote_user_from_container = if let Some(ref c) = found_container {
         c.remote_user.clone()
     } else {
-        std::process::Command::new("docker")
-            .args([
-                "inspect",
-                "--format",
-                "{{index .Config.Labels \"devcontainer.metadata\"}}",
-                &id,
-            ])
-            .output()
+        d.inspect_format(&id, "{{index .Config.Labels \"devcontainer.metadata\"}}")
             .ok()
-            .and_then(|o| {
-                docker::parse_remote_user_from_metadata(String::from_utf8_lossy(&o.stdout).trim())
-            })
+            .and_then(|o| docker::parse_remote_user_from_metadata(o.stdout.trim()))
             .or_else(|| {
-                std::process::Command::new("docker")
-                    .args(["inspect", "--format", "{{.Config.User}}", &id])
-                    .output()
+                d.inspect_format(&id, "{{.Config.User}}")
                     .ok()
                     .and_then(|o| {
-                        let user = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                        let user = o.stdout.trim().to_string();
                         if user.is_empty() { None } else { Some(user) }
                     })
             })
     };
     let remote_user = remote_user_from_config.or(remote_user_from_container);
-    let shell = std::process::Command::new("docker")
-        .args(["exec", &id, "printenv", "SHELL"])
-        .output()
+    let shell = d
+        .exec_capture(&[id.as_str(), "printenv", "SHELL"].map(String::from))
         .ok()
         .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            let s = o.stdout.trim().to_string();
             if s.is_empty() { None } else { Some(s) }
         })
         .or_else(|| {
             remote_user.as_deref().and_then(|user| {
-                std::process::Command::new("docker")
-                    .args(["exec", &id, "getent", "passwd", user])
-                    .output()
+                d.exec_capture(&[id.as_str(), "getent", "passwd", user].map(String::from))
                     .ok()
-                    .and_then(|o| {
-                        devcontainer::parse_shell_from_passwd(
-                            String::from_utf8_lossy(&o.stdout).trim(),
-                        )
-                    })
+                    .and_then(|o| devcontainer::parse_shell_from_passwd(o.stdout.trim()))
             })
         })
         .unwrap_or_else(|| "/bin/sh".to_string());
     let remote_env = config.common().remote_env.as_ref();
-    let mut exec_args = vec!["exec".to_string(), "-it".to_string()];
+    let mut exec_args = vec!["-it".to_string()];
     if let Some(user) = remote_user {
         exec_args.extend(["--user".to_string(), user]);
     }
@@ -1386,11 +1253,7 @@ fn exec_in_container(
         }
     }
     exec_args.extend([id, shell]);
-    let status = std::process::Command::new("docker")
-        .args(&exec_args)
-        .status()
-        .map_err(|e| err!("Failed to run docker: {e}"))?;
-    if !status.success() {
+    if !d.exec_interactive(&exec_args)? {
         return Err(err!("`docker exec` failed"));
     }
     Ok(())
@@ -1666,28 +1529,29 @@ fn select_config(
 }
 
 fn lookup_existing(
+    docker: &mut impl Docker,
     target: &ContainerTarget,
     config_path: &std::path::Path,
     cwd: &std::path::Path,
 ) -> Result<Existing> {
     match target {
         ContainerTarget::Compose(c) => {
-            if let Some(id) = compose_ps(c, false)? {
+            if let Some(id) = compose_ps(docker, c, false)? {
                 return Ok(Existing::Running { id, meta: None });
             }
-            if let Some(id) = compose_ps(c, true)? {
+            if let Some(id) = compose_ps(docker, c, true)? {
                 return Ok(Existing::Stopped { id, meta: None });
             }
             Ok(Existing::None)
         }
         ContainerTarget::Single(_) => {
-            if let Some(c) = single_lookup(false, config_path, cwd)? {
+            if let Some(c) = single_lookup(docker, false, config_path, cwd)? {
                 return Ok(Existing::Running {
                     id: c.id.clone(),
                     meta: Some(c),
                 });
             }
-            if let Some(c) = single_lookup(true, config_path, cwd)? {
+            if let Some(c) = single_lookup(docker, true, config_path, cwd)? {
                 return Ok(Existing::Stopped {
                     id: c.id.clone(),
                     meta: Some(c),
@@ -1698,72 +1562,46 @@ fn lookup_existing(
     }
 }
 
-fn compose_ps(c: &devcontainer::ComposeArgs, all_states: bool) -> Result<Option<String>> {
-    let mut args: Vec<&str> = vec!["ps"];
-    if all_states {
-        args.push("-a");
-    }
-    args.extend([
-        "--filter", &c.filter1, "--filter", &c.filter2, "--format", "{{.ID}}",
-    ]);
-    let output = std::process::Command::new("docker")
-        .args(&args)
-        .output()
-        .map_err(|e| err!("Failed to run docker: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+fn compose_ps(
+    d: &mut impl Docker,
+    c: &devcontainer::ComposeArgs,
+    all_states: bool,
+) -> Result<Option<String>> {
+    let output = d.ps_ids(&[c.filter1.clone(), c.filter2.clone()], all_states)?;
+    if !output.success {
         return Err(err!(
             "`docker ps` failed with status {}: {}",
             output.status,
-            stderr.trim()
+            output.stderr.trim()
         ));
     }
-    Ok(docker::parse_container_id(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
+    Ok(docker::parse_container_id(&output.stdout))
 }
 
 fn single_lookup(
+    d: &mut impl Docker,
     all_states: bool,
     config_path: &std::path::Path,
     cwd: &std::path::Path,
 ) -> Result<Option<docker::Container>> {
-    let mut args: Vec<&str> = vec!["ps"];
-    if all_states {
-        args.push("-a");
-    }
-    args.extend([
-        "--filter",
-        "label=devcontainer.config_file",
-        "--format",
-        "{{.ID}}",
-    ]);
-    let output = std::process::Command::new("docker")
-        .args(&args)
-        .output()
-        .map_err(|e| err!("Failed to run docker: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    let output = d.ps_ids(&["label=devcontainer.config_file".to_string()], all_states)?;
+    if !output.success {
         return Err(err!(
             "`docker ps` failed with status {}: {}",
             output.status,
-            stderr.trim()
+            output.stderr.trim()
         ));
     }
-    let ids = docker::parse_container_ids(&String::from_utf8_lossy(&output.stdout));
+    let ids = docker::parse_container_ids(&output.stdout);
     if ids.is_empty() {
         return Ok(None);
     }
-    let inspect = std::process::Command::new("docker")
-        .arg("inspect")
-        .args(&ids)
-        .output()
-        .map_err(|e| err!("Failed to run docker: {e}"))?;
-    if !inspect.status.success() {
+    let inspect = d.inspect(&ids)?;
+    if !inspect.success {
         return Ok(None);
     }
     Ok(docker::find_container(
-        String::from_utf8_lossy(&inspect.stdout).trim(),
+        inspect.stdout.trim(),
         config_path,
         cwd,
     ))
@@ -1774,7 +1612,9 @@ enum LifecycleMarker<'a> {
     Once(&'a str),
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_lifecycle_in_container(
+    d: &mut impl Docker,
     cmd: &LifecycleCmd,
     container_id: &str,
     workdir: &str,
@@ -1783,8 +1623,8 @@ fn run_lifecycle_in_container(
     remote_user: Option<&str>,
     wait: bool,
 ) -> Result<()> {
-    let user_args: Vec<&str> = if let Some(user) = remote_user {
-        vec!["--user", user]
+    let user_args: Vec<String> = if let Some(user) = remote_user {
+        vec!["--user".to_string(), user.to_string()]
     } else {
         vec![]
     };
@@ -1795,70 +1635,67 @@ fn run_lifecycle_in_container(
              [ \"${{CONTENT:-{epoch}}}\" != '{epoch}' ] && \
              echo '{epoch}' > \"$HOME/.devcontainer/.{name}Marker\""
         );
-        let status = std::process::Command::new("docker")
-            .args(["exec"])
-            .args(&user_args)
-            .args([container_id, "sh", "-c", &script])
-            .status()
-            .map_err(|e| err!("Failed to run docker: {e}"))?;
-        if !status.success() {
+        let mut args = user_args.clone();
+        args.extend([
+            container_id.to_string(),
+            "sh".to_string(),
+            "-c".to_string(),
+            script,
+        ]);
+        if !d.exec_interactive(&args)? {
             return Ok(());
         }
     }
-    let mut children: Vec<std::process::Child> = match cmd {
-        LifecycleCmd::Shell(s) => vec![
-            std::process::Command::new("docker")
-                .args(["exec"])
-                .args(&user_args)
-                .args(["--workdir", workdir, container_id, "sh", "-c", s])
-                .spawn()
-                .map_err(|e| err!("Failed to run docker: {e}"))?,
-        ],
-        LifecycleCmd::Exec(args) => vec![
-            std::process::Command::new("docker")
-                .args(["exec"])
-                .args(&user_args)
-                .args(["--workdir", workdir, container_id])
-                .args(args)
-                .spawn()
-                .map_err(|e| err!("Failed to run docker: {e}"))?,
-        ],
+    let exec_prefix = || {
+        let mut a = user_args.clone();
+        a.extend([
+            "--workdir".to_string(),
+            workdir.to_string(),
+            container_id.to_string(),
+        ]);
+        a
+    };
+    let argvs: Vec<Vec<String>> = match cmd {
+        LifecycleCmd::Shell(s) => {
+            let mut a = exec_prefix();
+            a.extend(["sh".to_string(), "-c".to_string(), s.clone()]);
+            vec![a]
+        }
+        LifecycleCmd::Exec(args) => {
+            let mut a = exec_prefix();
+            a.extend(args.iter().cloned());
+            vec![a]
+        }
         LifecycleCmd::Parallel(cmds) => cmds
             .iter()
             .map(|c| {
-                let mut proc = std::process::Command::new("docker");
-                proc.args(["exec"]);
-                proc.args(&user_args);
-                proc.args(["--workdir", workdir, container_id]);
+                let mut a = exec_prefix();
                 match c {
                     LifecycleCmd::Shell(s) => {
-                        proc.args(["sh", "-c", s]);
+                        a.extend(["sh".to_string(), "-c".to_string(), s.clone()]);
                     }
                     LifecycleCmd::Exec(args) => {
-                        proc.args(args);
+                        a.extend(args.iter().cloned());
                     }
                     LifecycleCmd::Parallel(_) => {}
                 }
-                proc.spawn().map_err(|e| err!("Failed to run docker: {e}"))
+                a
             })
-            .collect::<Result<_>>()?,
+            .collect(),
     };
     if wait {
-        for child in &mut children {
-            if !child
-                .wait()
-                .map_err(|e| err!("Failed to wait for {name}: {e}"))?
-                .success()
-            {
-                return Err(err!("{name} failed"));
-            }
+        if !d.exec_group(&argvs, true, name)? {
+            return Err(err!("{name} failed"));
         }
+    } else {
+        d.exec_group(&argvs, false, name)?;
     }
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
 fn run_uid_docker_build(
+    d: &mut impl Docker,
     uid_tag: &str,
     remote_user: &str,
     new_uid: u32,
@@ -1874,37 +1711,32 @@ fn run_uid_docker_build(
     let dockerfile_path = uid_dir.join("updateUID.Dockerfile");
     std::fs::write(&dockerfile_path, crate::uid::UPDATE_UID_DOCKERFILE)
         .map_err(|e| err!("Failed to write updateUID.Dockerfile: {e}"))?;
-    let mut child = std::process::Command::new("docker")
-        .args([
-            "build",
-            "-f",
-            &dockerfile_path.display().to_string(),
-            "-t",
-            uid_tag,
-            "--build-arg",
-            &format!("BASE_IMAGE={base_image}"),
-            "--build-arg",
-            &format!("REMOTE_USER={remote_user}"),
-            "--build-arg",
-            &format!("NEW_UID={new_uid}"),
-            "--build-arg",
-            &format!("NEW_GID={new_gid}"),
-            "--build-arg",
-            &format!("IMAGE_USER={image_user}"),
-            &uid_dir.display().to_string(),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| err!("Failed to run docker: {e}"))?;
-    let status = tui::build_log(&mut child).map_err(|e| err!("Failed to run docker: {e}"))?;
-    if !status.success() {
+    let args = [
+        "-f",
+        &dockerfile_path.display().to_string(),
+        "-t",
+        uid_tag,
+        "--build-arg",
+        &format!("BASE_IMAGE={base_image}"),
+        "--build-arg",
+        &format!("REMOTE_USER={remote_user}"),
+        "--build-arg",
+        &format!("NEW_UID={new_uid}"),
+        "--build-arg",
+        &format!("NEW_GID={new_gid}"),
+        "--build-arg",
+        &format!("IMAGE_USER={image_user}"),
+        &uid_dir.display().to_string(),
+    ]
+    .map(String::from);
+    if !d.build_streamed(&args)? {
         return Err(err!("`docker build` for UID update failed"));
     }
     Ok(())
 }
 
 fn resolve_lifecycle_user(
+    d: &mut impl Docker,
     config: &devcontainer::DevcontainerConfig,
     container_id: &str,
     cwd: &std::path::Path,
@@ -1920,38 +1752,26 @@ fn resolve_lifecycle_user(
             &local_env,
         ));
     }
-    std::process::Command::new("docker")
-        .args([
-            "inspect",
-            "--format",
-            "{{index .Config.Labels \"devcontainer.metadata\"}}",
-            container_id,
-        ])
-        .output()
-        .ok()
-        .and_then(|o| {
-            docker::parse_remote_user_from_metadata(String::from_utf8_lossy(&o.stdout).trim())
-        })
-        .or_else(|| {
-            std::process::Command::new("docker")
-                .args(["inspect", "--format", "{{.Config.User}}", container_id])
-                .output()
-                .ok()
-                .and_then(|o| {
-                    let user = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    if user.is_empty() { None } else { Some(user) }
-                })
-        })
+    d.inspect_format(
+        container_id,
+        "{{index .Config.Labels \"devcontainer.metadata\"}}",
+    )
+    .ok()
+    .and_then(|o| docker::parse_remote_user_from_metadata(o.stdout.trim()))
+    .or_else(|| {
+        d.inspect_format(container_id, "{{.Config.User}}")
+            .ok()
+            .and_then(|o| {
+                let user = o.stdout.trim().to_string();
+                if user.is_empty() { None } else { Some(user) }
+            })
+    })
 }
 
-fn start_existing(target: &ContainerTarget, id: &str) -> Result<()> {
+fn start_existing(docker: &mut impl Docker, target: &ContainerTarget, id: &str) -> Result<()> {
     match target {
         ContainerTarget::Single(_) => {
-            let status = std::process::Command::new("docker")
-                .args(["start", id])
-                .status()
-                .map_err(|e| err!("Failed to run docker: {e}"))?;
-            if !status.success() {
+            if !docker.start(id)? {
                 return Err(err!("`docker start` failed"));
             }
         }
@@ -1959,12 +1779,7 @@ fn start_existing(target: &ContainerTarget, id: &str) -> Result<()> {
             let mut start_args = c.global_args.clone();
             start_args.push("start".to_string());
             start_args.extend(c.services.iter().cloned());
-            let status = std::process::Command::new("docker")
-                .arg("compose")
-                .args(&start_args)
-                .status()
-                .map_err(|e| err!("Failed to run docker: {e}"))?;
-            if !status.success() {
+            if !docker.compose(&start_args)? {
                 return Err(err!("`docker compose start` failed"));
             }
         }
