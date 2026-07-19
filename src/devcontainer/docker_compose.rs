@@ -1,5 +1,5 @@
 use super::config::DockerComposeConfig;
-use serde::Deserialize;
+use super::jsonc::{self, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -13,19 +13,45 @@ pub struct ComposeArgs {
     pub override_content: String,
 }
 
-#[derive(Deserialize)]
 pub struct ComposeResolved {
     pub services: HashMap<String, ServiceResolved>,
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
+impl ComposeResolved {
+    pub fn parse(json: &str) -> Option<Self> {
+        let value = jsonc::parse(json).ok()?;
+        let members = value.get("services")?.as_object()?;
+        let mut services = HashMap::new();
+        for (name, svc) in members {
+            services.insert(name.clone(), ServiceResolved::from_value(svc)?);
+        }
+        Some(ComposeResolved { services })
+    }
+}
+
 pub enum ServiceResolved {
     Build { build: BuildResolved },
     Image { image: String },
 }
 
-#[derive(Deserialize)]
+impl ServiceResolved {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let build = value.get("build").and_then(|b| {
+            Some(BuildResolved {
+                dockerfile: b.get("dockerfile")?.as_str()?.to_string(),
+                context: b.get("context")?.as_str()?.to_string(),
+            })
+        });
+        if let Some(build) = build {
+            return Some(ServiceResolved::Build { build });
+        }
+        let image = value.get("image").and_then(|v| v.as_str());
+        image.map(|image| ServiceResolved::Image {
+            image: image.to_string(),
+        })
+    }
+}
+
 pub struct BuildResolved {
     pub dockerfile: String,
     pub context: String,
@@ -294,9 +320,13 @@ mod tests {
         assert!(args.override_content.contains("user: vscode"));
     }
 
+    fn service_from(json: &str) -> Option<ServiceResolved> {
+        ServiceResolved::from_value(&jsonc::parse(json).unwrap())
+    }
+
     #[test]
     fn when_service_resolved_image_then_feature_base_source_is_image() {
-        let svc: ServiceResolved = serde_json::from_str(r#"{"image":"ubuntu:22.04"}"#).unwrap();
+        let svc = service_from(r#"{"image":"ubuntu:22.04"}"#).unwrap();
         match svc.feature_base_source() {
             FeatureBaseSource::Image(s) => assert_eq!(s, "ubuntu:22.04"),
             FeatureBaseSource::DockerfilePath(_) => panic!("expected Image"),
@@ -305,10 +335,8 @@ mod tests {
 
     #[test]
     fn when_service_resolved_build_then_feature_base_source_is_dockerfile_path() {
-        let svc: ServiceResolved = serde_json::from_str(
-            r#"{"build":{"dockerfile":"Dockerfile.dev","context":"/abs/ctx"}}"#,
-        )
-        .unwrap();
+        let svc = service_from(r#"{"build":{"dockerfile":"Dockerfile.dev","context":"/abs/ctx"}}"#)
+            .unwrap();
         match svc.feature_base_source() {
             FeatureBaseSource::DockerfilePath(p) => {
                 assert_eq!(p, PathBuf::from("/abs/ctx/Dockerfile.dev"));
@@ -319,10 +347,9 @@ mod tests {
 
     #[test]
     fn when_service_resolved_has_both_build_and_image_then_build_is_chosen() {
-        let svc: ServiceResolved = serde_json::from_str(
-            r#"{"image":"ignored:1","build":{"dockerfile":"D","context":"/c"}}"#,
-        )
-        .unwrap();
+        let svc =
+            service_from(r#"{"image":"ignored:1","build":{"dockerfile":"D","context":"/c"}}"#)
+                .unwrap();
         assert!(matches!(
             svc.feature_base_source(),
             FeatureBaseSource::DockerfilePath(_)
@@ -330,17 +357,25 @@ mod tests {
     }
 
     #[test]
+    fn when_service_resolved_with_incomplete_build_and_image_then_image_is_chosen() {
+        let svc = service_from(r#"{"image":"i:1","build":{"dockerfile":"D"}}"#).unwrap();
+        assert!(matches!(
+            svc.feature_base_source(),
+            FeatureBaseSource::Image(_)
+        ));
+    }
+
+    #[test]
     fn when_compose_resolved_then_services_are_keyed_by_name() {
-        let cfg: ComposeResolved =
-            serde_json::from_str(r#"{"services":{"app":{"image":"a:1"},"db":{"image":"b:2"}}}"#)
+        let cfg =
+            ComposeResolved::parse(r#"{"services":{"app":{"image":"a:1"},"db":{"image":"b:2"}}}"#)
                 .unwrap();
         assert!(cfg.services.contains_key("app"));
         assert!(cfg.services.contains_key("db"));
     }
 
     #[test]
-    fn when_service_resolved_has_neither_then_deserialize_fails() {
-        let result: Result<ServiceResolved, _> = serde_json::from_str(r#"{}"#);
-        assert!(result.is_err());
+    fn when_service_resolved_has_neither_then_from_value_fails() {
+        assert!(service_from(r#"{}"#).is_none());
     }
 }

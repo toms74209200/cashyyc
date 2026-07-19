@@ -1,4 +1,5 @@
-use anyhow::{Result, anyhow};
+use crate::err;
+use crate::error::Result;
 use std::path::PathBuf;
 
 pub enum FeatureSource {
@@ -25,7 +26,7 @@ impl FeatureSource {
             .unwrap_or((id, "latest".to_string()));
         let slash = without_version
             .find('/')
-            .ok_or_else(|| anyhow!("invalid OCI feature ref: {id}"))?;
+            .ok_or_else(|| err!("invalid OCI feature ref: {id}"))?;
         Ok(Self::Oci {
             registry: without_version[..slash].to_string(),
             path: without_version[slash + 1..].to_string(),

@@ -91,6 +91,7 @@ pub fn container_run_options(
     workspace_mount: Option<&str>,
     local_folder: &Path,
     config_file: &Path,
+    local_env: &std::collections::HashMap<String, String>,
 ) -> Vec<String> {
     let mut args = vec![
         "-d".to_string(),
@@ -115,6 +116,7 @@ pub fn container_run_options(
         local_folder,
         &default_workspace_folder,
         &Default::default(),
+        local_env,
     );
 
     let mount = workspace_mount.map(|s| s.to_string()).unwrap_or_else(|| {
@@ -129,21 +131,36 @@ pub fn container_run_options(
 
     for mount in &common.mounts {
         if let Some(m) = mount.as_str() {
-            let expanded =
-                expand_variables(m, local_folder, &workspace_folder, &Default::default());
+            let expanded = expand_variables(
+                m,
+                local_folder,
+                &workspace_folder,
+                &Default::default(),
+                local_env,
+            );
             args.extend(["--mount".to_string(), expanded]);
         }
     }
 
     for (key, value) in &common.container_env {
-        let expanded_value =
-            expand_variables(value, local_folder, &workspace_folder, &Default::default());
+        let expanded_value = expand_variables(
+            value,
+            local_folder,
+            &workspace_folder,
+            &Default::default(),
+            local_env,
+        );
         args.extend(["--env".to_string(), format!("{}={}", key, expanded_value)]);
     }
 
     if let Some(user) = &common.container_user {
-        let expanded_user =
-            expand_variables(user, local_folder, &workspace_folder, &Default::default());
+        let expanded_user = expand_variables(
+            user,
+            local_folder,
+            &workspace_folder,
+            &Default::default(),
+            local_env,
+        );
         args.extend(["--user".to_string(), expanded_user]);
     }
 
@@ -167,11 +184,15 @@ pub fn container_run_options(
         args.extend(["-p".to_string(), port.0.clone()]);
     }
 
-    args.extend(
-        run_args
-            .iter()
-            .map(|a| expand_variables(a, local_folder, &workspace_folder, &Default::default())),
-    );
+    args.extend(run_args.iter().map(|a| {
+        expand_variables(
+            a,
+            local_folder,
+            &workspace_folder,
+            &Default::default(),
+            local_env,
+        )
+    }));
 
     args
 }
@@ -247,6 +268,7 @@ mod tests {
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         assert!(args.contains(&"-d".to_string()));
     }
@@ -260,6 +282,7 @@ mod tests {
             None,
             Path::new("/home/user/project"),
             Path::new("/home/user/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         let label_idx = args.iter().position(|a| a == "--label").unwrap();
         assert_eq!(
@@ -277,6 +300,7 @@ mod tests {
             None,
             Path::new("/home/user/project"),
             Path::new("/home/user/project/.devcontainer/server/devcontainer.json"),
+            &HashMap::new(),
         );
         let labels: Vec<_> = args
             .iter()
@@ -298,6 +322,7 @@ mod tests {
             None,
             Path::new("/home/user/myproject"),
             Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         let w_idx = args.iter().position(|a| a == "-w").unwrap();
         assert_eq!(args[w_idx + 1], "/workspaces/myproject");
@@ -314,6 +339,7 @@ mod tests {
             None,
             Path::new("/home/user/project"),
             Path::new("/home/user/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         let w_idx = args.iter().position(|a| a == "-w").unwrap();
         assert_eq!(args[w_idx + 1], "/workspace");
@@ -330,6 +356,7 @@ mod tests {
             None,
             Path::new("/home/user/myproject"),
             Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         let mount_idx = args.iter().position(|a| a == "--mount").unwrap();
         assert_eq!(
@@ -348,6 +375,7 @@ mod tests {
             None,
             Path::new("/home/user/myproject"),
             Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         let mount_idx = args.iter().position(|a| a == "--mount").unwrap();
         assert_eq!(
@@ -366,6 +394,7 @@ mod tests {
             Some(custom_mount),
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         let mount_idx = args.iter().position(|a| a == "--mount").unwrap();
         assert_eq!(args[mount_idx + 1], custom_mount);
@@ -384,6 +413,7 @@ mod tests {
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         let env_idx = args.iter().position(|a| a == "--env").unwrap();
         assert_eq!(args[env_idx + 1], "RUST_LOG=debug");
@@ -400,6 +430,7 @@ mod tests {
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         let user_idx = args.iter().position(|a| a == "--user").unwrap();
         assert_eq!(args[user_idx + 1], "vscode");
@@ -416,6 +447,7 @@ mod tests {
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         assert!(args.contains(&"--init".to_string()));
     }
@@ -431,6 +463,7 @@ mod tests {
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         assert!(!args.contains(&"--init".to_string()));
     }
@@ -446,6 +479,7 @@ mod tests {
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         assert!(args.contains(&"--privileged".to_string()));
     }
@@ -461,6 +495,7 @@ mod tests {
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         let cap_idx = args.iter().position(|a| a == "--cap-add").unwrap();
         assert_eq!(args[cap_idx + 1], "SYS_PTRACE");
@@ -477,6 +512,7 @@ mod tests {
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         let opt_idx = args.iter().position(|a| a == "--security-opt").unwrap();
         assert_eq!(args[opt_idx + 1], "seccomp=unconfined");
@@ -492,6 +528,7 @@ mod tests {
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         let p_idx = args.iter().position(|a| a == "-p").unwrap();
         assert_eq!(args[p_idx + 1], "127.0.0.1:8080:8080");
@@ -510,6 +547,7 @@ mod tests {
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         let p_indices: Vec<_> = args
             .iter()
@@ -532,6 +570,7 @@ mod tests {
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         assert!(args.contains(&"--network=host".to_string()));
     }
@@ -696,7 +735,7 @@ mod tests {
     #[test]
     fn when_container_run_options_with_additional_mounts_then_includes_mount_flags() {
         let mut common = empty_common();
-        common.mounts = vec![serde_json::Value::String(
+        common.mounts = vec![super::super::jsonc::Value::String(
             "source=/host/data,target=/container/data,type=bind".to_string(),
         )];
         let args = container_run_options(
@@ -706,6 +745,7 @@ mod tests {
             None,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         let mount_idx = args.iter().rposition(|a| a == "--mount").unwrap();
         assert_eq!(

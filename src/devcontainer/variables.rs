@@ -41,6 +41,7 @@ impl DevcontainerVariable {
         local_folder: &Path,
         container_workspace_folder: &str,
         container_env: &HashMap<String, String>,
+        local_env: &HashMap<String, String>,
     ) -> String {
         match self {
             Self::LocalWorkspaceFolder => local_folder.display().to_string(),
@@ -58,9 +59,10 @@ impl DevcontainerVariable {
                     _ => String::new(),
                 }
             }
-            Self::LocalEnv(name, default) => {
-                std::env::var(name).unwrap_or_else(|_| default.clone().unwrap_or_default())
-            }
+            Self::LocalEnv(name, default) => local_env
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| default.clone().unwrap_or_default()),
             Self::ContainerEnv(name, default) => container_env
                 .get(name)
                 .cloned()
@@ -83,6 +85,7 @@ pub fn expand_variables(
     local_folder: &Path,
     container_workspace_folder: &str,
     container_env: &HashMap<String, String>,
+    local_env: &HashMap<String, String>,
 ) -> String {
     let Some((first, rest)) = value.split_once("${") else {
         return value.to_string();
@@ -96,9 +99,12 @@ pub fn expand_variables(
             }
             Some((content, tail)) => {
                 let resolved = match DevcontainerVariable::from_token(content) {
-                    Some(var) => {
-                        var.resolve(local_folder, container_workspace_folder, container_env)
-                    }
+                    Some(var) => var.resolve(
+                        local_folder,
+                        container_workspace_folder,
+                        container_env,
+                        local_env,
+                    ),
                     None => format!("${{{}}}", content),
                 };
                 result.push_str(&resolved);
@@ -134,6 +140,7 @@ mod tests {
             Path::new(&local_folder),
             &container_folder,
             &HashMap::new(),
+            &HashMap::new(),
         );
         assert_eq!(result, format!("{}/data", local_folder));
     }
@@ -148,6 +155,7 @@ mod tests {
             Path::new(&local_folder),
             &container_folder,
             &HashMap::new(),
+            &HashMap::new(),
         );
         assert_eq!(result, format!("source={}", name));
     }
@@ -161,6 +169,7 @@ mod tests {
             "${containerWorkspaceFolder}/build",
             Path::new(&local_folder),
             &container_folder,
+            &HashMap::new(),
             &HashMap::new(),
         );
         assert_eq!(result, format!("{}/build", container_folder));
@@ -177,6 +186,7 @@ mod tests {
             Path::new(&local_folder),
             &container_folder,
             &HashMap::new(),
+            &HashMap::new(),
         );
         assert_eq!(result, format!("target={}", name));
     }
@@ -191,6 +201,7 @@ mod tests {
             "source=${localWorkspaceFolderBasename}",
             Path::new(&local_folder),
             &container_folder,
+            &HashMap::new(),
             &HashMap::new(),
         );
         assert_eq!(result, format!("source={}", name));
@@ -207,6 +218,7 @@ mod tests {
             Path::new(&local_folder),
             &container_folder,
             &HashMap::new(),
+            &HashMap::new(),
         );
         assert_eq!(result, format!("target={}", name));
     }
@@ -222,6 +234,7 @@ mod tests {
             Path::new(&local_folder),
             &container_folder,
             &HashMap::new(),
+            &HashMap::new(),
         );
         assert_eq!(result, value);
     }
@@ -233,6 +246,7 @@ mod tests {
             "${localWorkspaceFolderBasename}",
             Path::new("/"),
             "/workspaces/project",
+            &HashMap::new(),
             &HashMap::new(),
         );
         assert_eq!(result, "");
@@ -248,6 +262,7 @@ mod tests {
             Path::new(&local_folder),
             "/",
             &HashMap::new(),
+            &HashMap::new(),
         );
         assert_eq!(result, "");
     }
@@ -262,6 +277,7 @@ mod tests {
             Path::new(&local_folder),
             &container_folder,
             &HashMap::new(),
+            &HashMap::new(),
         );
         assert_eq!(
             result,
@@ -274,12 +290,15 @@ mod tests {
 
     #[test]
     fn when_expand_variables_with_local_env_then_expands_to_env_value() {
-        let expected = std::env::var("PATH").unwrap_or_default();
+        let expected = random_name();
+        let mut local_env = HashMap::new();
+        local_env.insert("MYVAR".to_string(), expected.clone());
         let result = expand_variables(
-            "${localEnv:PATH}",
+            "${localEnv:MYVAR}",
             Path::new("/home/user"),
             "/workspaces/x",
             &HashMap::new(),
+            &local_env,
         );
         assert_eq!(result, expected);
     }
@@ -291,41 +310,49 @@ mod tests {
             Path::new("/home/user"),
             "/workspaces/x",
             &HashMap::new(),
+            &HashMap::new(),
         );
         assert_eq!(result, "prefix__suffix");
     }
 
     #[test]
     fn when_expand_variables_with_multiple_local_env_then_expands_all() {
-        let path = std::env::var("PATH").unwrap_or_default();
+        let value = random_name();
+        let mut local_env = HashMap::new();
+        local_env.insert("MYVAR".to_string(), value.clone());
         let result = expand_variables(
-            "${localEnv:PATH}:${localEnv:__CYYC_NO_SUCH_VAR__}",
+            "${localEnv:MYVAR}:${localEnv:__CYYC_NO_SUCH_VAR__}",
             Path::new("/home/user"),
             "/workspaces/x",
             &HashMap::new(),
+            &local_env,
         );
-        assert_eq!(result, format!("{}:", path));
+        assert_eq!(result, format!("{}:", value));
     }
 
     #[test]
     fn when_expand_variables_with_unclosed_local_env_brace_then_treats_literally() {
         let result = expand_variables(
-            "${localEnv:PATH",
+            "${localEnv:MYVAR",
             Path::new("/home/user"),
             "/workspaces/x",
             &HashMap::new(),
+            &HashMap::new(),
         );
-        assert_eq!(result, "${localEnv:PATH");
+        assert_eq!(result, "${localEnv:MYVAR");
     }
 
     #[test]
     fn when_expand_variables_with_local_env_with_default_and_env_set_then_uses_env_value() {
-        let expected = std::env::var("PATH").unwrap_or_default();
+        let expected = random_name();
+        let mut local_env = HashMap::new();
+        local_env.insert("MYVAR".to_string(), expected.clone());
         let result = expand_variables(
-            "${localEnv:PATH:fallback}",
+            "${localEnv:MYVAR:fallback}",
             Path::new("/home/user"),
             "/workspaces/x",
             &HashMap::new(),
+            &local_env,
         );
         assert_eq!(result, expected);
     }
@@ -336,6 +363,7 @@ mod tests {
             "${localEnv:__CYYC_NO_SUCH_VAR__:mydefault}",
             Path::new("/home/user"),
             "/workspaces/x",
+            &HashMap::new(),
             &HashMap::new(),
         );
         assert_eq!(result, "mydefault");
@@ -350,6 +378,7 @@ mod tests {
             Path::new("/home/user"),
             "/workspaces/x",
             &env,
+            &HashMap::new(),
         );
         assert_eq!(result, "/root");
     }
@@ -361,6 +390,7 @@ mod tests {
             Path::new("/home/user"),
             "/workspaces/x",
             &HashMap::new(),
+            &HashMap::new(),
         );
         assert_eq!(result, "prefix__suffix");
     }
@@ -371,6 +401,7 @@ mod tests {
             "${containerEnv:__NO_SUCH_VAR__:mydefault}",
             Path::new("/home/user"),
             "/workspaces/x",
+            &HashMap::new(),
             &HashMap::new(),
         );
         assert_eq!(result, "mydefault");
@@ -386,6 +417,7 @@ mod tests {
             Path::new("/home/user"),
             "/workspaces/x",
             &env,
+            &HashMap::new(),
         );
         assert_eq!(result, "containervalue");
     }
@@ -399,6 +431,7 @@ mod tests {
             Path::new("/home/user"),
             "/workspaces/x",
             &env,
+            &HashMap::new(),
         );
         assert_eq!(result, "foo_val:");
     }
@@ -409,6 +442,7 @@ mod tests {
             "${containerEnv:HOME",
             Path::new("/home/user"),
             "/workspaces/x",
+            &HashMap::new(),
             &HashMap::new(),
         );
         assert_eq!(result, "${containerEnv:HOME");

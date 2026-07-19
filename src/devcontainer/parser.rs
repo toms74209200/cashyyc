@@ -1,85 +1,8 @@
 use super::config::*;
+use super::jsonc;
 
 pub fn parse_config(content: &str) -> Option<DevcontainerConfig> {
-    let mut stripped = String::with_capacity(content.len());
-    let mut chars = content.chars().peekable();
-    let mut in_string = false;
-
-    while let Some(c) = chars.next() {
-        match c {
-            '"' if in_string => {
-                in_string = false;
-                stripped.push(c);
-            }
-            '\\' if in_string => {
-                stripped.push(c);
-                if let Some(next) = chars.next() {
-                    stripped.push(next);
-                }
-            }
-            '"' => {
-                in_string = true;
-                stripped.push(c);
-            }
-            '/' if !in_string => match chars.peek() {
-                Some('/') => {
-                    chars.next();
-                    for c in chars.by_ref() {
-                        if c == '\n' {
-                            stripped.push('\n');
-                            break;
-                        }
-                    }
-                }
-                Some('*') => {
-                    chars.next();
-                    while let Some(c) = chars.next() {
-                        if c == '*' && chars.peek() == Some(&'/') {
-                            chars.next();
-                            break;
-                        }
-                    }
-                }
-                _ => stripped.push(c),
-            },
-            _ => stripped.push(c),
-        }
-    }
-
-    let mut clean = String::with_capacity(stripped.len());
-    let mut chars = stripped.chars().peekable();
-    let mut in_string = false;
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' if in_string => {
-                clean.push(c);
-                if let Some(next) = chars.next() {
-                    clean.push(next);
-                }
-            }
-            '"' => {
-                in_string = !in_string;
-                clean.push(c);
-            }
-            ',' if !in_string => {
-                let mut whitespace = String::new();
-                while let Some(&w) = chars.peek() {
-                    if w.is_ascii_whitespace() {
-                        whitespace.push(chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-                if !matches!(chars.peek(), Some('}') | Some(']')) {
-                    clean.push(c);
-                }
-                clean.push_str(&whitespace);
-            }
-            _ => clean.push(c),
-        }
-    }
-
-    let value: serde_json::Value = serde_json::from_str(&clean).ok()?;
+    let value = jsonc::parse(content).ok()?;
 
     match (
         value.get("dockerComposeFile"),
@@ -87,18 +10,16 @@ pub fn parse_config(content: &str) -> Option<DevcontainerConfig> {
         value.get("build"),
         value.get("image"),
     ) {
-        (Some(_), _, _, _) => serde_json::from_value(value)
-            .ok()
-            .map(DevcontainerConfig::DockerCompose),
-        (_, Some(_), _, _) => serde_json::from_value(value)
-            .ok()
-            .map(DevcontainerConfig::Dockerfile),
-        (_, _, Some(_), _) => serde_json::from_value(value)
-            .ok()
-            .map(DevcontainerConfig::DockerfileBuild),
-        (_, _, _, Some(_)) => serde_json::from_value(value)
-            .ok()
-            .map(DevcontainerConfig::Image),
+        (Some(_), _, _, _) => {
+            DockerComposeConfig::from_value(&value).map(DevcontainerConfig::DockerCompose)
+        }
+        (_, Some(_), _, _) => {
+            DockerfileConfig::from_value(&value).map(DevcontainerConfig::Dockerfile)
+        }
+        (_, _, Some(_), _) => {
+            DockerfileBuildConfig::from_value(&value).map(DevcontainerConfig::DockerfileBuild)
+        }
+        (_, _, _, Some(_)) => ImageConfig::from_value(&value).map(DevcontainerConfig::Image),
         _ => None,
     }
 }

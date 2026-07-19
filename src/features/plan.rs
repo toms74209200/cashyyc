@@ -1,7 +1,8 @@
 use super::manifest::Feature;
 use super::users::FeatureInstallUsers;
-use anyhow::{Result, anyhow};
-use serde_json::Value;
+use crate::devcontainer::jsonc::Value;
+use crate::err;
+use crate::error::Result;
 use std::collections::HashMap;
 
 pub struct InstallPlan(Vec<Feature>);
@@ -76,7 +77,7 @@ impl InstallPlan {
         }
 
         if order.len() != n {
-            return Err(anyhow!("circular dependency detected in features"));
+            return Err(err!("circular dependency detected in features"));
         }
 
         let mut slots: Vec<Option<Feature>> = features.into_iter().map(Some).collect();
@@ -147,18 +148,22 @@ pub fn feature_dockerfile(
         let dest = format!("/tmp/dev-container-features/{}", feature.short_id);
         let copy = format!("COPY ./{dir_name}/ {dest}/");
         let option_exports = match &feature.options {
-            Value::Object(map) => map
-                .iter()
-                .map(|(k, v)| {
-                    let val = match v {
-                        Value::String(s) => s.clone(),
-                        other => other.to_string(),
-                    };
-                    let env_key = k.to_uppercase().replace('-', "_");
-                    format!("export {env_key}='{}'", val.replace('\'', r"'\''"))
-                })
-                .collect::<Vec<_>>()
-                .join(" && "),
+            Value::Object(members) => {
+                let mut sorted: Vec<&(String, Value)> = members.iter().collect();
+                sorted.sort_by_key(|(k, _)| k.as_str());
+                sorted
+                    .iter()
+                    .map(|(k, v)| {
+                        let val = match v {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        let env_key = k.to_uppercase().replace('-', "_");
+                        format!("export {env_key}='{}'", val.replace('\'', r"'\''"))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" && ")
+            }
             _ => String::new(),
         };
         let exports = if option_exports.is_empty() {
@@ -199,15 +204,15 @@ pub fn feature_dockerfile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::devcontainer::jsonc;
     use crate::features::users::FeatureInstallUsers;
-    use serde_json::json;
     use std::path::PathBuf;
 
     fn make_feature(short_id: &str, installs_after: Vec<&str>) -> Feature {
         Feature {
             short_id: short_id.to_string(),
             dir: PathBuf::from(format!("/{short_id}")),
-            options: json!({}),
+            options: jsonc::parse("{}").unwrap(),
             installs_after: installs_after.into_iter().map(String::from).collect(),
             container_env: HashMap::new(),
             privileged: None,
@@ -319,7 +324,7 @@ mod tests {
         let features = vec![Feature {
             short_id: "git".to_string(),
             dir: PathBuf::from("/tmp/0"),
-            options: json!({}),
+            options: jsonc::parse("{}").unwrap(),
             installs_after: vec![],
             container_env: HashMap::new(),
             privileged: None,
@@ -351,7 +356,7 @@ mod tests {
         let features = vec![Feature {
             short_id: "node".to_string(),
             dir: PathBuf::from("/tmp/0"),
-            options: json!({ "version": "18" }),
+            options: jsonc::parse(r#"{"version":"18"}"#).unwrap(),
             installs_after: vec![],
             container_env: HashMap::new(),
             privileged: None,
@@ -380,7 +385,7 @@ mod tests {
         let features = vec![Feature {
             short_id: "docker".to_string(),
             dir: PathBuf::from("/tmp/0"),
-            options: json!({ "moby": true }),
+            options: jsonc::parse(r#"{"moby":true}"#).unwrap(),
             installs_after: vec![],
             container_env: HashMap::new(),
             privileged: None,
@@ -409,7 +414,7 @@ mod tests {
         let features = vec![Feature {
             short_id: "git".to_string(),
             dir: PathBuf::from("/tmp/0"),
-            options: json!({}),
+            options: jsonc::parse("{}").unwrap(),
             installs_after: vec![],
             container_env: HashMap::new(),
             privileged: None,
@@ -446,7 +451,7 @@ mod tests {
         let features = vec![Feature {
             short_id: "git".to_string(),
             dir: PathBuf::from("/tmp/0"),
-            options: json!({}),
+            options: jsonc::parse("{}").unwrap(),
             installs_after: vec![],
             container_env: HashMap::new(),
             privileged: None,
@@ -484,7 +489,7 @@ mod tests {
         let features = vec![Feature {
             short_id: "git".to_string(),
             dir: PathBuf::from("/tmp/0"),
-            options: json!({}),
+            options: jsonc::parse("{}").unwrap(),
             installs_after: vec![],
             container_env: HashMap::new(),
             privileged: None,
@@ -514,7 +519,7 @@ mod tests {
         let features = vec![Feature {
             short_id: "git".to_string(),
             dir: PathBuf::from("/tmp/0"),
-            options: json!({}),
+            options: jsonc::parse("{}").unwrap(),
             installs_after: vec![],
             container_env: HashMap::new(),
             privileged: None,
@@ -543,7 +548,7 @@ mod tests {
         let features = vec![Feature {
             short_id: "node".to_string(),
             dir: PathBuf::from("/tmp/0"),
-            options: json!({}),
+            options: jsonc::parse("{}").unwrap(),
             installs_after: vec![],
             container_env: HashMap::from([("NVM_DIR".to_string(), "/usr/local/nvm".to_string())]),
             privileged: None,
@@ -572,7 +577,7 @@ mod tests {
         let features = vec![Feature {
             short_id: "git".to_string(),
             dir: PathBuf::from("/tmp/0"),
-            options: json!(null),
+            options: jsonc::parse("null").unwrap(),
             installs_after: vec![],
             container_env: HashMap::new(),
             privileged: None,
@@ -606,7 +611,7 @@ mod tests {
         let features = vec![Feature {
             short_id: "git".to_string(),
             dir: PathBuf::from("/tmp/0"),
-            options: json!({}),
+            options: jsonc::parse("{}").unwrap(),
             installs_after: vec![],
             container_env: HashMap::new(),
             privileged: None,
@@ -641,7 +646,7 @@ mod tests {
         let features = vec![Feature {
             short_id: "docker".to_string(),
             dir: PathBuf::from("/tmp/0"),
-            options: json!({}),
+            options: jsonc::parse("{}").unwrap(),
             installs_after: vec![],
             container_env: HashMap::new(),
             privileged: None,
@@ -671,7 +676,7 @@ mod tests {
             Feature {
                 short_id: "docker".to_string(),
                 dir: PathBuf::from("/tmp/0"),
-                options: json!({}),
+                options: jsonc::parse("{}").unwrap(),
                 installs_after: vec![],
                 container_env: HashMap::new(),
                 privileged: None,
@@ -689,7 +694,7 @@ mod tests {
             Feature {
                 short_id: "ssh".to_string(),
                 dir: PathBuf::from("/tmp/1"),
-                options: json!({}),
+                options: jsonc::parse("{}").unwrap(),
                 installs_after: vec![],
                 container_env: HashMap::new(),
                 privileged: None,
@@ -721,7 +726,7 @@ mod tests {
         let features = vec![Feature {
             short_id: "git".to_string(),
             dir: PathBuf::from("/tmp/0"),
-            options: json!({}),
+            options: jsonc::parse("{}").unwrap(),
             installs_after: vec![],
             container_env: HashMap::new(),
             privileged: None,

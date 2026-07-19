@@ -1,6 +1,8 @@
 use crate::cli;
 use crate::devcontainer;
 use crate::docker;
+use crate::err;
+use crate::error::Result;
 use crate::features;
 use crate::lifecycle::LifecycleCmd;
 use crate::oci;
@@ -8,7 +10,6 @@ use crate::setup;
 use crate::setup::ContainerTarget;
 use crate::tui;
 use crate::uid::{UidContext, UidUpdate};
-use anyhow::{Result, anyhow};
 use std::process::Stdio;
 
 fn expand_lifecycle_cmd(
@@ -16,6 +17,7 @@ fn expand_lifecycle_cmd(
     cwd: &std::path::Path,
     container_workspace_folder: &str,
     container_env: &std::collections::HashMap<String, String>,
+    local_env: &std::collections::HashMap<String, String>,
 ) -> LifecycleCmd {
     match cmd {
         LifecycleCmd::Shell(s) => LifecycleCmd::Shell(devcontainer::expand_variables(
@@ -23,6 +25,7 @@ fn expand_lifecycle_cmd(
             cwd,
             container_workspace_folder,
             container_env,
+            local_env,
         )),
         LifecycleCmd::Exec(args) => LifecycleCmd::Exec(
             args.iter()
@@ -32,16 +35,29 @@ fn expand_lifecycle_cmd(
                         cwd,
                         container_workspace_folder,
                         container_env,
+                        local_env,
                     )
                 })
                 .collect(),
         ),
         LifecycleCmd::Parallel(cmds) => LifecycleCmd::Parallel(
             cmds.iter()
-                .map(|c| expand_lifecycle_cmd(c, cwd, container_workspace_folder, container_env))
+                .map(|c| {
+                    expand_lifecycle_cmd(
+                        c,
+                        cwd,
+                        container_workspace_folder,
+                        container_env,
+                        local_env,
+                    )
+                })
                 .collect(),
         ),
     }
+}
+
+fn local_env_snapshot() -> std::collections::HashMap<String, String> {
+    std::env::vars().collect()
 }
 
 pub fn run(args: Vec<String>) -> Result<()> {
@@ -73,7 +89,7 @@ Options:
             println!("cyyc {}", env!("GIT_VERSION"));
             Ok(())
         }
-        cli::Command::Unknown(msg) => Err(anyhow!(msg)),
+        cli::Command::Unknown(msg) => Err(crate::error::Error::new(msg)),
     }
 }
 
@@ -81,14 +97,14 @@ fn new() -> Result<()> {
     let cwd = std::env::current_dir()?;
     let target_path = cwd.join(".devcontainer").join("devcontainer.json");
     if target_path.exists() {
-        return Err(anyhow!("{} already exists", target_path.display()));
+        return Err(err!("{} already exists", target_path.display()));
     }
 
     let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
     let tmp_dir = std::env::temp_dir()
         .join(format!("cyyc-{username}"))
         .join("new");
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| anyhow!("failed to create temp dir: {e}"))?;
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| err!("failed to create temp dir: {e}"))?;
 
     let token = {
         let output = std::process::Command::new("curl")
@@ -97,16 +113,16 @@ fn new() -> Result<()> {
                 "https://ghcr.io/token?scope=repository:devcontainers/templates:pull&service=ghcr.io",
             ])
             .output()
-            .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+            .map_err(|e| err!("failed to run curl: {e}"))?;
         if !output.status.success() {
-            return Err(anyhow!("failed to fetch OCI token for templates"));
+            return Err(err!("failed to fetch OCI token for templates"));
         }
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
-            .map_err(|e| anyhow!("failed to parse OCI token response: {e}"))?;
-        json["token"]
-            .as_str()
+        let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.stdout))
+            .map_err(|e| err!("failed to parse OCI token response: {e}"))?;
+        json.get("token")
+            .and_then(|v| v.as_str())
             .map(String::from)
-            .ok_or_else(|| anyhow!("OCI token response missing 'token' field"))?
+            .ok_or_else(|| err!("OCI token response missing 'token' field"))?
     };
 
     let manifest_output = std::process::Command::new("curl")
@@ -119,15 +135,19 @@ fn new() -> Result<()> {
             "https://ghcr.io/v2/devcontainers/templates/manifests/latest",
         ])
         .output()
-        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+        .map_err(|e| err!("failed to run curl: {e}"))?;
     if !manifest_output.status.success() {
-        return Err(anyhow!("failed to fetch template collection manifest"));
+        return Err(err!("failed to fetch template collection manifest"));
     }
-    let manifest: serde_json::Value = serde_json::from_slice(&manifest_output.stdout)
-        .map_err(|e| anyhow!("failed to parse template collection manifest: {e}"))?;
-    let digest = manifest["layers"][0]["digest"]
-        .as_str()
-        .ok_or_else(|| anyhow!("template collection manifest missing layers[0].digest"))?;
+    let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&manifest_output.stdout))
+        .map_err(|e| err!("failed to parse template collection manifest: {e}"))?;
+    let digest = manifest
+        .get("layers")
+        .and_then(|l| l.as_array())
+        .and_then(|l| l.first())
+        .and_then(|l| l.get("digest"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| err!("template collection manifest missing layers[0].digest"))?;
 
     let collection_output = std::process::Command::new("curl")
         .args([
@@ -137,21 +157,21 @@ fn new() -> Result<()> {
             &format!("https://ghcr.io/v2/devcontainers/templates/blobs/{digest}"),
         ])
         .output()
-        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+        .map_err(|e| err!("failed to run curl: {e}"))?;
     if !collection_output.status.success() {
-        return Err(anyhow!("failed to download template collection blob"));
+        return Err(err!("failed to download template collection blob"));
     }
 
     let collection_json = String::from_utf8(collection_output.stdout)
-        .map_err(|e| anyhow!("template collection is not valid UTF-8: {e}"))?;
+        .map_err(|e| err!("template collection is not valid UTF-8: {e}"))?;
     let templates = oci::parse_templates(&collection_json);
     if templates.is_empty() {
-        return Err(anyhow!("no templates found in collection"));
+        return Err(err!("no templates found in collection"));
     }
 
     let template_names: Vec<String> = templates.iter().map(|t| t.id.clone()).collect();
     let selected_idx =
-        tui::select("Template", &template_names)?.ok_or_else(|| anyhow!("cancelled"))?;
+        tui::select("Template", &template_names)?.ok_or_else(|| err!("cancelled"))?;
     let selected_template = &templates[selected_idx];
 
     let template_token = {
@@ -165,19 +185,19 @@ fn new() -> Result<()> {
                 &format!("https://ghcr.io/token?scope={scope}&service=ghcr.io"),
             ])
             .output()
-            .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+            .map_err(|e| err!("failed to run curl: {e}"))?;
         if !output.status.success() {
-            return Err(anyhow!(
+            return Err(err!(
                 "failed to fetch OCI token for template {}",
                 selected_template.id
             ));
         }
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
-            .map_err(|e| anyhow!("failed to parse OCI token response: {e}"))?;
-        json["token"]
-            .as_str()
+        let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.stdout))
+            .map_err(|e| err!("failed to parse OCI token response: {e}"))?;
+        json.get("token")
+            .and_then(|v| v.as_str())
             .map(String::from)
-            .ok_or_else(|| anyhow!("OCI token response missing 'token' field"))?
+            .ok_or_else(|| err!("OCI token response missing 'token' field"))?
     };
 
     let manifest_output = std::process::Command::new("curl")
@@ -193,18 +213,22 @@ fn new() -> Result<()> {
             ),
         ])
         .output()
-        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+        .map_err(|e| err!("failed to run curl: {e}"))?;
     if !manifest_output.status.success() {
-        return Err(anyhow!(
+        return Err(err!(
             "failed to fetch manifest for template {}",
             selected_template.id
         ));
     }
-    let manifest: serde_json::Value = serde_json::from_slice(&manifest_output.stdout)
-        .map_err(|e| anyhow!("failed to parse template manifest: {e}"))?;
-    let digest = manifest["layers"][0]["digest"]
-        .as_str()
-        .ok_or_else(|| anyhow!("template manifest missing layers[0].digest"))?;
+    let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&manifest_output.stdout))
+        .map_err(|e| err!("failed to parse template manifest: {e}"))?;
+    let digest = manifest
+        .get("layers")
+        .and_then(|l| l.as_array())
+        .and_then(|l| l.first())
+        .and_then(|l| l.get("digest"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| err!("template manifest missing layers[0].digest"))?;
 
     let template_tar = tmp_dir.join("template.tar");
     let status = std::process::Command::new("curl")
@@ -220,17 +244,13 @@ fn new() -> Result<()> {
             ),
         ])
         .status()
-        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+        .map_err(|e| err!("failed to run curl: {e}"))?;
     if !status.success() {
-        return Err(anyhow!(
-            "failed to download template {}",
-            selected_template.id
-        ));
+        return Err(err!("failed to download template {}", selected_template.id));
     }
 
     let template_dir = tmp_dir.join("template");
-    std::fs::create_dir_all(&template_dir)
-        .map_err(|e| anyhow!("failed to create temp dir: {e}"))?;
+    std::fs::create_dir_all(&template_dir).map_err(|e| err!("failed to create temp dir: {e}"))?;
     let status = std::process::Command::new("tar")
         .args([
             "xf",
@@ -239,14 +259,14 @@ fn new() -> Result<()> {
             &template_dir.display().to_string(),
         ])
         .status()
-        .map_err(|e| anyhow!("failed to run tar: {e}"))?;
+        .map_err(|e| err!("failed to run tar: {e}"))?;
     if !status.success() {
-        return Err(anyhow!("failed to extract template"));
+        return Err(err!("failed to extract template"));
     }
 
     let template_json =
         std::fs::read_to_string(template_dir.join(".devcontainer/devcontainer.json"))
-            .map_err(|e| anyhow!("devcontainer.json not found in template: {e}"))?;
+            .map_err(|e| err!("devcontainer.json not found in template: {e}"))?;
 
     let feature_token = {
         let output = std::process::Command::new("curl")
@@ -255,16 +275,16 @@ fn new() -> Result<()> {
                 "https://ghcr.io/token?scope=repository:devcontainers/features:pull&service=ghcr.io",
             ])
             .output()
-            .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+            .map_err(|e| err!("failed to run curl: {e}"))?;
         if !output.status.success() {
-            return Err(anyhow!("failed to fetch OCI token for features"));
+            return Err(err!("failed to fetch OCI token for features"));
         }
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
-            .map_err(|e| anyhow!("failed to parse OCI token response: {e}"))?;
-        json["token"]
-            .as_str()
+        let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.stdout))
+            .map_err(|e| err!("failed to parse OCI token response: {e}"))?;
+        json.get("token")
+            .and_then(|v| v.as_str())
             .map(String::from)
-            .ok_or_else(|| anyhow!("OCI token response missing 'token' field"))?
+            .ok_or_else(|| err!("OCI token response missing 'token' field"))?
     };
 
     let manifest_output = std::process::Command::new("curl")
@@ -277,15 +297,19 @@ fn new() -> Result<()> {
             "https://ghcr.io/v2/devcontainers/features/manifests/latest",
         ])
         .output()
-        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+        .map_err(|e| err!("failed to run curl: {e}"))?;
     if !manifest_output.status.success() {
-        return Err(anyhow!("failed to fetch feature collection manifest"));
+        return Err(err!("failed to fetch feature collection manifest"));
     }
-    let manifest: serde_json::Value = serde_json::from_slice(&manifest_output.stdout)
-        .map_err(|e| anyhow!("failed to parse feature collection manifest: {e}"))?;
-    let digest = manifest["layers"][0]["digest"]
-        .as_str()
-        .ok_or_else(|| anyhow!("feature collection manifest missing layers[0].digest"))?;
+    let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&manifest_output.stdout))
+        .map_err(|e| err!("failed to parse feature collection manifest: {e}"))?;
+    let digest = manifest
+        .get("layers")
+        .and_then(|l| l.as_array())
+        .and_then(|l| l.first())
+        .and_then(|l| l.get("digest"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| err!("feature collection manifest missing layers[0].digest"))?;
 
     let feature_collection_output = std::process::Command::new("curl")
         .args([
@@ -295,13 +319,13 @@ fn new() -> Result<()> {
             &format!("https://ghcr.io/v2/devcontainers/features/blobs/{digest}"),
         ])
         .output()
-        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+        .map_err(|e| err!("failed to run curl: {e}"))?;
     if !feature_collection_output.status.success() {
-        return Err(anyhow!("failed to download feature collection blob"));
+        return Err(err!("failed to download feature collection blob"));
     }
 
     let feature_json = String::from_utf8(feature_collection_output.stdout)
-        .map_err(|e| anyhow!("feature collection is not valid UTF-8: {e}"))?;
+        .map_err(|e| err!("feature collection is not valid UTF-8: {e}"))?;
     let features = oci::parse_features(&feature_json);
 
     let feature_ids: Vec<String> = if features.is_empty() {
@@ -310,25 +334,26 @@ fn new() -> Result<()> {
         let feature_names: Vec<String> = features.iter().map(|f| f.id.clone()).collect();
         match tui::multi_select("Features", &feature_names)? {
             Some(indices) => indices.iter().map(|&i| features[i].id.clone()).collect(),
-            None => return Err(anyhow!("cancelled")),
+            None => return Err(err!("cancelled")),
         }
     };
 
     let output = oci::build_devcontainer_json(&template_json, &feature_ids)?;
     std::fs::create_dir_all(target_path.parent().unwrap())
-        .map_err(|e| anyhow!("failed to create .devcontainer directory: {e}"))?;
+        .map_err(|e| err!("failed to create .devcontainer directory: {e}"))?;
     std::fs::write(&target_path, &output)
-        .map_err(|e| anyhow!("failed to write {}: {e}", target_path.display()))?;
+        .map_err(|e| err!("failed to write {}: {e}", target_path.display()))?;
 
     Ok(())
 }
 
 fn shell(name: Option<String>) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let local_env = local_env_snapshot();
     let (config_path, config) = open_config(&cwd, name.as_deref())?;
     let config_dir = config_path.parent().unwrap_or(cwd.as_path());
 
-    let target = setup::from_config(&config, &cwd, &config_path, config_dir);
+    let target = setup::from_config(&config, &cwd, &config_path, config_dir, &local_env);
 
     let (found_container, container_id) = match lookup_existing(&target, &config_path, &cwd)? {
         Existing::Running { id, meta } => (meta, Some(id)),
@@ -337,14 +362,15 @@ fn shell(name: Option<String>) -> Result<()> {
             let started_at = std::process::Command::new("docker")
                 .args(["inspect", "--format", "{{.State.StartedAt}}", &id])
                 .output()
-                .map_err(|e| anyhow!("Failed to run docker: {e}"))
+                .map_err(|e| err!("Failed to run docker: {e}"))
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
             let wait_for = config.common().wait_for.clone();
             if let Some(value) = config.common().post_start_command.as_ref()
                 && let Ok(cmd) = LifecycleCmd::try_from(value)
             {
-                let workdir = config.workspace_folder(&cwd);
-                let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+                let workdir = config.workspace_folder(&cwd, &local_env);
+                let cmd =
+                    expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
                 let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
                 run_lifecycle_in_container(
                     &cmd,
@@ -368,8 +394,8 @@ fn shell(name: Option<String>) -> Result<()> {
         if let Some(value) = config.common().post_attach_command.as_ref()
             && let Ok(cmd) = LifecycleCmd::try_from(value)
         {
-            let workdir = config.workspace_folder(&cwd);
-            let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+            let workdir = config.workspace_folder(&cwd, &local_env);
+            let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
             let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
             run_lifecycle_in_container(
                 &cmd,
@@ -410,12 +436,12 @@ fn shell(name: Option<String>) -> Result<()> {
                 let base = match &s.dockerfile {
                     None => format!("FROM {}", s.image_tag),
                     Some(p) => std::fs::read_to_string(p)
-                        .map_err(|e| anyhow!("failed to read Dockerfile: {e}"))?,
+                        .map_err(|e| err!("failed to read Dockerfile: {e}"))?,
                 };
                 let content = features::feature_dockerfile(&base, plan, &feature_users);
                 let dockerfile_path = fdir.join("Dockerfile.features");
                 std::fs::write(&dockerfile_path, &content)
-                    .map_err(|e| anyhow!("failed to write feature Dockerfile: {e}"))?;
+                    .map_err(|e| err!("failed to write feature Dockerfile: {e}"))?;
                 let mut run_args = s.run_args;
                 if plan.features().iter().any(|f| f.privileged == Some(true)) {
                     run_args.push("--privileged".to_string());
@@ -453,8 +479,9 @@ fn shell(name: Option<String>) -> Result<()> {
                     if !out.status.success() {
                         return None;
                     }
-                    let cfg: devcontainer::ComposeResolved =
-                        serde_json::from_slice(&out.stdout).ok()?;
+                    let cfg = devcontainer::ComposeResolved::parse(&String::from_utf8_lossy(
+                        &out.stdout,
+                    ))?;
                     match cfg.services.get(&c.service)?.feature_base_source() {
                         devcontainer::FeatureBaseSource::Image(img) => Some(format!("FROM {img}")),
                         devcontainer::FeatureBaseSource::DockerfilePath(p) => {
@@ -462,11 +489,11 @@ fn shell(name: Option<String>) -> Result<()> {
                         }
                     }
                 })()
-                .ok_or_else(|| anyhow!("failed to resolve compose service base for features"))?;
+                .ok_or_else(|| err!("failed to resolve compose service base for features"))?;
                 let content = features::feature_dockerfile(&base, plan, &feature_users);
                 let dockerfile_path = fdir.join("Dockerfile.features");
                 std::fs::write(&dockerfile_path, &content)
-                    .map_err(|e| anyhow!("failed to write feature Dockerfile: {e}"))?;
+                    .map_err(|e| err!("failed to write feature Dockerfile: {e}"))?;
                 let override_content = format!(
                     "{}    build:\n      dockerfile: {}\n      context: {}\n",
                     c.override_content,
@@ -486,20 +513,20 @@ fn shell(name: Option<String>) -> Result<()> {
     if let Some(value) = config.common().initialize_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
-        let workdir = config.workspace_folder(&cwd);
-        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+        let workdir = config.workspace_folder(&cwd, &local_env);
+        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
         let mut children: Vec<std::process::Child> = match &cmd {
             LifecycleCmd::Shell(s) => vec![
                 std::process::Command::new("sh")
                     .args(["-c", s])
                     .spawn()
-                    .map_err(|e| anyhow!("Failed to run initializeCommand: {e}"))?,
+                    .map_err(|e| err!("Failed to run initializeCommand: {e}"))?,
             ],
             LifecycleCmd::Exec(args) => vec![
                 std::process::Command::new(&args[0])
                     .args(&args[1..])
                     .spawn()
-                    .map_err(|e| anyhow!("Failed to run initializeCommand: {e}"))?,
+                    .map_err(|e| err!("Failed to run initializeCommand: {e}"))?,
             ],
             LifecycleCmd::Parallel(cmds) => cmds
                 .iter()
@@ -507,11 +534,11 @@ fn shell(name: Option<String>) -> Result<()> {
                     LifecycleCmd::Shell(s) => std::process::Command::new("sh")
                         .args(["-c", s])
                         .spawn()
-                        .map_err(|e| anyhow!("Failed to run initializeCommand: {e}")),
+                        .map_err(|e| err!("Failed to run initializeCommand: {e}")),
                     LifecycleCmd::Exec(args) => std::process::Command::new(&args[0])
                         .args(&args[1..])
                         .spawn()
-                        .map_err(|e| anyhow!("Failed to run initializeCommand: {e}")),
+                        .map_err(|e| err!("Failed to run initializeCommand: {e}")),
                     LifecycleCmd::Parallel(_) => unreachable!(),
                 })
                 .collect::<Result<_>>()?,
@@ -519,10 +546,10 @@ fn shell(name: Option<String>) -> Result<()> {
         for child in &mut children {
             if !child
                 .wait()
-                .map_err(|e| anyhow!("Failed to wait for initializeCommand: {e}"))?
+                .map_err(|e| err!("Failed to wait for initializeCommand: {e}"))?
                 .success()
             {
-                return Err(anyhow!("initializeCommand failed"));
+                return Err(err!("initializeCommand failed"));
             }
         }
     }
@@ -542,11 +569,11 @@ fn shell(name: Option<String>) -> Result<()> {
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
                     .spawn()
-                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                    .map_err(|e| err!("Failed to run docker: {e}"))?;
                 let status =
-                    tui::build_log(&mut child).map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                    tui::build_log(&mut child).map_err(|e| err!("Failed to run docker: {e}"))?;
                 if !status.success() {
-                    return Err(anyhow!("`docker build` for features failed"));
+                    return Err(err!("`docker build` for features failed"));
                 }
             } else {
                 match &config {
@@ -556,11 +583,11 @@ fn shell(name: Option<String>) -> Result<()> {
                             .stdout(Stdio::piped())
                             .stderr(Stdio::piped())
                             .spawn()
-                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                            .map_err(|e| err!("Failed to run docker: {e}"))?;
                         let status = tui::build_log(&mut child)
-                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                            .map_err(|e| err!("Failed to run docker: {e}"))?;
                         if !status.success() {
-                            return Err(anyhow!("`docker pull` failed"));
+                            return Err(err!("`docker pull` failed"));
                         }
                     }
                     devcontainer::DevcontainerConfig::Dockerfile(c) => {
@@ -573,11 +600,11 @@ fn shell(name: Option<String>) -> Result<()> {
                             .stdout(Stdio::piped())
                             .stderr(Stdio::piped())
                             .spawn()
-                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                            .map_err(|e| err!("Failed to run docker: {e}"))?;
                         let status = tui::build_log(&mut child)
-                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                            .map_err(|e| err!("Failed to run docker: {e}"))?;
                         if !status.success() {
-                            return Err(anyhow!("`docker build` failed"));
+                            return Err(err!("`docker build` failed"));
                         }
                     }
                     devcontainer::DevcontainerConfig::DockerfileBuild(c) => {
@@ -589,11 +616,11 @@ fn shell(name: Option<String>) -> Result<()> {
                             .stdout(Stdio::piped())
                             .stderr(Stdio::piped())
                             .spawn()
-                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                            .map_err(|e| err!("Failed to run docker: {e}"))?;
                         let status = tui::build_log(&mut child)
-                            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                            .map_err(|e| err!("Failed to run docker: {e}"))?;
                         if !status.success() {
-                            return Err(anyhow!("`docker build` failed"));
+                            return Err(err!("`docker build` failed"));
                         }
                     }
                     devcontainer::DevcontainerConfig::DockerCompose(_) => unreachable!(),
@@ -624,7 +651,7 @@ fn shell(name: Option<String>) -> Result<()> {
                         )
                     });
                 let meta = std::fs::metadata("/proc/self")
-                    .map_err(|e| anyhow!("Failed to get process metadata: {e}"))?;
+                    .map_err(|e| err!("Failed to get process metadata: {e}"))?;
                 let host_uid = meta.uid();
                 let host_gid = meta.gid();
                 match UidUpdate::resolve(
@@ -678,10 +705,10 @@ fn shell(name: Option<String>) -> Result<()> {
                         &image_tag,
                     ])
                     .output()
-                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                    .map_err(|e| err!("Failed to run docker: {e}"))?;
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    return Err(anyhow!(
+                    return Err(err!(
                         "Failed to inspect image (overrideCommand: false): {}",
                         stderr.trim()
                     ));
@@ -702,13 +729,13 @@ fn shell(name: Option<String>) -> Result<()> {
                 .arg("run")
                 .args(&run_args)
                 .output()
-                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                .map_err(|e| err!("Failed to run docker: {e}"))?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(anyhow!("`docker run` failed: {}", stderr.trim()));
+                return Err(err!("`docker run` failed: {}", stderr.trim()));
             }
             docker::parse_container_id(&String::from_utf8_lossy(&output.stdout))
-                .ok_or_else(|| anyhow!("Failed to get container ID from `docker run`"))?
+                .ok_or_else(|| err!("Failed to get container ID from `docker run`"))?
         }
         ContainerTarget::Compose(c) => {
             let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
@@ -716,7 +743,7 @@ fn shell(name: Option<String>) -> Result<()> {
                 .join(format!("cyyc-{}", username))
                 .join("docker-compose");
             std::fs::create_dir_all(&compose_dir)
-                .map_err(|e| anyhow!("Failed to create compose override directory: {e}"))?;
+                .map_err(|e| err!("Failed to create compose override directory: {e}"))?;
             let existing_id = {
                 let output = std::process::Command::new("docker")
                     .args([
@@ -724,10 +751,10 @@ fn shell(name: Option<String>) -> Result<()> {
                         "{{.ID}}",
                     ])
                     .output()
-                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                    .map_err(|e| err!("Failed to run docker: {e}"))?;
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    return Err(anyhow!(
+                    return Err(err!(
                         "`docker ps` failed with status {}: {}",
                         output.status,
                         stderr.trim()
@@ -783,8 +810,9 @@ fn shell(name: Option<String>) -> Result<()> {
                             .output()
                             .ok()
                             .filter(|o| o.status.success())?;
-                        let cfg: devcontainer::ComposeResolved =
-                            serde_json::from_slice(&out.stdout).ok()?;
+                        let cfg = devcontainer::ComposeResolved::parse(&String::from_utf8_lossy(
+                            &out.stdout,
+                        ))?;
                         let image = match cfg.services.get(&c.service)?.feature_base_source() {
                             devcontainer::FeatureBaseSource::Image(img) => img,
                             devcontainer::FeatureBaseSource::DockerfilePath(_) => return None,
@@ -857,7 +885,7 @@ fn shell(name: Option<String>) -> Result<()> {
                 #[cfg(not(target_os = "linux"))]
                 let override_content = c.override_content.clone();
                 std::fs::write(&p, &override_content)
-                    .map_err(|e| anyhow!("Failed to write compose override file: {e}"))?;
+                    .map_err(|e| err!("Failed to write compose override file: {e}"))?;
                 if !no_recreate {
                     let mut build_args = c.global_args.clone();
                     build_args.extend(["-f".to_string(), p.display().to_string()]);
@@ -869,11 +897,11 @@ fn shell(name: Option<String>) -> Result<()> {
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
                         .spawn()
-                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        .map_err(|e| err!("Failed to run docker: {e}"))?;
                     let status = tui::build_log(&mut child)
-                        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                        .map_err(|e| err!("Failed to run docker: {e}"))?;
                     if !status.success() {
-                        return Err(anyhow!("`docker compose build` failed"));
+                        return Err(err!("`docker compose build` failed"));
                     }
                 }
                 p
@@ -889,40 +917,40 @@ fn shell(name: Option<String>) -> Result<()> {
                 .arg("compose")
                 .args(&up_args)
                 .status()
-                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                .map_err(|e| err!("Failed to run docker: {e}"))?;
             if !status.success() {
-                return Err(anyhow!("`docker compose up` failed"));
+                return Err(err!("`docker compose up` failed"));
             }
             let output = std::process::Command::new("docker")
                 .args([
                     "ps", "--filter", &c.filter1, "--filter", &c.filter2, "--format", "{{.ID}}",
                 ])
                 .output()
-                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                .map_err(|e| err!("Failed to run docker: {e}"))?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(anyhow!("`docker ps` failed: {}", stderr.trim()));
+                return Err(err!("`docker ps` failed: {}", stderr.trim()));
             }
             docker::parse_container_id(&String::from_utf8_lossy(&output.stdout))
-                .ok_or_else(|| anyhow!("Failed to get container ID from `docker compose up`"))?
+                .ok_or_else(|| err!("Failed to get container ID from `docker compose up`"))?
         }
     };
     let created_at = std::process::Command::new("docker")
         .args(["inspect", "--format", "{{.Created}}", &id])
         .output()
-        .map_err(|e| anyhow!("Failed to run docker: {e}"))
+        .map_err(|e| err!("Failed to run docker: {e}"))
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
     let started_at = std::process::Command::new("docker")
         .args(["inspect", "--format", "{{.State.StartedAt}}", &id])
         .output()
-        .map_err(|e| anyhow!("Failed to run docker: {e}"))
+        .map_err(|e| err!("Failed to run docker: {e}"))
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
     let wait_for = config.common().wait_for.clone();
     if let Some(value) = config.common().on_create_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
-        let workdir = config.workspace_folder(&cwd);
-        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+        let workdir = config.workspace_folder(&cwd, &local_env);
+        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
         let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
         run_lifecycle_in_container(
             &cmd,
@@ -941,8 +969,9 @@ fn shell(name: Option<String>) -> Result<()> {
             if let Some(value) = feature.on_create_command.as_ref()
                 && let Ok(cmd) = LifecycleCmd::try_from(value)
             {
-                let workdir = config.workspace_folder(&cwd);
-                let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+                let workdir = config.workspace_folder(&cwd, &local_env);
+                let cmd =
+                    expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
                 let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
                 run_lifecycle_in_container(
                     &cmd,
@@ -961,8 +990,8 @@ fn shell(name: Option<String>) -> Result<()> {
     if let Some(value) = config.common().update_content_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
-        let workdir = config.workspace_folder(&cwd);
-        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+        let workdir = config.workspace_folder(&cwd, &local_env);
+        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
         let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
         run_lifecycle_in_container(
             &cmd,
@@ -981,8 +1010,9 @@ fn shell(name: Option<String>) -> Result<()> {
             if let Some(value) = feature.update_content_command.as_ref()
                 && let Ok(cmd) = LifecycleCmd::try_from(value)
             {
-                let workdir = config.workspace_folder(&cwd);
-                let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+                let workdir = config.workspace_folder(&cwd, &local_env);
+                let cmd =
+                    expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
                 let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
                 run_lifecycle_in_container(
                     &cmd,
@@ -1001,8 +1031,8 @@ fn shell(name: Option<String>) -> Result<()> {
     if let Some(value) = config.common().post_create_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
-        let workdir = config.workspace_folder(&cwd);
-        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+        let workdir = config.workspace_folder(&cwd, &local_env);
+        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
         let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
         run_lifecycle_in_container(
             &cmd,
@@ -1021,8 +1051,9 @@ fn shell(name: Option<String>) -> Result<()> {
             if let Some(value) = feature.post_create_command.as_ref()
                 && let Ok(cmd) = LifecycleCmd::try_from(value)
             {
-                let workdir = config.workspace_folder(&cwd);
-                let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+                let workdir = config.workspace_folder(&cwd, &local_env);
+                let cmd =
+                    expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
                 let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
                 run_lifecycle_in_container(
                     &cmd,
@@ -1041,8 +1072,8 @@ fn shell(name: Option<String>) -> Result<()> {
     if let Some(value) = config.common().post_start_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
-        let workdir = config.workspace_folder(&cwd);
-        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+        let workdir = config.workspace_folder(&cwd, &local_env);
+        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
         let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
         run_lifecycle_in_container(
             &cmd,
@@ -1061,8 +1092,9 @@ fn shell(name: Option<String>) -> Result<()> {
             if let Some(value) = feature.post_start_command.as_ref()
                 && let Ok(cmd) = LifecycleCmd::try_from(value)
             {
-                let workdir = config.workspace_folder(&cwd);
-                let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+                let workdir = config.workspace_folder(&cwd, &local_env);
+                let cmd =
+                    expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
                 let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
                 run_lifecycle_in_container(
                     &cmd,
@@ -1081,8 +1113,8 @@ fn shell(name: Option<String>) -> Result<()> {
     if let Some(value) = config.common().post_attach_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
     {
-        let workdir = config.workspace_folder(&cwd);
-        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+        let workdir = config.workspace_folder(&cwd, &local_env);
+        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
         let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
         run_lifecycle_in_container(
             &cmd,
@@ -1101,8 +1133,9 @@ fn shell(name: Option<String>) -> Result<()> {
             if let Some(value) = feature.post_attach_command.as_ref()
                 && let Ok(cmd) = LifecycleCmd::try_from(value)
             {
-                let workdir = config.workspace_folder(&cwd);
-                let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default());
+                let workdir = config.workspace_folder(&cwd, &local_env);
+                let cmd =
+                    expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
                 let expanded_remote_user = resolve_lifecycle_user(&config, &id, &cwd);
                 run_lifecycle_in_container(
                     &cmd,
@@ -1123,9 +1156,10 @@ fn shell(name: Option<String>) -> Result<()> {
 
 fn stop(name: Option<String>) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let local_env = local_env_snapshot();
     let (config_path, config) = open_config(&cwd, name.as_deref())?;
     let config_dir = config_path.parent().unwrap_or(cwd.as_path());
-    let target = setup::from_config(&config, &cwd, &config_path, config_dir);
+    let target = setup::from_config(&config, &cwd, &config_path, config_dir, &local_env);
 
     if let Existing::Running { id, .. } = lookup_existing(&target, &config_path, &cwd)? {
         match &target {
@@ -1133,9 +1167,9 @@ fn stop(name: Option<String>) -> Result<()> {
                 let status = std::process::Command::new("docker")
                     .args(["stop", &id])
                     .status()
-                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                    .map_err(|e| err!("Failed to run docker: {e}"))?;
                 if !status.success() {
-                    return Err(anyhow!("`docker stop` failed"));
+                    return Err(err!("`docker stop` failed"));
                 }
             }
             ContainerTarget::Compose(c) => {
@@ -1146,9 +1180,9 @@ fn stop(name: Option<String>) -> Result<()> {
                     .arg("compose")
                     .args(&stop_args)
                     .status()
-                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                    .map_err(|e| err!("Failed to run docker: {e}"))?;
                 if !status.success() {
-                    return Err(anyhow!("`docker compose stop` failed"));
+                    return Err(err!("`docker compose stop` failed"));
                 }
             }
         }
@@ -1158,11 +1192,12 @@ fn stop(name: Option<String>) -> Result<()> {
 
 fn ps(_name: Option<String>) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let local_env = local_env_snapshot();
     let devcontainer_dir = cwd.join(".devcontainer");
     let configs = discover_configs(&devcontainer_dir);
 
     if configs.is_empty() {
-        return Err(anyhow!(
+        return Err(err!(
             "No devcontainer.json found in {}",
             devcontainer_dir.display()
         ));
@@ -1182,12 +1217,12 @@ fn ps(_name: Option<String>) -> Result<()> {
         };
 
         let content = std::fs::read_to_string(config_path)
-            .map_err(|e| anyhow!("Failed to read {}: {e}", config_path.display()))?;
+            .map_err(|e| err!("Failed to read {}: {e}", config_path.display()))?;
         let config = devcontainer::parse_config(&content)
-            .ok_or_else(|| anyhow!("Failed to parse {}", config_path.display()))?;
+            .ok_or_else(|| err!("Failed to parse {}", config_path.display()))?;
 
         let config_dir = config_path.parent().unwrap_or(cwd.as_path());
-        let target = setup::from_config(&config, &cwd, config_path, config_dir);
+        let target = setup::from_config(&config, &cwd, config_path, config_dir, &local_env);
 
         match lookup_existing(&target, config_path, &cwd)? {
             Existing::Running { id, .. } => {
@@ -1208,9 +1243,10 @@ fn ps(_name: Option<String>) -> Result<()> {
 
 fn down(name: Option<String>) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let local_env = local_env_snapshot();
     let (config_path, config) = open_config(&cwd, name.as_deref())?;
     let config_dir = config_path.parent().unwrap_or(cwd.as_path());
-    let target = setup::from_config(&config, &cwd, &config_path, config_dir);
+    let target = setup::from_config(&config, &cwd, &config_path, config_dir, &local_env);
 
     match &target {
         ContainerTarget::Single(_) => match lookup_existing(&target, &config_path, &cwd)? {
@@ -1218,9 +1254,9 @@ fn down(name: Option<String>) -> Result<()> {
                 let status = std::process::Command::new("docker")
                     .args(["rm", "-f", &id])
                     .status()
-                    .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                    .map_err(|e| err!("Failed to run docker: {e}"))?;
                 if !status.success() {
-                    return Err(anyhow!("`docker rm` failed"));
+                    return Err(err!("`docker rm` failed"));
                 }
             }
             Existing::None => {}
@@ -1232,9 +1268,9 @@ fn down(name: Option<String>) -> Result<()> {
                 .arg("compose")
                 .args(&down_args)
                 .status()
-                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                .map_err(|e| err!("Failed to run docker: {e}"))?;
             if !status.success() {
-                return Err(anyhow!("`docker compose down` failed"));
+                return Err(err!("`docker compose down` failed"));
             }
         }
     }
@@ -1247,7 +1283,8 @@ fn exec_in_container(
     config: &devcontainer::DevcontainerConfig,
     cwd: &std::path::Path,
 ) -> Result<()> {
-    let container_workspace_folder = config.workspace_folder(cwd);
+    let local_env = local_env_snapshot();
+    let container_workspace_folder = config.workspace_folder(cwd, &local_env);
     let container_env: std::collections::HashMap<String, String> =
         std::process::Command::new("docker")
             .args(["exec", &id, "printenv"])
@@ -1268,7 +1305,13 @@ fn exec_in_container(
             })
             .unwrap_or_default();
     let remote_user_from_config = config.common().remote_user.as_deref().map(|u| {
-        devcontainer::expand_variables(u, cwd, &container_workspace_folder, &container_env)
+        devcontainer::expand_variables(
+            u,
+            cwd,
+            &container_workspace_folder,
+            &container_env,
+            &local_env,
+        )
     });
     let remote_user_from_container = if let Some(ref c) = found_container {
         c.remote_user.clone()
@@ -1337,6 +1380,7 @@ fn exec_in_container(
                 cwd,
                 &container_workspace_folder,
                 &container_env,
+                &local_env,
             );
             exec_args.extend(["--env".to_string(), format!("{}={}", key, expanded)]);
         }
@@ -1345,15 +1389,15 @@ fn exec_in_container(
     let status = std::process::Command::new("docker")
         .args(&exec_args)
         .status()
-        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+        .map_err(|e| err!("Failed to run docker: {e}"))?;
     if !status.success() {
-        return Err(anyhow!("`docker exec` failed"));
+        return Err(err!("`docker exec` failed"));
     }
     Ok(())
 }
 
 fn download_features(
-    features_map: &std::collections::HashMap<String, serde_json::Value>,
+    features_map: &std::collections::HashMap<String, devcontainer::jsonc::Value>,
     override_order: &[String],
     devcontainer_dir: &std::path::Path,
     cwd: &std::path::Path,
@@ -1364,9 +1408,9 @@ fn download_features(
         .join("features")
         .join(docker::image_tag(cwd));
     std::fs::create_dir_all(&features_dir)
-        .map_err(|e| anyhow!("failed to create features temp dir: {e}"))?;
+        .map_err(|e| err!("failed to create features temp dir: {e}"))?;
 
-    let mut sorted: Vec<(&String, &serde_json::Value)> = features_map.iter().collect();
+    let mut sorted: Vec<(&String, &devcontainer::jsonc::Value)> = features_map.iter().collect();
     sorted.sort_by_key(|(k, _)| k.as_str());
 
     let mut resolved = Vec::new();
@@ -1382,7 +1426,7 @@ fn download_features(
         };
         let feature_dir = features_dir.join(idx.to_string());
         std::fs::create_dir_all(&feature_dir)
-            .map_err(|e| anyhow!("failed to create feature dir: {e}"))?;
+            .map_err(|e| err!("failed to create feature dir: {e}"))?;
         match &source {
             features::FeatureSource::Local(path) => {
                 let status = std::process::Command::new("cp")
@@ -1392,12 +1436,9 @@ fn download_features(
                         &feature_dir.display().to_string(),
                     ])
                     .status()
-                    .map_err(|e| anyhow!("failed to copy local feature: {e}"))?;
+                    .map_err(|e| err!("failed to copy local feature: {e}"))?;
                 if !status.success() {
-                    return Err(anyhow!(
-                        "failed to copy local feature from {}",
-                        path.display()
-                    ));
+                    return Err(err!("failed to copy local feature from {}", path.display()));
                 }
             }
             features::FeatureSource::Tarball(url) => {
@@ -1405,9 +1446,9 @@ fn download_features(
                 let status = std::process::Command::new("curl")
                     .args(["-sfL", url, "-o", &tarball.display().to_string()])
                     .status()
-                    .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+                    .map_err(|e| err!("failed to run curl: {e}"))?;
                 if !status.success() {
-                    return Err(anyhow!("failed to download feature from {url}"));
+                    return Err(err!("failed to download feature from {url}"));
                 }
                 let status = std::process::Command::new("tar")
                     .args([
@@ -1417,9 +1458,9 @@ fn download_features(
                         &feature_dir.display().to_string(),
                     ])
                     .status()
-                    .map_err(|e| anyhow!("failed to run tar: {e}"))?;
+                    .map_err(|e| err!("failed to run tar: {e}"))?;
                 if !status.success() {
-                    return Err(anyhow!("failed to extract {}", tarball.display()));
+                    return Err(err!("failed to extract {}", tarball.display()));
                 }
             }
             features::FeatureSource::Oci {
@@ -1435,16 +1476,16 @@ fn download_features(
                     let output = std::process::Command::new("curl")
                         .args(["-sf", &url])
                         .output()
-                        .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+                        .map_err(|e| err!("failed to run curl: {e}"))?;
                     if !output.status.success() {
-                        return Err(anyhow!("failed to fetch OCI token for {registry}/{path}"));
+                        return Err(err!("failed to fetch OCI token for {registry}/{path}"));
                     }
-                    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
-                        .map_err(|e| anyhow!("failed to parse OCI token response: {e}"))?;
-                    json["token"]
-                        .as_str()
+                    let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.stdout))
+                        .map_err(|e| err!("failed to parse OCI token response: {e}"))?;
+                    json.get("token")
+                        .and_then(|v| v.as_str())
                         .map(String::from)
-                        .ok_or_else(|| anyhow!("OCI token response missing 'token' field"))?
+                        .ok_or_else(|| err!("OCI token response missing 'token' field"))?
                 };
                 let manifest_url = format!("https://{registry}/v2/{path}/manifests/{version}");
                 let output = std::process::Command::new("curl")
@@ -1457,17 +1498,21 @@ fn download_features(
                         &manifest_url,
                     ])
                     .output()
-                    .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+                    .map_err(|e| err!("failed to run curl: {e}"))?;
                 if !output.status.success() {
-                    return Err(anyhow!(
+                    return Err(err!(
                         "failed to fetch OCI manifest for {registry}/{path}:{version}"
                     ));
                 }
-                let manifest: serde_json::Value = serde_json::from_slice(&output.stdout)
-                    .map_err(|e| anyhow!("failed to parse OCI manifest: {e}"))?;
-                let digest = manifest["layers"][0]["digest"]
-                    .as_str()
-                    .ok_or_else(|| anyhow!("OCI manifest missing layers[0].digest"))?;
+                let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.stdout))
+                    .map_err(|e| err!("failed to parse OCI manifest: {e}"))?;
+                let digest = manifest
+                    .get("layers")
+                    .and_then(|l| l.as_array())
+                    .and_then(|l| l.first())
+                    .and_then(|l| l.get("digest"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| err!("OCI manifest missing layers[0].digest"))?;
                 let blob_url = format!("https://{registry}/v2/{path}/blobs/{digest}");
                 let status = std::process::Command::new("curl")
                     .args([
@@ -1479,9 +1524,9 @@ fn download_features(
                         &blob_url,
                     ])
                     .status()
-                    .map_err(|e| anyhow!("failed to run curl: {e}"))?;
+                    .map_err(|e| err!("failed to run curl: {e}"))?;
                 if !status.success() {
-                    return Err(anyhow!("failed to download OCI blob for {registry}/{path}"));
+                    return Err(err!("failed to download OCI blob for {registry}/{path}"));
                 }
                 let status = std::process::Command::new("tar")
                     .args([
@@ -1491,15 +1536,15 @@ fn download_features(
                         &feature_dir.display().to_string(),
                     ])
                     .status()
-                    .map_err(|e| anyhow!("failed to run tar: {e}"))?;
+                    .map_err(|e| err!("failed to run tar: {e}"))?;
                 if !status.success() {
-                    return Err(anyhow!("failed to extract {}", tarball.display()));
+                    return Err(err!("failed to extract {}", tarball.display()));
                 }
             }
         }
         let manifest_content =
             std::fs::read_to_string(feature_dir.join("devcontainer-feature.json"))
-                .map_err(|e| anyhow!("devcontainer-feature.json not found in feature {id}: {e}"))?;
+                .map_err(|e| err!("devcontainer-feature.json not found in feature {id}: {e}"))?;
         let manifest = features::FeatureManifest::parse(&manifest_content)?;
         resolved.push(features::Feature {
             short_id: manifest.id,
@@ -1546,16 +1591,16 @@ fn open_config(
     let config_path = select_config(&configs, &devcontainer_dir, name)?;
     let content = std::fs::read_to_string(&config_path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            anyhow!(
+            err!(
                 "Dev container config ({}) not found.",
                 config_path.display()
             )
         } else {
-            anyhow!("Dev container config ({}): {e}", config_path.display())
+            err!("Dev container config ({}): {e}", config_path.display())
         }
     })?;
     let config = devcontainer::parse_config(&content).ok_or_else(|| {
-        anyhow!(
+        err!(
             "Failed to parse dev container config ({}).",
             config_path.display()
         )
@@ -1590,7 +1635,7 @@ fn select_config(
     name: Option<&str>,
 ) -> Result<std::path::PathBuf> {
     match (configs, name) {
-        ([], _) => Err(anyhow!(
+        ([], _) => Err(err!(
             "No devcontainer.json found in {}",
             devcontainer_dir.display()
         )),
@@ -1600,10 +1645,7 @@ fn select_config(
             if cs.iter().any(|c| c == &path) {
                 Ok(path)
             } else {
-                Err(anyhow!(
-                    "Dev container config ({}) not found.",
-                    path.display()
-                ))
+                Err(err!("Dev container config ({}) not found.", path.display()))
             }
         }
         (cs, None) => {
@@ -1615,7 +1657,7 @@ fn select_config(
                         .map(|n| n.to_string_lossy().to_string())
                 })
                 .collect();
-            Err(anyhow!(
+            Err(err!(
                 "Multiple devcontainer configs found. Specify a name: {}",
                 names.join(", ")
             ))
@@ -1667,10 +1709,10 @@ fn compose_ps(c: &devcontainer::ComposeArgs, all_states: bool) -> Result<Option<
     let output = std::process::Command::new("docker")
         .args(&args)
         .output()
-        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+        .map_err(|e| err!("Failed to run docker: {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!(
+        return Err(err!(
             "`docker ps` failed with status {}: {}",
             output.status,
             stderr.trim()
@@ -1699,10 +1741,10 @@ fn single_lookup(
     let output = std::process::Command::new("docker")
         .args(&args)
         .output()
-        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+        .map_err(|e| err!("Failed to run docker: {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!(
+        return Err(err!(
             "`docker ps` failed with status {}: {}",
             output.status,
             stderr.trim()
@@ -1716,7 +1758,7 @@ fn single_lookup(
         .arg("inspect")
         .args(&ids)
         .output()
-        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+        .map_err(|e| err!("Failed to run docker: {e}"))?;
     if !inspect.status.success() {
         return Ok(None);
     }
@@ -1758,7 +1800,7 @@ fn run_lifecycle_in_container(
             .args(&user_args)
             .args([container_id, "sh", "-c", &script])
             .status()
-            .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+            .map_err(|e| err!("Failed to run docker: {e}"))?;
         if !status.success() {
             return Ok(());
         }
@@ -1770,7 +1812,7 @@ fn run_lifecycle_in_container(
                 .args(&user_args)
                 .args(["--workdir", workdir, container_id, "sh", "-c", s])
                 .spawn()
-                .map_err(|e| anyhow!("Failed to run docker: {e}"))?,
+                .map_err(|e| err!("Failed to run docker: {e}"))?,
         ],
         LifecycleCmd::Exec(args) => vec![
             std::process::Command::new("docker")
@@ -1779,7 +1821,7 @@ fn run_lifecycle_in_container(
                 .args(["--workdir", workdir, container_id])
                 .args(args)
                 .spawn()
-                .map_err(|e| anyhow!("Failed to run docker: {e}"))?,
+                .map_err(|e| err!("Failed to run docker: {e}"))?,
         ],
         LifecycleCmd::Parallel(cmds) => cmds
             .iter()
@@ -1797,8 +1839,7 @@ fn run_lifecycle_in_container(
                     }
                     LifecycleCmd::Parallel(_) => {}
                 }
-                proc.spawn()
-                    .map_err(|e| anyhow!("Failed to run docker: {e}"))
+                proc.spawn().map_err(|e| err!("Failed to run docker: {e}"))
             })
             .collect::<Result<_>>()?,
     };
@@ -1806,10 +1847,10 @@ fn run_lifecycle_in_container(
         for child in &mut children {
             if !child
                 .wait()
-                .map_err(|e| anyhow!("Failed to wait for {name}: {e}"))?
+                .map_err(|e| err!("Failed to wait for {name}: {e}"))?
                 .success()
             {
-                return Err(anyhow!("{name} failed"));
+                return Err(err!("{name} failed"));
             }
         }
     }
@@ -1829,10 +1870,10 @@ fn run_uid_docker_build(
     let uid_dir = std::env::temp_dir()
         .join(format!("cyyc-{username}"))
         .join("uid");
-    std::fs::create_dir_all(&uid_dir).map_err(|e| anyhow!("Failed to create uid temp dir: {e}"))?;
+    std::fs::create_dir_all(&uid_dir).map_err(|e| err!("Failed to create uid temp dir: {e}"))?;
     let dockerfile_path = uid_dir.join("updateUID.Dockerfile");
     std::fs::write(&dockerfile_path, crate::uid::UPDATE_UID_DOCKERFILE)
-        .map_err(|e| anyhow!("Failed to write updateUID.Dockerfile: {e}"))?;
+        .map_err(|e| err!("Failed to write updateUID.Dockerfile: {e}"))?;
     let mut child = std::process::Command::new("docker")
         .args([
             "build",
@@ -1855,10 +1896,10 @@ fn run_uid_docker_build(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
-    let status = tui::build_log(&mut child).map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+        .map_err(|e| err!("Failed to run docker: {e}"))?;
+    let status = tui::build_log(&mut child).map_err(|e| err!("Failed to run docker: {e}"))?;
     if !status.success() {
-        return Err(anyhow!("`docker build` for UID update failed"));
+        return Err(err!("`docker build` for UID update failed"));
     }
     Ok(())
 }
@@ -1868,13 +1909,15 @@ fn resolve_lifecycle_user(
     container_id: &str,
     cwd: &std::path::Path,
 ) -> Option<String> {
-    let workdir = config.workspace_folder(cwd);
+    let local_env = local_env_snapshot();
+    let workdir = config.workspace_folder(cwd, &local_env);
     if let Some(u) = config.common().remote_user.as_deref() {
         return Some(devcontainer::expand_variables(
             u,
             cwd,
             &workdir,
             &Default::default(),
+            &local_env,
         ));
     }
     std::process::Command::new("docker")
@@ -1907,9 +1950,9 @@ fn start_existing(target: &ContainerTarget, id: &str) -> Result<()> {
             let status = std::process::Command::new("docker")
                 .args(["start", id])
                 .status()
-                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                .map_err(|e| err!("Failed to run docker: {e}"))?;
             if !status.success() {
-                return Err(anyhow!("`docker start` failed"));
+                return Err(err!("`docker start` failed"));
             }
         }
         ContainerTarget::Compose(c) => {
@@ -1920,9 +1963,9 @@ fn start_existing(target: &ContainerTarget, id: &str) -> Result<()> {
                 .arg("compose")
                 .args(&start_args)
                 .status()
-                .map_err(|e| anyhow!("Failed to run docker: {e}"))?;
+                .map_err(|e| err!("Failed to run docker: {e}"))?;
             if !status.success() {
-                return Err(anyhow!("`docker compose start` failed"));
+                return Err(err!("`docker compose start` failed"));
             }
         }
     }

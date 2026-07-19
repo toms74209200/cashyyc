@@ -1,4 +1,5 @@
-use serde::Deserialize;
+use crate::devcontainer::jsonc;
+use crate::err;
 
 pub struct Template {
     pub id: String,
@@ -12,110 +13,76 @@ pub struct Feature {
     pub description: String,
 }
 
-#[derive(Deserialize)]
-struct TemplateEntry {
-    id: String,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    description: String,
-}
-
-#[derive(Deserialize)]
-struct FeatureEntry {
-    id: String,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    description: String,
-}
-
 pub fn parse_templates(json: &str) -> Vec<Template> {
-    let entries: Vec<serde_json::Value> = serde_json::from_str::<serde_json::Value>(json)
-        .ok()
-        .and_then(|v| v.get("templates")?.as_array().cloned())
-        .unwrap_or_default();
-    entries
+    parse_collection(json, "templates")
         .into_iter()
-        .filter_map(|v| serde_json::from_value::<TemplateEntry>(v).ok())
-        .map(|e| Template {
-            id: e.id,
-            name: e.name,
-            description: e.description,
+        .map(|(id, name, description)| Template {
+            id,
+            name,
+            description,
         })
         .collect()
 }
 
-fn strip_json_comments(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut in_string = false;
-    let mut escape = false;
-    let bytes = input.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if in_string {
-            out.push(bytes[i] as char);
-            if escape {
-                escape = false;
-            } else if bytes[i] == b'\\' {
-                escape = true;
-            } else if bytes[i] == b'"' {
-                in_string = false;
-            }
-            i += 1;
-        } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-        } else {
-            if bytes[i] == b'"' {
-                in_string = true;
-            }
-            out.push(bytes[i] as char);
-            i += 1;
-        }
-    }
-    out
+pub fn parse_features(json: &str) -> Vec<Feature> {
+    parse_collection(json, "features")
+        .into_iter()
+        .map(|(id, name, description)| Feature {
+            id,
+            name,
+            description,
+        })
+        .collect()
+}
+
+fn parse_collection(json: &str, key: &str) -> Vec<(String, String, String)> {
+    let Ok(value) = jsonc::parse(json) else {
+        return vec![];
+    };
+    let Some(entries) = value.get(key).and_then(|v| v.as_array()) else {
+        return vec![];
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.get("id")?.as_str()?.to_string();
+            let field = |name: &str| {
+                entry
+                    .get(name)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            Some((id, field("name"), field("description")))
+        })
+        .collect()
 }
 
 pub fn build_devcontainer_json(
     template_json: &str,
     feature_ids: &[String],
-) -> anyhow::Result<String> {
-    let stripped = strip_json_comments(template_json);
-    let mut value: serde_json::Value = serde_json::from_str(&stripped)?;
-    let obj = value
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("template devcontainer.json is not a JSON object"))?;
+) -> crate::error::Result<String> {
+    let value = jsonc::parse(template_json)?;
+    let mut members = match value {
+        jsonc::Value::Object(members) => members,
+        _ => {
+            return Err(err!("template devcontainer.json is not a JSON object"));
+        }
+    };
     if !feature_ids.is_empty() {
-        let features: serde_json::Map<String, serde_json::Value> = feature_ids
+        members.retain(|(key, _)| key != "features");
+        let features = feature_ids
             .iter()
             .map(|id| {
                 (
                     format!("ghcr.io/devcontainers/features/{id}:1"),
-                    serde_json::json!({}),
+                    jsonc::Value::Object(vec![]),
                 )
             })
             .collect();
-        obj.insert("features".to_string(), serde_json::Value::Object(features));
+        members.push(("features".to_string(), jsonc::Value::Object(features)));
     }
-    serde_json::to_string_pretty(&value).map_err(Into::into)
-}
-
-pub fn parse_features(json: &str) -> Vec<Feature> {
-    let entries: Vec<serde_json::Value> = serde_json::from_str::<serde_json::Value>(json)
-        .ok()
-        .and_then(|v| v.get("features")?.as_array().cloned())
-        .unwrap_or_default();
-    entries
-        .into_iter()
-        .filter_map(|v| serde_json::from_value::<FeatureEntry>(v).ok())
-        .map(|e| Feature {
-            id: e.id,
-            name: e.name,
-            description: e.description,
-        })
-        .collect()
+    Ok(jsonc::Value::Object(members).to_json_pretty())
 }
 
 #[cfg(test)]
@@ -166,14 +133,22 @@ mod tests {
     }
 
     #[test]
+    fn when_parse_templates_with_non_string_id_then_skips_it() {
+        let json = r#"{"templates":[{"id":1},{"id":"go"}]}"#;
+        let templates = parse_templates(json);
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].id, "go");
+    }
+
+    #[test]
     fn when_build_devcontainer_json_with_no_features_then_omits_features_key() {
         let template = r#"{"image":"mcr.microsoft.com/devcontainers/rust:1-trixie"}"#;
         let result = build_devcontainer_json(template, &[]).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let value = jsonc::parse(&result).unwrap();
         assert_eq!(value.get("features"), None);
         assert_eq!(
-            value["image"],
-            "mcr.microsoft.com/devcontainers/rust:1-trixie"
+            value.get("image").and_then(|v| v.as_str()),
+            Some("mcr.microsoft.com/devcontainers/rust:1-trixie")
         );
     }
 
@@ -181,10 +156,13 @@ mod tests {
     fn when_build_devcontainer_json_with_one_feature_then_adds_features_key() {
         let template = r#"{"image":"mcr.microsoft.com/devcontainers/rust:1-trixie"}"#;
         let result = build_devcontainer_json(template, &["git".to_string()]).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let value = jsonc::parse(&result).unwrap();
         assert_eq!(
-            value["features"]["ghcr.io/devcontainers/features/git:1"],
-            serde_json::json!({})
+            value
+                .get("features")
+                .and_then(|f| f.get("ghcr.io/devcontainers/features/git:1"))
+                .cloned(),
+            Some(jsonc::Value::Object(vec![]))
         );
     }
 
@@ -194,14 +172,34 @@ mod tests {
         let result =
             build_devcontainer_json(template, &["git".to_string(), "github-cli".to_string()])
                 .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let value = jsonc::parse(&result).unwrap();
+        let features = value.get("features").unwrap();
         assert_eq!(
-            value["features"]["ghcr.io/devcontainers/features/git:1"],
-            serde_json::json!({})
+            features
+                .get("ghcr.io/devcontainers/features/git:1")
+                .cloned(),
+            Some(jsonc::Value::Object(vec![]))
         );
         assert_eq!(
-            value["features"]["ghcr.io/devcontainers/features/github-cli:1"],
-            serde_json::json!({})
+            features
+                .get("ghcr.io/devcontainers/features/github-cli:1")
+                .cloned(),
+            Some(jsonc::Value::Object(vec![]))
+        );
+    }
+
+    #[test]
+    fn when_build_devcontainer_json_with_existing_features_then_replaces_key() {
+        let template = r#"{"image":"alpine","features":{"old":{}}}"#;
+        let result = build_devcontainer_json(template, &["git".to_string()]).unwrap();
+        let value = jsonc::parse(&result).unwrap();
+        let features = value.get("features").unwrap();
+        assert_eq!(features.get("old"), None);
+        assert_eq!(
+            features
+                .get("ghcr.io/devcontainers/features/git:1")
+                .cloned(),
+            Some(jsonc::Value::Object(vec![]))
         );
     }
 
@@ -219,14 +217,19 @@ mod tests {
     fn when_build_devcontainer_json_with_comments_then_strips_them() {
         let template = "// comment\n{\"image\":\"alpine\"}\n";
         let result = build_devcontainer_json(template, &[]).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(value["image"], "alpine");
+        let value = jsonc::parse(&result).unwrap();
+        assert_eq!(value.get("image").and_then(|v| v.as_str()), Some("alpine"));
     }
 
     #[test]
-    fn when_strip_json_comments_preserves_url_in_string() {
-        let input = r#"{"url":"https://example.com"}"#;
-        assert_eq!(strip_json_comments(input), input);
+    fn when_build_devcontainer_json_with_url_in_string_then_preserves_it() {
+        let template = r#"{"url":"https://example.com"}"#;
+        let result = build_devcontainer_json(template, &[]).unwrap();
+        let value = jsonc::parse(&result).unwrap();
+        assert_eq!(
+            value.get("url").and_then(|v| v.as_str()),
+            Some("https://example.com")
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@ use crate::devcontainer::{
     DockerfileConfig, ImageConfig, compose_args, container_run_options, expand_variables,
 };
 use crate::docker;
+use std::collections::HashMap;
 use std::path::Path;
 
 pub struct ContainerSetup {
@@ -22,14 +23,17 @@ pub fn from_config(
     cwd: &Path,
     config_path: &Path,
     config_dir: &Path,
+    local_env: &HashMap<String, String>,
 ) -> ContainerTarget {
     match config {
-        DevcontainerConfig::Image(c) => ContainerTarget::Single(from_image(c, cwd, config_path)),
+        DevcontainerConfig::Image(c) => {
+            ContainerTarget::Single(from_image(c, cwd, config_path, local_env))
+        }
         DevcontainerConfig::Dockerfile(c) => {
-            ContainerTarget::Single(from_dockerfile(c, cwd, config_path))
+            ContainerTarget::Single(from_dockerfile(c, cwd, config_path, local_env))
         }
         DevcontainerConfig::DockerfileBuild(c) => {
-            ContainerTarget::Single(from_dockerfile_build(c, cwd, config_path))
+            ContainerTarget::Single(from_dockerfile_build(c, cwd, config_path, local_env))
         }
         DevcontainerConfig::DockerCompose(c) => {
             ContainerTarget::Compose(compose_args(c, cwd, config_dir))
@@ -37,7 +41,12 @@ pub fn from_config(
     }
 }
 
-pub fn from_image(c: &ImageConfig, cwd: &Path, config_path: &Path) -> ContainerSetup {
+pub fn from_image(
+    c: &ImageConfig,
+    cwd: &Path,
+    config_path: &Path,
+    local_env: &HashMap<String, String>,
+) -> ContainerSetup {
     ContainerSetup {
         image_tag: c.image.clone(),
         dockerfile: None,
@@ -48,12 +57,18 @@ pub fn from_image(c: &ImageConfig, cwd: &Path, config_path: &Path) -> ContainerS
             c.workspace_mount.as_deref(),
             cwd,
             config_path,
+            local_env,
         ),
         override_command: c.common.override_command,
     }
 }
 
-pub fn from_dockerfile(c: &DockerfileConfig, cwd: &Path, config_path: &Path) -> ContainerSetup {
+pub fn from_dockerfile(
+    c: &DockerfileConfig,
+    cwd: &Path,
+    config_path: &Path,
+    local_env: &HashMap<String, String>,
+) -> ContainerSetup {
     let config_dir = config_path.parent().unwrap_or(cwd);
     ContainerSetup {
         image_tag: docker::image_tag(cwd),
@@ -65,6 +80,7 @@ pub fn from_dockerfile(c: &DockerfileConfig, cwd: &Path, config_path: &Path) -> 
             c.workspace_mount.as_deref(),
             cwd,
             config_path,
+            local_env,
         ),
         override_command: c.common.override_command,
     }
@@ -74,6 +90,7 @@ pub fn from_dockerfile_build(
     c: &DockerfileBuildConfig,
     cwd: &Path,
     config_path: &Path,
+    local_env: &HashMap<String, String>,
 ) -> ContainerSetup {
     let config_dir = config_path.parent().unwrap_or(cwd);
     let context = c
@@ -92,6 +109,7 @@ pub fn from_dockerfile_build(
             c.workspace_mount.as_deref(),
             cwd,
             config_path,
+            local_env,
         ),
         override_command: c.common.override_command,
     }
@@ -104,6 +122,7 @@ fn run_args_for(
     raw_workspace_mount: Option<&str>,
     cwd: &Path,
     config_path: &Path,
+    local_env: &HashMap<String, String>,
 ) -> Vec<String> {
     let default_workspace_folder = format!(
         "/workspaces/{}",
@@ -117,9 +136,10 @@ fn run_args_for(
         cwd,
         &default_workspace_folder,
         &Default::default(),
+        local_env,
     );
     let workspace_mount = raw_workspace_mount
-        .map(|m| expand_variables(m, cwd, &workspace_folder, &Default::default()));
+        .map(|m| expand_variables(m, cwd, &workspace_folder, &Default::default(), local_env));
     container_run_options(
         common,
         app_port,
@@ -127,6 +147,7 @@ fn run_args_for(
         workspace_mount.as_deref(),
         cwd,
         config_path,
+        local_env,
     )
 }
 
@@ -218,6 +239,7 @@ mod tests {
             &c,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         assert_eq!(setup.image_tag, "ubuntu:22.04");
     }
@@ -230,6 +252,7 @@ mod tests {
             &c,
             cwd,
             Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         assert_eq!(setup.image_tag, docker::image_tag(cwd));
     }
@@ -242,6 +265,7 @@ mod tests {
             &c,
             cwd,
             Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         assert_eq!(setup.image_tag, docker::image_tag(cwd));
     }
@@ -253,6 +277,7 @@ mod tests {
             &c,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         assert!(setup.dockerfile.is_none());
     }
@@ -265,6 +290,7 @@ mod tests {
             &c,
             Path::new("/home/user/myproject"),
             Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         assert_eq!(
             setup.dockerfile,
@@ -283,6 +309,7 @@ mod tests {
             &c,
             Path::new("/home/user/myproject"),
             Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         assert_eq!(
             setup.dockerfile,
@@ -299,6 +326,7 @@ mod tests {
             &c,
             Path::new("/home/user/myproject"),
             Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         assert_eq!(
             setup.dockerfile,
@@ -315,6 +343,7 @@ mod tests {
             &c,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         assert!(setup.run_args.contains(&"-d".to_string()));
     }
@@ -329,6 +358,7 @@ mod tests {
             &c,
             cwd,
             Path::new("/home/user/myproject/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         let mount_idx = setup.run_args.iter().position(|a| a == "--mount").unwrap();
         assert_eq!(
@@ -345,6 +375,7 @@ mod tests {
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
             Path::new("/project/.devcontainer"),
+            &HashMap::new(),
         );
         assert!(matches!(target, ContainerTarget::Single(_)));
     }
@@ -356,6 +387,7 @@ mod tests {
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
             Path::new("/project/.devcontainer"),
+            &HashMap::new(),
         );
         assert!(matches!(target, ContainerTarget::Single(_)));
     }
@@ -367,6 +399,7 @@ mod tests {
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
             Path::new("/project/.devcontainer"),
+            &HashMap::new(),
         );
         assert!(matches!(target, ContainerTarget::Single(_)));
     }
@@ -379,6 +412,7 @@ mod tests {
             &c,
             Path::new("/project"),
             Path::new("/project/.devcontainer/devcontainer.json"),
+            &HashMap::new(),
         );
         assert_eq!(setup.override_command, Some(false));
     }
