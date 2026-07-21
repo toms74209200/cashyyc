@@ -5,6 +5,7 @@ pub mod error;
 pub mod features;
 pub mod lifecycle;
 pub mod oci;
+pub mod registry;
 pub mod run;
 pub mod search;
 pub mod setup;

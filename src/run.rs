@@ -7,6 +7,7 @@ use crate::error::Result;
 use crate::features;
 use crate::lifecycle::LifecycleCmd;
 use crate::oci;
+use crate::registry::{CurlRegistry, Registry};
 use crate::setup;
 use crate::setup::ContainerTarget;
 use crate::tui;
@@ -62,12 +63,13 @@ fn local_env_snapshot() -> std::collections::HashMap<String, String> {
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let mut docker = DockerCli;
+    let mut reg = CurlRegistry;
     match cli::parse_args(&args) {
-        cli::Command::Shell { name } => shell(&mut docker, name),
+        cli::Command::Shell { name } => shell(&mut docker, &mut reg, name),
         cli::Command::Stop { name } => stop(&mut docker, name),
         cli::Command::Down { name } => down(&mut docker, name),
         cli::Command::Ps { name } => ps(&mut docker, name),
-        cli::Command::New => new(),
+        cli::Command::New => new(&mut reg),
         cli::Command::Help => {
             println!(
                 "Usage: cyyc <COMMAND>
@@ -94,7 +96,7 @@ Options:
     }
 }
 
-fn new() -> Result<()> {
+fn new(reg: &mut impl Registry) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let target_path = cwd.join(".devcontainer").join("devcontainer.json");
     if target_path.exists() {
@@ -108,17 +110,13 @@ fn new() -> Result<()> {
     std::fs::create_dir_all(&tmp_dir).map_err(|e| err!("failed to create temp dir: {e}"))?;
 
     let token = {
-        let output = std::process::Command::new("curl")
-            .args([
-                "-sf",
-                "https://ghcr.io/token?scope=repository:devcontainers/templates:pull&service=ghcr.io",
-            ])
-            .output()
-            .map_err(|e| err!("failed to run curl: {e}"))?;
-        if !output.status.success() {
+        let output = reg.fetch(
+            "https://ghcr.io/token?scope=repository:devcontainers/templates:pull&service=ghcr.io",
+        )?;
+        if !output.success {
             return Err(err!("failed to fetch OCI token for templates"));
         }
-        let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.stdout))
+        let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.body))
             .map_err(|e| err!("failed to parse OCI token response: {e}"))?;
         json.get("token")
             .and_then(|v| v.as_str())
@@ -126,21 +124,14 @@ fn new() -> Result<()> {
             .ok_or_else(|| err!("OCI token response missing 'token' field"))?
     };
 
-    let manifest_output = std::process::Command::new("curl")
-        .args([
-            "-sf",
-            "-H",
-            &format!("Authorization: Bearer {token}"),
-            "-H",
-            "Accept: application/vnd.oci.image.manifest.v1+json",
-            "https://ghcr.io/v2/devcontainers/templates/manifests/latest",
-        ])
-        .output()
-        .map_err(|e| err!("failed to run curl: {e}"))?;
-    if !manifest_output.status.success() {
+    let manifest_output = reg.fetch_manifest(
+        "https://ghcr.io/v2/devcontainers/templates/manifests/latest",
+        &token,
+    )?;
+    if !manifest_output.success {
         return Err(err!("failed to fetch template collection manifest"));
     }
-    let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&manifest_output.stdout))
+    let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&manifest_output.body))
         .map_err(|e| err!("failed to parse template collection manifest: {e}"))?;
     let digest = manifest
         .get("layers")
@@ -150,20 +141,15 @@ fn new() -> Result<()> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| err!("template collection manifest missing layers[0].digest"))?;
 
-    let collection_output = std::process::Command::new("curl")
-        .args([
-            "-sfL",
-            "-H",
-            &format!("Authorization: Bearer {token}"),
-            &format!("https://ghcr.io/v2/devcontainers/templates/blobs/{digest}"),
-        ])
-        .output()
-        .map_err(|e| err!("failed to run curl: {e}"))?;
-    if !collection_output.status.success() {
+    let collection_output = reg.fetch_blob(
+        &format!("https://ghcr.io/v2/devcontainers/templates/blobs/{digest}"),
+        &token,
+    )?;
+    if !collection_output.success {
         return Err(err!("failed to download template collection blob"));
     }
 
-    let collection_json = String::from_utf8(collection_output.stdout)
+    let collection_json = String::from_utf8(collection_output.body)
         .map_err(|e| err!("template collection is not valid UTF-8: {e}"))?;
     let templates = oci::parse_templates(&collection_json);
     if templates.is_empty() {
@@ -180,20 +166,16 @@ fn new() -> Result<()> {
             "repository:devcontainers/templates/{}:pull",
             selected_template.id
         );
-        let output = std::process::Command::new("curl")
-            .args([
-                "-sf",
-                &format!("https://ghcr.io/token?scope={scope}&service=ghcr.io"),
-            ])
-            .output()
-            .map_err(|e| err!("failed to run curl: {e}"))?;
-        if !output.status.success() {
+        let output = reg.fetch(&format!(
+            "https://ghcr.io/token?scope={scope}&service=ghcr.io"
+        ))?;
+        if !output.success {
             return Err(err!(
                 "failed to fetch OCI token for template {}",
                 selected_template.id
             ));
         }
-        let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.stdout))
+        let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.body))
             .map_err(|e| err!("failed to parse OCI token response: {e}"))?;
         json.get("token")
             .and_then(|v| v.as_str())
@@ -201,27 +183,20 @@ fn new() -> Result<()> {
             .ok_or_else(|| err!("OCI token response missing 'token' field"))?
     };
 
-    let manifest_output = std::process::Command::new("curl")
-        .args([
-            "-sf",
-            "-H",
-            &format!("Authorization: Bearer {template_token}"),
-            "-H",
-            "Accept: application/vnd.oci.image.manifest.v1+json",
-            &format!(
-                "https://ghcr.io/v2/devcontainers/templates/{}/manifests/latest",
-                selected_template.id
-            ),
-        ])
-        .output()
-        .map_err(|e| err!("failed to run curl: {e}"))?;
-    if !manifest_output.status.success() {
+    let manifest_output = reg.fetch_manifest(
+        &format!(
+            "https://ghcr.io/v2/devcontainers/templates/{}/manifests/latest",
+            selected_template.id
+        ),
+        &template_token,
+    )?;
+    if !manifest_output.success {
         return Err(err!(
             "failed to fetch manifest for template {}",
             selected_template.id
         ));
     }
-    let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&manifest_output.stdout))
+    let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&manifest_output.body))
         .map_err(|e| err!("failed to parse template manifest: {e}"))?;
     let digest = manifest
         .get("layers")
@@ -232,36 +207,24 @@ fn new() -> Result<()> {
         .ok_or_else(|| err!("template manifest missing layers[0].digest"))?;
 
     let template_tar = tmp_dir.join("template.tar");
-    let status = std::process::Command::new("curl")
-        .args([
-            "-sfL",
-            "-H",
-            &format!("Authorization: Bearer {template_token}"),
-            "-o",
-            &template_tar.display().to_string(),
-            &format!(
-                "https://ghcr.io/v2/devcontainers/templates/{}/blobs/{digest}",
-                selected_template.id
-            ),
-        ])
-        .status()
-        .map_err(|e| err!("failed to run curl: {e}"))?;
-    if !status.success() {
+    let downloaded = reg.download_blob(
+        &format!(
+            "https://ghcr.io/v2/devcontainers/templates/{}/blobs/{digest}",
+            selected_template.id
+        ),
+        &template_token,
+        &template_tar.display().to_string(),
+    )?;
+    if !downloaded {
         return Err(err!("failed to download template {}", selected_template.id));
     }
 
     let template_dir = tmp_dir.join("template");
     std::fs::create_dir_all(&template_dir).map_err(|e| err!("failed to create temp dir: {e}"))?;
-    let status = std::process::Command::new("tar")
-        .args([
-            "xf",
-            &template_tar.display().to_string(),
-            "-C",
-            &template_dir.display().to_string(),
-        ])
-        .status()
-        .map_err(|e| err!("failed to run tar: {e}"))?;
-    if !status.success() {
+    if !reg.unpack_tar(
+        &template_tar.display().to_string(),
+        &template_dir.display().to_string(),
+    )? {
         return Err(err!("failed to extract template"));
     }
 
@@ -270,17 +233,13 @@ fn new() -> Result<()> {
             .map_err(|e| err!("devcontainer.json not found in template: {e}"))?;
 
     let feature_token = {
-        let output = std::process::Command::new("curl")
-            .args([
-                "-sf",
-                "https://ghcr.io/token?scope=repository:devcontainers/features:pull&service=ghcr.io",
-            ])
-            .output()
-            .map_err(|e| err!("failed to run curl: {e}"))?;
-        if !output.status.success() {
+        let output = reg.fetch(
+            "https://ghcr.io/token?scope=repository:devcontainers/features:pull&service=ghcr.io",
+        )?;
+        if !output.success {
             return Err(err!("failed to fetch OCI token for features"));
         }
-        let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.stdout))
+        let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.body))
             .map_err(|e| err!("failed to parse OCI token response: {e}"))?;
         json.get("token")
             .and_then(|v| v.as_str())
@@ -288,21 +247,14 @@ fn new() -> Result<()> {
             .ok_or_else(|| err!("OCI token response missing 'token' field"))?
     };
 
-    let manifest_output = std::process::Command::new("curl")
-        .args([
-            "-sf",
-            "-H",
-            &format!("Authorization: Bearer {feature_token}"),
-            "-H",
-            "Accept: application/vnd.oci.image.manifest.v1+json",
-            "https://ghcr.io/v2/devcontainers/features/manifests/latest",
-        ])
-        .output()
-        .map_err(|e| err!("failed to run curl: {e}"))?;
-    if !manifest_output.status.success() {
+    let manifest_output = reg.fetch_manifest(
+        "https://ghcr.io/v2/devcontainers/features/manifests/latest",
+        &feature_token,
+    )?;
+    if !manifest_output.success {
         return Err(err!("failed to fetch feature collection manifest"));
     }
-    let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&manifest_output.stdout))
+    let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&manifest_output.body))
         .map_err(|e| err!("failed to parse feature collection manifest: {e}"))?;
     let digest = manifest
         .get("layers")
@@ -312,20 +264,15 @@ fn new() -> Result<()> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| err!("feature collection manifest missing layers[0].digest"))?;
 
-    let feature_collection_output = std::process::Command::new("curl")
-        .args([
-            "-sfL",
-            "-H",
-            &format!("Authorization: Bearer {feature_token}"),
-            &format!("https://ghcr.io/v2/devcontainers/features/blobs/{digest}"),
-        ])
-        .output()
-        .map_err(|e| err!("failed to run curl: {e}"))?;
-    if !feature_collection_output.status.success() {
+    let feature_collection_output = reg.fetch_blob(
+        &format!("https://ghcr.io/v2/devcontainers/features/blobs/{digest}"),
+        &feature_token,
+    )?;
+    if !feature_collection_output.success {
         return Err(err!("failed to download feature collection blob"));
     }
 
-    let feature_json = String::from_utf8(feature_collection_output.stdout)
+    let feature_json = String::from_utf8(feature_collection_output.body)
         .map_err(|e| err!("feature collection is not valid UTF-8: {e}"))?;
     let features = oci::parse_features(&feature_json);
 
@@ -348,7 +295,7 @@ fn new() -> Result<()> {
     Ok(())
 }
 
-fn shell(docker: &mut impl Docker, name: Option<String>) -> Result<()> {
+fn shell(docker: &mut impl Docker, reg: &mut impl Registry, name: Option<String>) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let local_env = local_env_snapshot();
     let (config_path, config) = open_config(&cwd, name.as_deref())?;
@@ -419,6 +366,7 @@ fn shell(docker: &mut impl Docker, name: Option<String>) -> Result<()> {
     let features_plan: Option<(features::InstallPlan, std::path::PathBuf)> =
         if !features_map.is_empty() {
             Some(download_features(
+                reg,
                 features_map,
                 &config.common().override_feature_install_order,
                 config_dir,
@@ -1260,6 +1208,7 @@ fn exec_in_container(
 }
 
 fn download_features(
+    reg: &mut impl Registry,
     features_map: &std::collections::HashMap<String, devcontainer::jsonc::Value>,
     override_order: &[String],
     devcontainer_dir: &std::path::Path,
@@ -1306,23 +1255,13 @@ fn download_features(
             }
             features::FeatureSource::Tarball(url) => {
                 let tarball = feature_dir.join("feature.tgz");
-                let status = std::process::Command::new("curl")
-                    .args(["-sfL", url, "-o", &tarball.display().to_string()])
-                    .status()
-                    .map_err(|e| err!("failed to run curl: {e}"))?;
-                if !status.success() {
+                if !reg.download(url, &tarball.display().to_string())? {
                     return Err(err!("failed to download feature from {url}"));
                 }
-                let status = std::process::Command::new("tar")
-                    .args([
-                        "xf",
-                        &tarball.display().to_string(),
-                        "-C",
-                        &feature_dir.display().to_string(),
-                    ])
-                    .status()
-                    .map_err(|e| err!("failed to run tar: {e}"))?;
-                if !status.success() {
+                if !reg.unpack_tar(
+                    &tarball.display().to_string(),
+                    &feature_dir.display().to_string(),
+                )? {
                     return Err(err!("failed to extract {}", tarball.display()));
                 }
             }
@@ -1336,14 +1275,11 @@ fn download_features(
                     let url = format!(
                         "https://{registry}/token?scope=repository:{path}:pull&service={registry}"
                     );
-                    let output = std::process::Command::new("curl")
-                        .args(["-sf", &url])
-                        .output()
-                        .map_err(|e| err!("failed to run curl: {e}"))?;
-                    if !output.status.success() {
+                    let output = reg.fetch(&url)?;
+                    if !output.success {
                         return Err(err!("failed to fetch OCI token for {registry}/{path}"));
                     }
-                    let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.stdout))
+                    let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.body))
                         .map_err(|e| err!("failed to parse OCI token response: {e}"))?;
                     json.get("token")
                         .and_then(|v| v.as_str())
@@ -1351,23 +1287,13 @@ fn download_features(
                         .ok_or_else(|| err!("OCI token response missing 'token' field"))?
                 };
                 let manifest_url = format!("https://{registry}/v2/{path}/manifests/{version}");
-                let output = std::process::Command::new("curl")
-                    .args([
-                        "-sf",
-                        "-H",
-                        &format!("Authorization: Bearer {token}"),
-                        "-H",
-                        "Accept: application/vnd.oci.image.manifest.v1+json",
-                        &manifest_url,
-                    ])
-                    .output()
-                    .map_err(|e| err!("failed to run curl: {e}"))?;
-                if !output.status.success() {
+                let output = reg.fetch_manifest(&manifest_url, &token)?;
+                if !output.success {
                     return Err(err!(
                         "failed to fetch OCI manifest for {registry}/{path}:{version}"
                     ));
                 }
-                let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.stdout))
+                let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.body))
                     .map_err(|e| err!("failed to parse OCI manifest: {e}"))?;
                 let digest = manifest
                     .get("layers")
@@ -1377,30 +1303,13 @@ fn download_features(
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| err!("OCI manifest missing layers[0].digest"))?;
                 let blob_url = format!("https://{registry}/v2/{path}/blobs/{digest}");
-                let status = std::process::Command::new("curl")
-                    .args([
-                        "-sfL",
-                        "-H",
-                        &format!("Authorization: Bearer {token}"),
-                        "-o",
-                        &tarball.display().to_string(),
-                        &blob_url,
-                    ])
-                    .status()
-                    .map_err(|e| err!("failed to run curl: {e}"))?;
-                if !status.success() {
+                if !reg.download_blob(&blob_url, &token, &tarball.display().to_string())? {
                     return Err(err!("failed to download OCI blob for {registry}/{path}"));
                 }
-                let status = std::process::Command::new("tar")
-                    .args([
-                        "xf",
-                        &tarball.display().to_string(),
-                        "-C",
-                        &feature_dir.display().to_string(),
-                    ])
-                    .status()
-                    .map_err(|e| err!("failed to run tar: {e}"))?;
-                if !status.success() {
+                if !reg.unpack_tar(
+                    &tarball.display().to_string(),
+                    &feature_dir.display().to_string(),
+                )? {
                     return Err(err!("failed to extract {}", tarball.display()));
                 }
             }
