@@ -3,6 +3,7 @@ pub mod devcontainer;
 pub mod docker;
 pub mod error;
 pub mod features;
+pub mod host_exec;
 pub mod lifecycle;
 pub mod oci;
 pub mod registry;

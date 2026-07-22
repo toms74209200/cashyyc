@@ -5,6 +5,7 @@ use crate::docker::{Docker, DockerCli};
 use crate::err;
 use crate::error::Result;
 use crate::features;
+use crate::host_exec::{Host, HostCmd, ProcessHost};
 use crate::lifecycle::LifecycleCmd;
 use crate::oci;
 use crate::registry::{CurlRegistry, Registry};
@@ -64,8 +65,9 @@ fn local_env_snapshot() -> std::collections::HashMap<String, String> {
 pub fn run(args: Vec<String>) -> Result<()> {
     let mut docker = DockerCli;
     let mut reg = CurlRegistry;
+    let mut host = ProcessHost;
     match cli::parse_args(&args) {
-        cli::Command::Shell { name } => shell(&mut docker, &mut reg, name),
+        cli::Command::Shell { name } => shell(&mut docker, &mut reg, &mut host, name),
         cli::Command::Stop { name } => stop(&mut docker, name),
         cli::Command::Down { name } => down(&mut docker, name),
         cli::Command::Ps { name } => ps(&mut docker, name),
@@ -295,7 +297,12 @@ fn new(reg: &mut impl Registry) -> Result<()> {
     Ok(())
 }
 
-fn shell(docker: &mut impl Docker, reg: &mut impl Registry, name: Option<String>) -> Result<()> {
+fn shell(
+    docker: &mut impl Docker,
+    reg: &mut impl Registry,
+    host: &mut impl Host,
+    name: Option<String>,
+) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let local_env = local_env_snapshot();
     let (config_path, config) = open_config(&cwd, name.as_deref())?;
@@ -367,6 +374,7 @@ fn shell(docker: &mut impl Docker, reg: &mut impl Registry, name: Option<String>
         if !features_map.is_empty() {
             Some(download_features(
                 reg,
+                host,
                 features_map,
                 &config.common().override_feature_install_order,
                 config_dir,
@@ -458,42 +466,20 @@ fn shell(docker: &mut impl Docker, reg: &mut impl Registry, name: Option<String>
     {
         let workdir = config.workspace_folder(&cwd, &local_env);
         let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-        let mut children: Vec<std::process::Child> = match &cmd {
-            LifecycleCmd::Shell(s) => vec![
-                std::process::Command::new("sh")
-                    .args(["-c", s])
-                    .spawn()
-                    .map_err(|e| err!("Failed to run initializeCommand: {e}"))?,
-            ],
-            LifecycleCmd::Exec(args) => vec![
-                std::process::Command::new(&args[0])
-                    .args(&args[1..])
-                    .spawn()
-                    .map_err(|e| err!("Failed to run initializeCommand: {e}"))?,
-            ],
+        let cmds: Vec<HostCmd> = match &cmd {
+            LifecycleCmd::Shell(s) => vec![HostCmd::Shell(s.clone())],
+            LifecycleCmd::Exec(args) => vec![HostCmd::Exec(args.clone())],
             LifecycleCmd::Parallel(cmds) => cmds
                 .iter()
                 .map(|c| match c {
-                    LifecycleCmd::Shell(s) => std::process::Command::new("sh")
-                        .args(["-c", s])
-                        .spawn()
-                        .map_err(|e| err!("Failed to run initializeCommand: {e}")),
-                    LifecycleCmd::Exec(args) => std::process::Command::new(&args[0])
-                        .args(&args[1..])
-                        .spawn()
-                        .map_err(|e| err!("Failed to run initializeCommand: {e}")),
+                    LifecycleCmd::Shell(s) => HostCmd::Shell(s.clone()),
+                    LifecycleCmd::Exec(args) => HostCmd::Exec(args.clone()),
                     LifecycleCmd::Parallel(_) => unreachable!(),
                 })
-                .collect::<Result<_>>()?,
+                .collect(),
         };
-        for child in &mut children {
-            if !child
-                .wait()
-                .map_err(|e| err!("Failed to wait for initializeCommand: {e}"))?
-                .success()
-            {
-                return Err(err!("initializeCommand failed"));
-            }
+        if !host.run_group(&cmds, "initializeCommand")? {
+            return Err(err!("initializeCommand failed"));
         }
     }
 
@@ -1209,6 +1195,7 @@ fn exec_in_container(
 
 fn download_features(
     reg: &mut impl Registry,
+    host: &mut impl Host,
     features_map: &std::collections::HashMap<String, devcontainer::jsonc::Value>,
     override_order: &[String],
     devcontainer_dir: &std::path::Path,
@@ -1241,15 +1228,10 @@ fn download_features(
             .map_err(|e| err!("failed to create feature dir: {e}"))?;
         match &source {
             features::FeatureSource::Local(path) => {
-                let status = std::process::Command::new("cp")
-                    .args([
-                        "-r",
-                        &format!("{}/.", path.display()),
-                        &feature_dir.display().to_string(),
-                    ])
-                    .status()
-                    .map_err(|e| err!("failed to copy local feature: {e}"))?;
-                if !status.success() {
+                if !host.copy_dir(
+                    &format!("{}/.", path.display()),
+                    &feature_dir.display().to_string(),
+                )? {
                     return Err(err!("failed to copy local feature from {}", path.display()));
                 }
             }
