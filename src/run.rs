@@ -11,7 +11,7 @@ use crate::oci;
 use crate::registry::{CurlRegistry, Registry};
 use crate::setup;
 use crate::setup::ContainerTarget;
-use crate::tui;
+use crate::tui::{Terminal, TuiTerminal};
 use crate::uid::{UidContext, UidUpdate};
 
 fn expand_lifecycle_cmd(
@@ -66,12 +66,13 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut docker = DockerCli;
     let mut reg = CurlRegistry;
     let mut host = ProcessHost;
+    let mut term = TuiTerminal;
     match cli::parse_args(&args) {
         cli::Command::Shell { name } => shell(&mut docker, &mut reg, &mut host, name),
         cli::Command::Stop { name } => stop(&mut docker, name),
         cli::Command::Down { name } => down(&mut docker, name),
         cli::Command::Ps { name } => ps(&mut docker, name),
-        cli::Command::New => new(&mut reg),
+        cli::Command::New => new(&mut reg, &mut term),
         cli::Command::Help => {
             println!(
                 "Usage: cyyc <COMMAND>
@@ -98,7 +99,7 @@ Options:
     }
 }
 
-fn new(reg: &mut impl Registry) -> Result<()> {
+fn new(reg: &mut impl Registry, term: &mut impl Terminal) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let target_path = cwd.join(".devcontainer").join("devcontainer.json");
     if target_path.exists() {
@@ -159,8 +160,9 @@ fn new(reg: &mut impl Registry) -> Result<()> {
     }
 
     let template_names: Vec<String> = templates.iter().map(|t| t.id.clone()).collect();
-    let selected_idx =
-        tui::select("Template", &template_names)?.ok_or_else(|| err!("cancelled"))?;
+    let selected_idx = term
+        .select("Template", &template_names)?
+        .ok_or_else(|| err!("cancelled"))?;
     let selected_template = &templates[selected_idx];
 
     let template_token = {
@@ -282,7 +284,7 @@ fn new(reg: &mut impl Registry) -> Result<()> {
         vec![]
     } else {
         let feature_names: Vec<String> = features.iter().map(|f| f.id.clone()).collect();
-        match tui::multi_select("Features", &feature_names)? {
+        match term.multi_select("Features", &feature_names)? {
             Some(indices) => indices.iter().map(|&i| features[i].id.clone()).collect(),
             None => return Err(err!("cancelled")),
         }

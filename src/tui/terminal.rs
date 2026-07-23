@@ -217,6 +217,18 @@ pub fn build_log(child: &mut std::process::Child) -> Result<std::process::ExitSt
     Ok(exit_status)
 }
 
+pub struct TuiTerminal;
+
+impl super::Terminal for TuiTerminal {
+    fn select(&mut self, label: &str, items: &[String]) -> Result<Option<usize>> {
+        select(label, items)
+    }
+
+    fn multi_select(&mut self, label: &str, items: &[String]) -> Result<Option<Vec<usize>>> {
+        multi_select(label, items)
+    }
+}
+
 pub fn select(label: &str, items: &[String]) -> Result<Option<usize>> {
     use super::view::{SelectResult, SelectView, next_key};
 
