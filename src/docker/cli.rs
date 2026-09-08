@@ -96,6 +96,23 @@ impl Docker for DockerCli {
         self.output(&with_subcommand(&["run"], run_args))
     }
 
+    fn copy_from_image(&mut self, image: &str, src: &str, dest: &str) -> Result<CmdOutput> {
+        let created =
+            self.output(&["create", "--entrypoint", "sh", image, "-c", "true"].map(String::from))?;
+        if !created.success {
+            return Ok(created);
+        }
+        let Some(id) = super::parse_container_id(&created.stdout) else {
+            return Ok(CmdOutput {
+                success: false,
+                ..created
+            });
+        };
+        let copied = self.output(&["cp".to_string(), format!("{id}:{src}"), dest.to_string()]);
+        let _ = self.output(&["rm".to_string(), "-f".to_string(), id]);
+        copied
+    }
+
     fn exec_interactive(&mut self, exec_args: &[String]) -> Result<bool> {
         self.status(&with_subcommand(&["exec"], exec_args))
     }

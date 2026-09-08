@@ -544,7 +544,7 @@ fn shell(
                     .map_err(|e| err!("Failed to get process metadata: {e}"))?;
                 let host_uid = meta.uid();
                 let host_gid = meta.gid();
-                match UidUpdate::resolve(
+                let update = UidUpdate::resolve(
                     UidContext::Single {
                         base_image: &s.image_tag,
                         image_user: &image_user,
@@ -555,7 +555,12 @@ fn shell(
                     host_uid,
                     host_gid,
                     &cwd,
-                ) {
+                )
+                .filter(|update| {
+                    image_user_ids(docker, &s.image_tag, update.remote_user())
+                        != Some((host_uid, host_gid))
+                });
+                match update {
                     Some(update) => {
                         if let UidUpdate::Single {
                             uid_tag,
@@ -708,6 +713,11 @@ fn shell(
                             host_gid,
                             &cwd,
                         )?;
+                        if image_user_ids(docker, &image, update.remote_user())
+                            == Some((host_uid, host_gid))
+                        {
+                            return None;
+                        }
                         if let UidUpdate::Compose {
                             uid_tag,
                             remote_user,
@@ -1584,6 +1594,25 @@ fn run_lifecycle_in_container(
         d.exec_group(&argvs, false, name)?;
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn image_user_ids(d: &mut impl Docker, image: &str, user: &str) -> Option<(u32, u32)> {
+    let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+    let uid_dir = std::env::temp_dir()
+        .join(format!("cyyc-{username}"))
+        .join("uid");
+    std::fs::create_dir_all(&uid_dir).ok()?;
+    let passwd_path = uid_dir.join(format!("passwd-{}", std::process::id()));
+    let copied = d
+        .copy_from_image(image, "/etc/passwd", &passwd_path.display().to_string())
+        .is_ok_and(|o| o.success);
+    if !copied {
+        return None;
+    }
+    let passwd = std::fs::read_to_string(&passwd_path).ok();
+    let _ = std::fs::remove_file(&passwd_path);
+    crate::uid::passwd_uid_gid(&passwd?, user)
 }
 
 #[cfg(target_os = "linux")]

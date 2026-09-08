@@ -155,6 +155,27 @@ impl UidUpdate {
             UidUpdate::Single { uid_tag, .. } | UidUpdate::Compose { uid_tag, .. } => uid_tag,
         }
     }
+
+    pub fn remote_user(&self) -> &str {
+        match self {
+            UidUpdate::Single { remote_user, .. } | UidUpdate::Compose { remote_user, .. } => {
+                remote_user
+            }
+        }
+    }
+}
+
+pub fn passwd_uid_gid(passwd: &str, user: &str) -> Option<(u32, u32)> {
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        if fields.next()? != user {
+            return None;
+        }
+        let mut fields = fields.skip(1);
+        let uid = fields.next()?.parse().ok()?;
+        let gid = fields.next()?.parse().ok()?;
+        Some((uid, gid))
+    })
 }
 
 #[derive(Debug, PartialEq)]
@@ -640,5 +661,54 @@ mod tests {
             panic!("expected Single variant");
         };
         assert_eq!(image_user, "root");
+    }
+
+    // passwd_uid_gid tests
+
+    const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\n\
+        daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n\
+        node:x:1000:1000::/home/node:/bin/bash\n";
+
+    #[test]
+    fn when_passwd_has_user_then_returns_uid_and_gid() {
+        assert_eq!(passwd_uid_gid(PASSWD, "node"), Some((1000, 1000)));
+    }
+
+    #[test]
+    fn when_passwd_has_root_then_returns_zero() {
+        assert_eq!(passwd_uid_gid(PASSWD, "root"), Some((0, 0)));
+    }
+
+    #[test]
+    fn when_passwd_lacks_user_then_returns_none() {
+        assert_eq!(passwd_uid_gid(PASSWD, "vscode"), None);
+    }
+
+    #[test]
+    fn when_passwd_user_is_a_prefix_of_another_then_returns_none() {
+        assert_eq!(passwd_uid_gid(PASSWD, "nod"), None);
+    }
+
+    #[test]
+    fn when_passwd_uid_is_not_numeric_then_returns_none() {
+        let passwd = "node:x:abc:1000::/home/node:/bin/bash\n";
+        assert_eq!(passwd_uid_gid(passwd, "node"), None);
+    }
+
+    #[test]
+    fn when_passwd_line_has_no_gid_then_returns_none() {
+        let passwd = "node:x:1000\n";
+        assert_eq!(passwd_uid_gid(passwd, "node"), None);
+    }
+
+    #[test]
+    fn when_passwd_has_no_trailing_newline_then_still_returns_uid_and_gid() {
+        let passwd = "node:x:1001:1002::/home/node:/bin/bash";
+        assert_eq!(passwd_uid_gid(passwd, "node"), Some((1001, 1002)));
+    }
+
+    #[test]
+    fn when_passwd_is_empty_then_returns_none() {
+        assert_eq!(passwd_uid_gid("", "node"), None);
     }
 }
