@@ -236,6 +236,24 @@ fn new(reg: &mut impl Registry, term: &mut impl Terminal) -> Result<()> {
         std::fs::read_to_string(template_dir.join(".devcontainer/devcontainer.json"))
             .map_err(|e| err!("devcontainer.json not found in template: {e}"))?;
 
+    let template_metadata =
+        std::fs::read_to_string(template_dir.join("devcontainer-template.json"))
+            .unwrap_or_default();
+    let mut option_values: Vec<(String, String)> = Vec::new();
+    for option in oci::parse_template_options(&template_metadata) {
+        let (id, value) = match option {
+            oci::TemplateOption::Fixed { id, value } => (id, value),
+            oci::TemplateOption::Choice { id, choices } => {
+                let selected = term
+                    .select(&id, &choices)?
+                    .ok_or_else(|| err!("cancelled"))?;
+                let value = choices[selected].clone();
+                (id, value)
+            }
+        };
+        option_values.push((id, value));
+    }
+
     let feature_token = {
         let output = reg.fetch(
             "https://ghcr.io/token?scope=repository:devcontainers/features:pull&service=ghcr.io",
@@ -290,7 +308,7 @@ fn new(reg: &mut impl Registry, term: &mut impl Terminal) -> Result<()> {
         }
     };
 
-    let output = oci::build_devcontainer_json(&template_json, &feature_ids)?;
+    let output = oci::build_devcontainer_json(&template_json, &option_values, &feature_ids)?;
     std::fs::create_dir_all(target_path.parent().unwrap())
         .map_err(|e| err!("failed to create .devcontainer directory: {e}"))?;
     std::fs::write(&target_path, &output)
