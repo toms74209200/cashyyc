@@ -18,6 +18,7 @@ pub trait Docker {
     fn pull_streamed(&mut self, image: &str) -> Result<bool, Error>;
     fn build_streamed(&mut self, build_args: &[String]) -> Result<bool, Error>;
     fn run_container(&mut self, run_args: &[String]) -> Result<CmdOutput, Error>;
+    fn copy_from_image(&mut self, image: &str, src: &str, dest: &str) -> Result<CmdOutput, Error>;
     fn exec_interactive(&mut self, exec_args: &[String]) -> Result<bool, Error>;
     fn exec_capture(&mut self, exec_args: &[String]) -> Result<CmdOutput, Error>;
     fn exec_group(&mut self, argvs: &[Vec<String>], wait: bool, label: &str)
