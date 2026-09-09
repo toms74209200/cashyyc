@@ -20,20 +20,6 @@ impl Value {
         }
     }
 
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            Value::Bool(b) => Some(*b),
-            _ => None,
-        }
-    }
-
-    pub fn as_f64(&self) -> Option<f64> {
-        match self {
-            Value::Number(n) => Some(*n),
-            _ => None,
-        }
-    }
-
     pub fn as_u64(&self) -> Option<u64> {
         match self {
             Value::Number(n)
@@ -523,25 +509,55 @@ mod tests {
     #[test]
     fn when_parse_with_escaped_characters_then_unescapes() {
         assert_eq!(
-            parse(r#""a\n\t\"\\\/b""#),
-            Ok(Value::String("a\n\t\"\\/b".to_string()))
+            parse(r#""a\n\t\r\b\f\"\\\/b""#),
+            Ok(Value::String("a\n\t\r\u{0008}\u{000C}\"\\/b".to_string()))
         );
     }
 
     #[test]
     fn when_parse_with_unicode_escape_then_decodes_code_point() {
-        assert_eq!(parse(r#""é""#), Ok(Value::String("\u{00e9}".to_string())));
+        assert_eq!(
+            parse(r#""\u00e9""#),
+            Ok(Value::String("\u{00e9}".to_string()))
+        );
     }
 
     #[test]
     fn when_parse_with_surrogate_pair_then_decodes_supplementary_character() {
-        assert_eq!(parse(r#""😀""#), Ok(Value::String("\u{1F600}".to_string())));
+        assert_eq!(
+            parse(r#""\ud83d\ude00""#),
+            Ok(Value::String("\u{1F600}".to_string()))
+        );
     }
 
     #[test]
     fn when_parse_with_lone_high_surrogate_then_returns_error() {
         assert!(matches!(
             parse(r#""\ud83dx""#),
+            Err(JsoncError::InvalidEscape(_))
+        ));
+    }
+
+    #[test]
+    fn when_parse_with_high_surrogate_not_followed_by_low_surrogate_then_returns_error() {
+        assert!(matches!(
+            parse(r#""\ud83d\u0041""#),
+            Err(JsoncError::InvalidEscape(_))
+        ));
+    }
+
+    #[test]
+    fn when_parse_with_lone_low_surrogate_then_returns_error() {
+        assert!(matches!(
+            parse(r#""\udc00""#),
+            Err(JsoncError::InvalidEscape(_))
+        ));
+    }
+
+    #[test]
+    fn when_parse_with_unknown_escape_then_returns_error() {
+        assert!(matches!(
+            parse(r#""\x""#),
             Err(JsoncError::InvalidEscape(_))
         ));
     }
@@ -685,6 +701,44 @@ mod tests {
     }
 
     #[test]
+    fn when_parse_with_unterminated_array_after_comma_then_returns_error() {
+        assert_eq!(parse("[1,"), Err(JsoncError::UnexpectedEof));
+    }
+
+    #[test]
+    fn when_parse_with_unterminated_array_after_item_then_returns_error() {
+        assert_eq!(parse("[1"), Err(JsoncError::UnexpectedEof));
+    }
+
+    #[test]
+    fn when_parse_with_missing_comma_in_array_then_returns_error() {
+        assert!(matches!(parse("[1 2]"), Err(JsoncError::UnexpectedChar(_))));
+    }
+
+    #[test]
+    fn when_parse_with_unterminated_object_then_returns_error() {
+        assert_eq!(parse("{"), Err(JsoncError::UnexpectedEof));
+    }
+
+    #[test]
+    fn when_parse_with_unterminated_object_after_key_then_returns_error() {
+        assert_eq!(parse(r#"{"a""#), Err(JsoncError::UnexpectedEof));
+    }
+
+    #[test]
+    fn when_parse_with_unterminated_object_after_member_then_returns_error() {
+        assert_eq!(parse(r#"{"a": 1"#), Err(JsoncError::UnexpectedEof));
+    }
+
+    #[test]
+    fn when_parse_with_missing_comma_in_object_then_returns_error() {
+        assert!(matches!(
+            parse(r#"{"a": 1 "b": 2}"#),
+            Err(JsoncError::UnexpectedChar(_))
+        ));
+    }
+
+    #[test]
     fn when_parse_with_excessive_nesting_then_returns_depth_error() {
         let deep = "[".repeat(200) + &"]".repeat(200);
         assert_eq!(parse(&deep), Err(JsoncError::DepthLimitExceeded));
@@ -705,6 +759,16 @@ mod tests {
     fn when_get_with_missing_key_then_returns_none() {
         let value = parse(r#"{"a": 1}"#).unwrap();
         assert_eq!(value.get("b"), None);
+    }
+
+    #[test]
+    fn when_as_u64_with_fractional_number_then_returns_none() {
+        assert_eq!(Value::Number(1.5).as_u64(), None);
+    }
+
+    #[test]
+    fn when_as_object_with_array_then_returns_none() {
+        assert_eq!(Value::Array(vec![Value::Number(1.0)]).as_object(), None);
     }
 
     #[test]
@@ -749,17 +813,36 @@ mod tests {
     #[test]
     fn when_to_json_pretty_with_special_characters_then_escapes_them() {
         assert_eq!(
-            Value::String("a\"b\\c\nd".to_string()).to_json_pretty(),
-            r#""a\"b\\c\nd""#
+            Value::String("a\"b\\c\nd\re\tf\u{0008}g\u{000C}h".to_string()).to_json_pretty(),
+            r#""a\"b\\c\nd\re\tf\bg\fh""#
         );
     }
 
     #[test]
     fn when_to_json_pretty_then_roundtrips_through_parse() {
         let name = random_name();
-        let input = format!(r#"{{"key": "{}", "list": [true, null, 1.5]}}"#, name);
+        let input = format!(r#"{{"key": "{}", "list": [true, false, null, 1.5]}}"#, name);
         let value = parse(&input).unwrap();
         assert_eq!(parse(&value.to_json_pretty()), Ok(value));
+    }
+
+    #[test]
+    fn when_display_with_nested_structure_then_returns_compact_json() {
+        let value = parse(r#"{"a": [1, "x", false], "b": {"c": null}, "d": []}"#).unwrap();
+        assert_eq!(
+            value.to_string(),
+            r#"{"a":[1,"x",false],"b":{"c":null},"d":[]}"#
+        );
+    }
+
+    #[test]
+    fn when_display_with_number_then_returns_bare_number() {
+        assert_eq!(Value::Number(20.0).to_string(), "20");
+    }
+
+    #[test]
+    fn when_display_with_bool_then_returns_bare_bool() {
+        assert_eq!(Value::Bool(true).to_string(), "true");
     }
 
     #[test]
