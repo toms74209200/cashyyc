@@ -85,6 +85,7 @@ def then_listing_shows_named_status(run_result, name, status):
 @then(parsers.parse('the "{service}" service is not listed'))
 def then_service_not_listed(run_result, service):
     output = run_result["stdout"]
-    assert service not in output, (
-        f"expected {service!r} not to appear in output:\n{output!r}"
+    names = [line.split("\t")[0] for line in output.splitlines() if line.strip()]
+    assert service not in names, (
+        f"expected {service!r} not to be listed in output:\n{output!r}"
     )
