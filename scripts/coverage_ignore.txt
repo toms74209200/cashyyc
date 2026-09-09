@@ -1,2 +1,5 @@
 run
 tui/terminal
+docker/cli
+host_exec/process
+registry/curl
