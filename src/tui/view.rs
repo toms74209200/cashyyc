@@ -511,6 +511,13 @@ mod tests {
     }
 
     #[test]
+    fn when_on_lines_with_unsupported_escape_then_returns_stripped_line() {
+        let view = BuildLogView::new(80);
+        let (_view, frame) = view.on_lines(vec!["a\x1bMb".to_string()]);
+        assert!(frame.live.iter().any(|l| l == "ab"));
+    }
+
+    #[test]
     fn when_on_lines_with_no_escapes_then_preserves_text() {
         let view = BuildLogView::new(80);
         let (_view, frame) = view.on_lines(vec!["plain text".to_string()]);
@@ -726,267 +733,434 @@ mod tests {
     }
 
     #[test]
-    fn when_select_ctrl_c_then_done_none() {
-        let it = items(&["go", "rust"]);
-        let (view, _) = SelectView::new("Template", &it);
-        let SelectResult::Done(result, _) = view.on_key(Key::CtrlC) else {
-            panic!()
+    fn when_select_on_key_with_ctrl_c_then_returns_no_selection() {
+        let names = items(&["go", "rust"]);
+        let view = SelectView {
+            label: "Template",
+            items: &names,
+            query: String::new(),
+            cursor: 0,
+            scroll: 0,
         };
-        assert!(result.is_none());
+        assert!(matches!(
+            view.on_key(Key::CtrlC),
+            SelectResult::Done(None, _)
+        ));
     }
 
     #[test]
-    fn when_select_enter_then_done_with_first_index() {
-        let it = items(&["go", "rust"]);
-        let (view, _) = SelectView::new("Template", &it);
-        let SelectResult::Done(result, _) = view.on_key(Key::Enter) else {
-            panic!()
+    fn when_select_on_key_with_ctrl_c_then_returns_erase_sequence() {
+        let names = items(&["go", "rust"]);
+        let view = SelectView {
+            label: "Template",
+            items: &names,
+            query: String::new(),
+            cursor: 0,
+            scroll: 0,
         };
-        assert_eq!(result, Some(0));
+        assert!(matches!(
+            view.on_key(Key::CtrlC),
+            SelectResult::Done(_, erase) if !erase.is_empty()
+        ));
     }
 
     #[test]
-    fn when_select_down_enter_then_selects_second() {
-        let it = items(&["go", "rust"]);
-        let (view, _) = SelectView::new("Template", &it);
-        let SelectResult::Continue(view, _) = view.on_key(Key::Down) else {
-            panic!()
+    fn when_select_on_key_with_enter_then_returns_cursor_index() {
+        let names = items(&["go", "rust"]);
+        let view = SelectView {
+            label: "Template",
+            items: &names,
+            query: String::new(),
+            cursor: 1,
+            scroll: 0,
         };
-        let SelectResult::Done(result, _) = view.on_key(Key::Enter) else {
-            panic!()
-        };
-        assert_eq!(result, Some(1));
+        assert!(matches!(
+            view.on_key(Key::Enter),
+            SelectResult::Done(Some(1), _)
+        ));
     }
 
     #[test]
-    fn when_select_up_at_top_then_stays() {
-        let it = items(&["go", "rust"]);
-        let (view, _) = SelectView::new("Template", &it);
-        let SelectResult::Continue(view, _) = view.on_key(Key::Up) else {
-            panic!()
+    fn when_select_on_key_with_enter_on_filtered_list_then_returns_original_index() {
+        let names = items(&["go", "rust", "go-postgres"]);
+        let view = SelectView {
+            label: "Template",
+            items: &names,
+            query: "r".to_string(),
+            cursor: 0,
+            scroll: 0,
         };
-        let SelectResult::Done(result, _) = view.on_key(Key::Enter) else {
-            panic!()
-        };
-        assert_eq!(result, Some(0));
+        assert!(matches!(
+            view.on_key(Key::Enter),
+            SelectResult::Done(Some(1), _)
+        ));
     }
 
     #[test]
-    fn when_select_down_at_bottom_then_stays() {
-        let it = items(&["go", "rust"]);
-        let (view, _) = SelectView::new("Template", &it);
-        let SelectResult::Continue(view, _) = view.on_key(Key::Down) else {
-            panic!()
+    fn when_select_on_key_with_enter_on_empty_filtered_list_then_returns_no_selection() {
+        let names = items(&["go", "rust"]);
+        let view = SelectView {
+            label: "Template",
+            items: &names,
+            query: "zz".to_string(),
+            cursor: 0,
+            scroll: 0,
         };
-        let SelectResult::Continue(view, _) = view.on_key(Key::Down) else {
-            panic!()
-        };
-        let SelectResult::Done(result, _) = view.on_key(Key::Enter) else {
-            panic!()
-        };
-        assert_eq!(result, Some(1));
+        assert!(matches!(
+            view.on_key(Key::Enter),
+            SelectResult::Done(None, _)
+        ));
     }
 
     #[test]
-    fn when_select_char_then_filters_and_enter_selects_original_index() {
-        let it = items(&["go", "rust", "go-postgres"]);
-        let (view, _) = SelectView::new("Template", &it);
-        let SelectResult::Continue(view, frame) = view.on_key(Key::Char('r')) else {
-            panic!()
+    fn when_select_on_key_with_down_then_returns_frame_highlighting_next_item() {
+        let names = items(&["go", "rust"]);
+        let view = SelectView {
+            label: "Template",
+            items: &names,
+            query: String::new(),
+            cursor: 0,
+            scroll: 0,
         };
-        assert!(frame.contains("rust"));
-        let SelectResult::Done(result, _) = view.on_key(Key::Enter) else {
-            panic!()
-        };
-        assert_eq!(result, Some(1));
+        assert!(matches!(
+            view.on_key(Key::Down),
+            SelectResult::Continue(_, frame)
+                if frame.contains(&format!("{INVERT}> rust{RESET}"))
+        ));
     }
 
     #[test]
-    fn when_select_backspace_then_unfilters() {
-        let it = items(&["go", "rust"]);
-        let (view, _) = SelectView::new("Template", &it);
-        let SelectResult::Continue(view, _) = view.on_key(Key::Char('z')) else {
-            panic!()
+    fn when_select_on_key_with_down_at_last_item_then_returns_frame_highlighting_last_item() {
+        let names = items(&["go", "rust"]);
+        let view = SelectView {
+            label: "Template",
+            items: &names,
+            query: String::new(),
+            cursor: 1,
+            scroll: 0,
         };
-        let SelectResult::Continue(_, frame) = view.on_key(Key::Backspace) else {
-            panic!()
-        };
-        assert!(frame.contains("go"));
-        assert!(frame.contains("rust"));
+        assert!(matches!(
+            view.on_key(Key::Down),
+            SelectResult::Continue(_, frame)
+                if frame.contains(&format!("{INVERT}> rust{RESET}"))
+        ));
     }
 
     #[test]
-    fn when_select_case_insensitive_filter() {
-        let it = items(&["Go", "RUST"]);
-        let (view, _) = SelectView::new("Template", &it);
-        let SelectResult::Continue(_, frame) = view.on_key(Key::Char('g')) else {
-            panic!()
+    fn when_select_on_key_with_up_at_first_item_then_returns_frame_highlighting_first_item() {
+        let names = items(&["go", "rust"]);
+        let view = SelectView {
+            label: "Template",
+            items: &names,
+            query: String::new(),
+            cursor: 0,
+            scroll: 0,
         };
-        assert!(frame.contains("Go"));
+        assert!(matches!(
+            view.on_key(Key::Up),
+            SelectResult::Continue(_, frame)
+                if frame.contains(&format!("{INVERT}> go{RESET}"))
+        ));
     }
 
     #[test]
-    fn when_select_enter_on_empty_filtered_then_done_none() {
-        let it = items(&["go", "rust"]);
-        let (view, _) = SelectView::new("Template", &it);
-        let SelectResult::Continue(view, _) = view.on_key(Key::Char('z')) else {
-            panic!()
+    fn when_select_on_key_with_char_then_returns_filtered_frame() {
+        let names = items(&["go", "rust"]);
+        let view = SelectView {
+            label: "Template",
+            items: &names,
+            query: String::new(),
+            cursor: 0,
+            scroll: 0,
         };
-        let SelectResult::Continue(view, _) = view.on_key(Key::Char('z')) else {
-            panic!()
-        };
-        let SelectResult::Done(result, _) = view.on_key(Key::Enter) else {
-            panic!()
-        };
-        assert!(result.is_none());
+        assert!(matches!(
+            view.on_key(Key::Char('r')),
+            SelectResult::Continue(_, frame) if frame.contains("rust") && !frame.contains("go")
+        ));
     }
 
     #[test]
-    fn when_select_scroll_past_viewport_then_frame_shows_scrolled_item() {
-        let it: Vec<String> = (0..20).map(|i| format!("item-{i}")).collect();
-        let (mut view, _) = SelectView::new("Template", &it);
-        for _ in 0..12 {
-            let SelectResult::Continue(v, _) = view.on_key(Key::Down) else {
-                panic!()
-            };
-            view = v;
-        }
-        let SelectResult::Continue(_, frame) = view.on_key(Key::Down) else {
-            panic!()
+    fn when_select_on_key_with_char_in_other_case_then_returns_filtered_frame() {
+        let names = items(&["Go", "RUST"]);
+        let view = SelectView {
+            label: "Template",
+            items: &names,
+            query: String::new(),
+            cursor: 0,
+            scroll: 0,
         };
-        assert!(frame.contains("item-13"));
+        assert!(matches!(
+            view.on_key(Key::Char('g')),
+            SelectResult::Continue(_, frame) if frame.contains("Go")
+        ));
     }
 
     #[test]
-    fn when_select_done_then_returns_erase_string() {
-        let it = items(&["go"]);
-        let (view, _) = SelectView::new("Template", &it);
-        let SelectResult::Done(_, erase) = view.on_key(Key::CtrlC) else {
-            panic!()
+    fn when_select_on_key_with_backspace_then_returns_unfiltered_frame() {
+        let names = items(&["go", "rust"]);
+        let view = SelectView {
+            label: "Template",
+            items: &names,
+            query: "z".to_string(),
+            cursor: 0,
+            scroll: 0,
         };
-        assert!(!erase.is_empty());
+        assert!(matches!(
+            view.on_key(Key::Backspace),
+            SelectResult::Continue(_, frame) if frame.contains("go") && frame.contains("rust")
+        ));
     }
 
     #[test]
-    fn when_multi_select_ctrl_c_then_done_none() {
-        let it = items(&["git", "go"]);
-        let (view, _) = MultiSelectView::new("Features", &it);
-        let MultiSelectResult::Done(result, _) = view.on_key(Key::CtrlC) else {
-            panic!()
+    fn when_select_on_key_with_down_at_window_bottom_then_returns_scrolled_frame() {
+        let names: Vec<String> = (0..20).map(|i| format!("item-{i}")).collect();
+        let view = SelectView {
+            label: "Template",
+            items: &names,
+            query: String::new(),
+            cursor: VIEWPORT - 1,
+            scroll: 0,
         };
-        assert!(result.is_none());
+        assert!(matches!(
+            view.on_key(Key::Down),
+            SelectResult::Continue(_, frame)
+                if frame.contains(&format!("{INVERT}> item-10{RESET}"))
+        ));
     }
 
     #[test]
-    fn when_multi_select_enter_with_no_selection_then_done_empty() {
-        let it = items(&["git", "go"]);
-        let (view, _) = MultiSelectView::new("Features", &it);
-        let MultiSelectResult::Done(result, _) = view.on_key(Key::Enter) else {
-            panic!()
+    fn when_select_on_key_with_up_at_window_top_then_returns_scrolled_back_frame() {
+        let names: Vec<String> = (0..20).map(|i| format!("item-{i}")).collect();
+        let view = SelectView {
+            label: "Template",
+            items: &names,
+            query: String::new(),
+            cursor: 4,
+            scroll: 4,
         };
-        assert_eq!(result, Some(vec![]));
+        assert!(matches!(
+            view.on_key(Key::Up),
+            SelectResult::Continue(_, frame)
+                if frame.contains(&format!("{INVERT}> item-3{RESET}"))
+        ));
     }
 
     #[test]
-    fn when_multi_select_space_enter_then_returns_toggled() {
-        let it = items(&["git", "go"]);
-        let (view, _) = MultiSelectView::new("Features", &it);
-        let MultiSelectResult::Continue(view, _) = view.on_key(Key::Space) else {
-            panic!()
-        };
-        let MultiSelectResult::Done(result, _) = view.on_key(Key::Enter) else {
-            panic!()
-        };
-        assert_eq!(result, Some(vec![0]));
-    }
-
-    #[test]
-    fn when_multi_select_space_toggles_off() {
-        let it = items(&["git", "go"]);
-        let (view, _) = MultiSelectView::new("Features", &it);
-        let MultiSelectResult::Continue(view, _) = view.on_key(Key::Space) else {
-            panic!()
-        };
-        let MultiSelectResult::Continue(view, _) = view.on_key(Key::Space) else {
-            panic!()
-        };
-        let MultiSelectResult::Done(result, _) = view.on_key(Key::Enter) else {
-            panic!()
-        };
-        assert_eq!(result, Some(vec![]));
-    }
-
-    #[test]
-    fn when_multi_select_frame_shows_checkboxes() {
-        let it = items(&["git", "go"]);
-        let (view, frame) = MultiSelectView::new("Features", &it);
+    fn when_multi_select_new_with_items_then_returns_frame_with_unchecked_boxes() {
+        let names = items(&["git", "go"]);
+        let (_, frame) = MultiSelectView::new("Features", &names);
         assert!(frame.contains("[ ] git"));
-        let MultiSelectResult::Continue(_, frame) = view.on_key(Key::Space) else {
-            panic!()
-        };
-        assert!(frame.contains("[x] git"));
     }
 
     #[test]
-    fn when_multi_select_down_space_then_toggles_second() {
-        let it = items(&["git", "go"]);
-        let (view, _) = MultiSelectView::new("Features", &it);
-        let MultiSelectResult::Continue(view, _) = view.on_key(Key::Down) else {
-            panic!()
+    fn when_multi_select_on_key_with_ctrl_c_then_returns_no_selection() {
+        let names = items(&["git", "go"]);
+        let view = MultiSelectView {
+            label: "Features",
+            items: &names,
+            query: String::new(),
+            cursor: 0,
+            scroll: 0,
+            selected: vec![false; names.len()],
         };
-        let MultiSelectResult::Continue(view, _) = view.on_key(Key::Space) else {
-            panic!()
-        };
-        let MultiSelectResult::Done(result, _) = view.on_key(Key::Enter) else {
-            panic!()
-        };
-        assert_eq!(result, Some(vec![1]));
+        assert!(matches!(
+            view.on_key(Key::CtrlC),
+            MultiSelectResult::Done(None, _)
+        ));
     }
 
     #[test]
-    fn when_multi_select_char_filters() {
-        let it = items(&["git", "go", "rust"]);
-        let (view, _) = MultiSelectView::new("Features", &it);
-        let MultiSelectResult::Continue(_, frame) = view.on_key(Key::Char('g')) else {
-            panic!()
+    fn when_multi_select_on_key_with_enter_and_no_selection_then_returns_empty_selection() {
+        let names = items(&["git", "go"]);
+        let view = MultiSelectView {
+            label: "Features",
+            items: &names,
+            query: String::new(),
+            cursor: 0,
+            scroll: 0,
+            selected: vec![false; names.len()],
         };
-        assert!(frame.contains("git"));
-        assert!(frame.contains("go"));
+        assert!(matches!(
+            view.on_key(Key::Enter),
+            MultiSelectResult::Done(Some(selected), _) if selected.is_empty()
+        ));
     }
 
     #[test]
-    fn when_multi_select_up_down_space_navigation() {
-        let it = items(&["git", "go", "rust"]);
-        let (view, _) = MultiSelectView::new("Features", &it);
-        let MultiSelectResult::Continue(view, _) = view.on_key(Key::Down) else {
-            panic!()
+    fn when_multi_select_on_key_with_enter_and_selected_items_then_returns_selected_indices() {
+        let names = items(&["git", "go", "rust"]);
+        let view = MultiSelectView {
+            label: "Features",
+            items: &names,
+            query: String::new(),
+            cursor: 0,
+            scroll: 0,
+            selected: vec![false, true, false],
         };
-        let MultiSelectResult::Continue(view, _) = view.on_key(Key::Down) else {
-            panic!()
-        };
-        let MultiSelectResult::Continue(view, _) = view.on_key(Key::Up) else {
-            panic!()
-        };
-        let MultiSelectResult::Continue(view, _) = view.on_key(Key::Space) else {
-            panic!()
-        };
-        let MultiSelectResult::Done(result, _) = view.on_key(Key::Enter) else {
-            panic!()
-        };
-        assert_eq!(result, Some(vec![1]));
+        assert!(matches!(
+            view.on_key(Key::Enter),
+            MultiSelectResult::Done(Some(selected), _) if selected == [1]
+        ));
     }
 
     #[test]
-    fn when_multi_select_backspace_then_unfilters() {
-        let it = items(&["git", "rust"]);
-        let (view, _) = MultiSelectView::new("Features", &it);
-        let MultiSelectResult::Continue(view, _) = view.on_key(Key::Char('z')) else {
-            panic!()
+    fn when_multi_select_on_key_with_space_then_returns_frame_marking_item_checked() {
+        let names = items(&["git", "go"]);
+        let view = MultiSelectView {
+            label: "Features",
+            items: &names,
+            query: String::new(),
+            cursor: 0,
+            scroll: 0,
+            selected: vec![false; names.len()],
         };
-        let MultiSelectResult::Continue(_, frame) = view.on_key(Key::Backspace) else {
-            panic!()
+        assert!(matches!(
+            view.on_key(Key::Space),
+            MultiSelectResult::Continue(_, frame) if frame.contains("[x] git")
+        ));
+    }
+
+    #[test]
+    fn when_multi_select_on_key_with_space_on_checked_item_then_returns_frame_marking_item_unchecked()
+     {
+        let names = items(&["git", "go"]);
+        let view = MultiSelectView {
+            label: "Features",
+            items: &names,
+            query: String::new(),
+            cursor: 0,
+            scroll: 0,
+            selected: vec![true, false],
         };
-        assert!(frame.contains("git"));
-        assert!(frame.contains("rust"));
+        assert!(matches!(
+            view.on_key(Key::Space),
+            MultiSelectResult::Continue(_, frame) if frame.contains("[ ] git")
+        ));
+    }
+
+    #[test]
+    fn when_multi_select_on_key_with_space_at_second_item_then_returns_frame_marking_second_item_checked()
+     {
+        let names = items(&["git", "go"]);
+        let view = MultiSelectView {
+            label: "Features",
+            items: &names,
+            query: String::new(),
+            cursor: 1,
+            scroll: 0,
+            selected: vec![false; names.len()],
+        };
+        assert!(matches!(
+            view.on_key(Key::Space),
+            MultiSelectResult::Continue(_, frame) if frame.contains("[x] go")
+        ));
+    }
+
+    #[test]
+    fn when_multi_select_on_key_with_down_then_returns_frame_highlighting_next_item() {
+        let names = items(&["git", "go", "rust"]);
+        let view = MultiSelectView {
+            label: "Features",
+            items: &names,
+            query: String::new(),
+            cursor: 0,
+            scroll: 0,
+            selected: vec![false; names.len()],
+        };
+        assert!(matches!(
+            view.on_key(Key::Down),
+            MultiSelectResult::Continue(_, frame)
+                if frame.contains(&format!("{INVERT}> [ ] go{RESET}"))
+        ));
+    }
+
+    #[test]
+    fn when_multi_select_on_key_with_up_then_returns_frame_highlighting_previous_item() {
+        let names = items(&["git", "go", "rust"]);
+        let view = MultiSelectView {
+            label: "Features",
+            items: &names,
+            query: String::new(),
+            cursor: 2,
+            scroll: 0,
+            selected: vec![false; names.len()],
+        };
+        assert!(matches!(
+            view.on_key(Key::Up),
+            MultiSelectResult::Continue(_, frame)
+                if frame.contains(&format!("{INVERT}> [ ] go{RESET}"))
+        ));
+    }
+
+    #[test]
+    fn when_multi_select_on_key_with_char_then_returns_filtered_frame() {
+        let names = items(&["git", "go", "rust"]);
+        let view = MultiSelectView {
+            label: "Features",
+            items: &names,
+            query: String::new(),
+            cursor: 0,
+            scroll: 0,
+            selected: vec![false; names.len()],
+        };
+        assert!(matches!(
+            view.on_key(Key::Char('g')),
+            MultiSelectResult::Continue(_, frame)
+                if frame.contains("git") && frame.contains("go") && !frame.contains("rust")
+        ));
+    }
+
+    #[test]
+    fn when_multi_select_on_key_with_backspace_then_returns_unfiltered_frame() {
+        let names = items(&["git", "rust"]);
+        let view = MultiSelectView {
+            label: "Features",
+            items: &names,
+            query: "z".to_string(),
+            cursor: 0,
+            scroll: 0,
+            selected: vec![false; names.len()],
+        };
+        assert!(matches!(
+            view.on_key(Key::Backspace),
+            MultiSelectResult::Continue(_, frame)
+                if frame.contains("git") && frame.contains("rust")
+        ));
+    }
+
+    #[test]
+    fn when_multi_select_on_key_with_down_at_window_bottom_then_returns_scrolled_frame() {
+        let names: Vec<String> = (0..20).map(|i| format!("item-{i}")).collect();
+        let view = MultiSelectView {
+            label: "Features",
+            items: &names,
+            query: String::new(),
+            cursor: VIEWPORT - 1,
+            scroll: 0,
+            selected: vec![false; names.len()],
+        };
+        assert!(matches!(
+            view.on_key(Key::Down),
+            MultiSelectResult::Continue(_, frame)
+                if frame.contains(&format!("{INVERT}> [ ] item-10{RESET}"))
+        ));
+    }
+
+    #[test]
+    fn when_multi_select_on_key_with_up_at_window_top_then_returns_scrolled_back_frame() {
+        let names: Vec<String> = (0..20).map(|i| format!("item-{i}")).collect();
+        let view = MultiSelectView {
+            label: "Features",
+            items: &names,
+            query: String::new(),
+            cursor: 4,
+            scroll: 4,
+            selected: vec![false; names.len()],
+        };
+        assert!(matches!(
+            view.on_key(Key::Up),
+            MultiSelectResult::Continue(_, frame)
+                if frame.contains(&format!("{INVERT}> [ ] item-3{RESET}"))
+        ));
     }
 }
