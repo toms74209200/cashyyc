@@ -224,6 +224,7 @@ fn new(reg: &mut impl Registry, term: &mut impl Terminal) -> Result<()> {
     }
 
     let template_dir = tmp_dir.join("template");
+    let _ = std::fs::remove_dir_all(&template_dir);
     std::fs::create_dir_all(&template_dir).map_err(|e| err!("failed to create temp dir: {e}"))?;
     if !reg.unpack_tar(
         &template_tar.display().to_string(),
@@ -232,26 +233,52 @@ fn new(reg: &mut impl Registry, term: &mut impl Terminal) -> Result<()> {
         return Err(err!("failed to extract template"));
     }
 
-    let template_json =
-        std::fs::read_to_string(template_dir.join(".devcontainer/devcontainer.json"))
-            .map_err(|e| err!("devcontainer.json not found in template: {e}"))?;
+    let mut entries = vec![];
+    let mut pending = vec![template_dir.clone()];
+    while let Some(dir) = pending.pop() {
+        let read =
+            std::fs::read_dir(&dir).map_err(|e| err!("failed to read {}: {e}", dir.display()))?;
+        for path in read.flatten().map(|e| e.path()) {
+            if path.is_dir() {
+                pending.push(path);
+            } else if let Ok(relative) = path.strip_prefix(&template_dir) {
+                let content = std::fs::read(&path)
+                    .map_err(|e| err!("failed to read {}: {e}", path.display()))?;
+                entries.push((relative.display().to_string(), content));
+            }
+        }
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let template = oci::ExtractedTemplate::parse(entries)?;
 
-    let template_metadata =
-        std::fs::read_to_string(template_dir.join("devcontainer-template.json"))
-            .unwrap_or_default();
-    let mut option_values: Vec<(String, String)> = Vec::new();
-    for option in oci::parse_template_options(&template_metadata) {
+    let included = if template.optional_labels.is_empty() {
+        vec![]
+    } else {
+        term.multi_select("Optional files", &template.optional_labels)?
+            .ok_or_else(|| err!("cancelled"))?
+    };
+
+    let selected = template.select(&included);
+    let taken: Vec<&str> = selected
+        .paths
+        .iter()
+        .map(String::as_str)
+        .filter(|path| cwd.join(path).exists())
+        .collect();
+    if !taken.is_empty() {
+        return Err(err!("{} already exists", taken.join(", ")));
+    }
+
+    let mut option_values = vec![];
+    for option in &template.options {
         let (id, value) = match option {
-            oci::TemplateOption::Fixed { id, value } => (id, value),
+            oci::TemplateOption::Fixed { id, value } => (id.clone(), value.clone()),
             oci::TemplateOption::Choice { id, choices } => {
-                let selected = term
-                    .select(&id, &choices)?
-                    .ok_or_else(|| err!("cancelled"))?;
-                let value = choices[selected].clone();
-                (id, value)
+                let selected = term.select(id, choices)?.ok_or_else(|| err!("cancelled"))?;
+                (id.clone(), choices[selected].clone())
             }
         };
-        option_values.push((id, value));
+        option_values.push(oci::OptionValue { id, value });
     }
 
     let feature_token = {
@@ -293,26 +320,39 @@ fn new(reg: &mut impl Registry, term: &mut impl Terminal) -> Result<()> {
     if !feature_collection_output.success {
         return Err(err!("failed to download feature collection blob"));
     }
-
     let feature_json = String::from_utf8(feature_collection_output.body)
         .map_err(|e| err!("feature collection is not valid UTF-8: {e}"))?;
-    let features = oci::parse_features(&feature_json);
-
-    let feature_ids: Vec<String> = if features.is_empty() {
+    let catalog: Vec<String> = oci::parse_features(&feature_json)
+        .into_iter()
+        .map(|feature| feature.id)
+        .collect();
+    let feature_ids: Vec<String> = if catalog.is_empty() {
         vec![]
     } else {
-        let feature_names: Vec<String> = features.iter().map(|f| f.id.clone()).collect();
-        match term.multi_select("Features", &feature_names)? {
-            Some(indices) => indices.iter().map(|&i| features[i].id.clone()).collect(),
-            None => return Err(err!("cancelled")),
-        }
+        term.multi_select("Features", &catalog)?
+            .ok_or_else(|| err!("cancelled"))?
+            .iter()
+            .map(|&i| catalog[i].clone())
+            .collect()
     };
 
-    let output = oci::build_devcontainer_json(&template_json, &option_values, &feature_ids)?;
-    std::fs::create_dir_all(target_path.parent().unwrap())
-        .map_err(|e| err!("failed to create .devcontainer directory: {e}"))?;
-    std::fs::write(&target_path, &output)
-        .map_err(|e| err!("failed to write {}: {e}", target_path.display()))?;
+    let files = selected.render(&option_values, &feature_ids)?;
+
+    for file in &files {
+        let destination = cwd.join(&file.path);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| err!("failed to create {}: {e}", parent.display()))?;
+        }
+        std::fs::write(&destination, &file.content)
+            .map_err(|e| err!("failed to write {}: {e}", destination.display()))?;
+        let source = template_dir.join(&file.path);
+        let mode = std::fs::metadata(&source)
+            .map_err(|e| err!("failed to read {}: {e}", source.display()))?
+            .permissions();
+        std::fs::set_permissions(&destination, mode)
+            .map_err(|e| err!("failed to set mode on {}: {e}", destination.display()))?;
+    }
 
     Ok(())
 }

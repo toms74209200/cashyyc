@@ -1,5 +1,6 @@
 use crate::devcontainer::jsonc;
 use crate::err;
+use crate::error::Result;
 
 pub struct Template {
     pub id: String,
@@ -63,7 +64,7 @@ fn parse_collection(json: &str, key: &str) -> Vec<(String, String, String)> {
         .collect()
 }
 
-pub fn parse_template_options(json: &str) -> Vec<TemplateOption> {
+fn parse_template_options(json: &str) -> Vec<TemplateOption> {
     let scalar = |value: &jsonc::Value| -> Option<String> {
         match value {
             jsonc::Value::String(s) => Some(s.clone()),
@@ -111,16 +112,160 @@ pub fn parse_template_options(json: &str) -> Vec<TemplateOption> {
         .collect()
 }
 
-pub fn build_devcontainer_json(
+const ALWAYS_OMITTED: [&str; 3] = ["devcontainer-template.json", "README.md", "NOTES.md"];
+const DEVCONTAINER_JSON: &str = ".devcontainer/devcontainer.json";
+const TEMPLATE_JSON: &str = "devcontainer-template.json";
+
+#[derive(Clone, Debug, PartialEq)]
+enum OptionalPath {
+    File(String),
+    Directory(String),
+}
+
+pub struct OptionValue {
+    pub id: String,
+    pub value: String,
+}
+
+pub struct TemplateFile {
+    pub path: String,
+    pub content: Vec<u8>,
+}
+
+pub struct ExtractedTemplate {
+    entries: Vec<(String, Vec<u8>)>,
+    devcontainer_json: String,
+    optional_paths: Vec<OptionalPath>,
+    pub optional_labels: Vec<String>,
+    pub options: Vec<TemplateOption>,
+}
+
+pub struct SelectedTemplate<'a> {
+    template: &'a ExtractedTemplate,
+    pub paths: Vec<String>,
+}
+
+impl ExtractedTemplate {
+    pub fn parse(entries: Vec<(String, Vec<u8>)>) -> Result<Self> {
+        let content = |name: &str| {
+            entries
+                .iter()
+                .find(|(path, _)| path == name)
+                .map(|(_, content)| String::from_utf8_lossy(content).into_owned())
+        };
+        let devcontainer_json = content(DEVCONTAINER_JSON)
+            .ok_or_else(|| err!("devcontainer.json not found in template"))?;
+        let metadata = content(TEMPLATE_JSON).unwrap_or_default();
+        let optional_paths: Vec<OptionalPath> = jsonc::parse(&metadata)
+            .ok()
+            .as_ref()
+            .and_then(|manifest| manifest.get("optionalPaths"))
+            .and_then(|paths| paths.as_array())
+            .map(|paths| {
+                paths
+                    .iter()
+                    .filter_map(|path| path.as_str())
+                    .map(|raw| match raw.strip_suffix('*') {
+                        Some(prefix) if prefix.ends_with('/') => {
+                            OptionalPath::Directory(prefix.to_string())
+                        }
+                        _ => OptionalPath::File(raw.to_string()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Self {
+            entries,
+            devcontainer_json,
+            optional_labels: optional_paths
+                .iter()
+                .map(|path| match path {
+                    OptionalPath::File(file) => file.clone(),
+                    OptionalPath::Directory(prefix) => format!("{prefix}*"),
+                })
+                .collect(),
+            optional_paths,
+            options: parse_template_options(&metadata),
+        })
+    }
+
+    pub fn select(&self, included: &[usize]) -> SelectedTemplate<'_> {
+        let omitted: Vec<&OptionalPath> = self
+            .optional_paths
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !included.contains(i))
+            .map(|(_, path)| path)
+            .collect();
+        SelectedTemplate {
+            template: self,
+            paths: self
+                .entries
+                .iter()
+                .map(|(path, _)| path)
+                .filter(|path| !ALWAYS_OMITTED.contains(&path.as_str()))
+                .filter(|path| {
+                    !omitted.iter().any(|omit| match omit {
+                        OptionalPath::File(file) => *path == file,
+                        OptionalPath::Directory(prefix) => path.starts_with(prefix.as_str()),
+                    })
+                })
+                .cloned()
+                .collect(),
+        }
+    }
+}
+
+impl SelectedTemplate<'_> {
+    pub fn render(
+        &self,
+        option_values: &[OptionValue],
+        feature_ids: &[String],
+    ) -> Result<Vec<TemplateFile>> {
+        let devcontainer_json =
+            build_devcontainer_json(&self.template.devcontainer_json, option_values, feature_ids)?;
+        Ok(self
+            .paths
+            .iter()
+            .map(|path| {
+                let content = if path == DEVCONTAINER_JSON {
+                    devcontainer_json.clone().into_bytes()
+                } else {
+                    let raw = self
+                        .template
+                        .entries
+                        .iter()
+                        .find(|(entry, _)| entry == path)
+                        .map(|(_, content)| content.as_slice())
+                        .unwrap_or_default();
+                    match std::str::from_utf8(raw) {
+                        Ok(text) => option_values
+                            .iter()
+                            .fold(text.to_string(), |acc, OptionValue { id, value }| {
+                                acc.replace(&format!("${{templateOption:{id}}}"), value)
+                            })
+                            .into_bytes(),
+                        Err(_) => raw.to_vec(),
+                    }
+                };
+                TemplateFile {
+                    path: path.clone(),
+                    content,
+                }
+            })
+            .collect())
+    }
+}
+
+fn build_devcontainer_json(
     template_json: &str,
-    option_values: &[(String, String)],
+    option_values: &[OptionValue],
     feature_ids: &[String],
-) -> crate::error::Result<String> {
-    let expanded = option_values
-        .iter()
-        .fold(template_json.to_string(), |acc, (id, value)| {
-            acc.replace(&format!("${{templateOption:{id}}}"), value)
-        });
+) -> Result<String> {
+    let expanded = option_values.iter().fold(
+        template_json.to_string(),
+        |acc, OptionValue { id, value }| acc.replace(&format!("${{templateOption:{id}}}"), value),
+    );
     let value = jsonc::parse(&expanded)?;
     let mut members = match value {
         jsonc::Value::Object(members) => members,
@@ -395,8 +540,14 @@ mod tests {
         let result = build_devcontainer_json(
             template,
             &[
-                ("imageVariant".to_string(), "21-bookworm".to_string()),
-                ("installMaven".to_string(), "true".to_string()),
+                OptionValue {
+                    id: "imageVariant".to_string(),
+                    value: "21-bookworm".to_string(),
+                },
+                OptionValue {
+                    id: "installMaven".to_string(),
+                    value: "true".to_string(),
+                },
             ],
             &[],
         )
@@ -419,8 +570,15 @@ mod tests {
     #[test]
     fn when_build_devcontainer_json_with_repeated_placeholder_then_replaces_all_occurrences() {
         let template = r#"{"image":"${templateOption:v}-${templateOption:v}"}"#;
-        let result =
-            build_devcontainer_json(template, &[("v".to_string(), "1".to_string())], &[]).unwrap();
+        let result = build_devcontainer_json(
+            template,
+            &[OptionValue {
+                id: "v".to_string(),
+                value: "1".to_string(),
+            }],
+            &[],
+        )
+        .unwrap();
         let value = jsonc::parse(&result).unwrap();
         assert_eq!(value.get("image").and_then(|v| v.as_str()), Some("1-1"));
     }
@@ -522,5 +680,283 @@ mod tests {
         let features = parse_features(json);
         assert_eq!(features.len(), 1);
         assert_eq!(features[0].id, "git");
+    }
+
+    #[test]
+    fn when_parsing_a_template_without_devcontainer_json_then_it_is_rejected() {
+        let entries = vec![("devcontainer-template.json".to_string(), b"{}".to_vec())];
+        assert!(ExtractedTemplate::parse(entries).is_err());
+    }
+
+    #[test]
+    fn when_parsing_a_template_then_its_manifest_is_read_from_its_own_entries() {
+        let entries = vec![
+            (
+                "devcontainer-template.json".to_string(),
+                br#"{"optionalPaths":[".github/*"]}"#.to_vec(),
+            ),
+            (DEVCONTAINER_JSON.to_string(), b"{}".to_vec()),
+        ];
+        let template = ExtractedTemplate::parse(entries).unwrap();
+        assert_eq!(
+            template.optional_paths,
+            [OptionalPath::Directory(".github/".to_string())]
+        );
+    }
+
+    #[test]
+    fn when_parsing_a_manifest_then_each_optional_path_is_parsed_into_its_form() {
+        let entries = vec![
+            (
+                TEMPLATE_JSON.to_string(),
+                br#"{"optionalPaths":[".github/dependabot.yml",".github/*"]}"#.to_vec(),
+            ),
+            (DEVCONTAINER_JSON.to_string(), b"{}".to_vec()),
+        ];
+        assert_eq!(
+            ExtractedTemplate::parse(entries).unwrap().optional_paths,
+            [
+                OptionalPath::File(".github/dependabot.yml".to_string()),
+                OptionalPath::Directory(".github/".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn when_a_manifest_declares_no_optional_paths_then_none_are_parsed() {
+        for metadata in [r#"{"id":"java"}"#, r#"{"optionalPaths":"a"}"#, "invalid"] {
+            let entries = vec![
+                (TEMPLATE_JSON.to_string(), metadata.as_bytes().to_vec()),
+                (DEVCONTAINER_JSON.to_string(), b"{}".to_vec()),
+            ];
+            assert!(
+                ExtractedTemplate::parse(entries)
+                    .unwrap()
+                    .optional_paths
+                    .is_empty(),
+                "unexpected optional paths from {metadata}"
+            );
+        }
+    }
+
+    #[test]
+    fn when_nothing_is_omitted_then_only_the_always_omitted_are_dropped() {
+        let template = ExtractedTemplate::parse(
+            [
+                ".devcontainer/Dockerfile",
+                DEVCONTAINER_JSON,
+                ".github/dependabot.yml",
+                "NOTES.md",
+                "README.md",
+                TEMPLATE_JSON,
+            ]
+            .iter()
+            .map(|path| (path.to_string(), b"{}".to_vec()))
+            .collect(),
+        )
+        .unwrap();
+        assert_eq!(
+            template
+                .select(&(0..template.optional_labels.len()).collect::<Vec<_>>())
+                .paths,
+            [
+                ".devcontainer/Dockerfile",
+                DEVCONTAINER_JSON,
+                ".github/dependabot.yml",
+            ]
+        );
+    }
+
+    #[test]
+    fn when_a_file_is_omitted_then_that_path_is_dropped() {
+        let template = ExtractedTemplate::parse(vec![
+            (
+                TEMPLATE_JSON.to_string(),
+                br#"{"optionalPaths":[".github/dependabot.yml"]}"#.to_vec(),
+            ),
+            (DEVCONTAINER_JSON.to_string(), b"{}".to_vec()),
+            (".github/dependabot.yml".to_string(), b"{}".to_vec()),
+        ])
+        .unwrap();
+        assert_eq!(template.select(&[]).paths, [DEVCONTAINER_JSON]);
+        assert_eq!(
+            template.select(&[0]).paths,
+            [DEVCONTAINER_JSON, ".github/dependabot.yml"]
+        );
+    }
+
+    #[test]
+    fn when_a_directory_is_omitted_then_everything_under_it_is_dropped() {
+        let template = ExtractedTemplate::parse(vec![
+            (
+                TEMPLATE_JSON.to_string(),
+                br#"{"optionalPaths":[".github/*"]}"#.to_vec(),
+            ),
+            (DEVCONTAINER_JSON.to_string(), b"{}".to_vec()),
+            (".github/dependabot.yml".to_string(), b"{}".to_vec()),
+            (".github/workflows/ci.yml".to_string(), b"{}".to_vec()),
+        ])
+        .unwrap();
+        assert_eq!(template.select(&[]).paths, [DEVCONTAINER_JSON]);
+    }
+
+    #[test]
+    fn when_a_file_is_omitted_then_a_path_that_merely_starts_with_it_is_kept() {
+        let template = ExtractedTemplate::parse(vec![
+            (
+                TEMPLATE_JSON.to_string(),
+                br#"{"optionalPaths":[".github/dependabot.yml"]}"#.to_vec(),
+            ),
+            (DEVCONTAINER_JSON.to_string(), b"{}".to_vec()),
+            (".github/dependabot.yml.bak".to_string(), b"{}".to_vec()),
+        ])
+        .unwrap();
+        assert_eq!(
+            template.select(&[]).paths,
+            [DEVCONTAINER_JSON, ".github/dependabot.yml.bak"]
+        );
+    }
+
+    #[test]
+    fn when_an_always_omitted_name_is_nested_then_it_is_kept() {
+        let template = ExtractedTemplate::parse(
+            [DEVCONTAINER_JSON, "docs/README.md"]
+                .iter()
+                .map(|path| (path.to_string(), b"{}".to_vec()))
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(
+            template
+                .select(&(0..template.optional_labels.len()).collect::<Vec<_>>())
+                .paths,
+            [DEVCONTAINER_JSON, "docs/README.md"]
+        );
+    }
+
+    #[test]
+    fn when_an_optional_path_is_shown_then_its_label_is_what_the_manifest_declared() {
+        let entries = vec![
+            (
+                TEMPLATE_JSON.to_string(),
+                br#"{"optionalPaths":[".github/dependabot.yml",".github/*"]}"#.to_vec(),
+            ),
+            (DEVCONTAINER_JSON.to_string(), b"{}".to_vec()),
+        ];
+        assert_eq!(
+            ExtractedTemplate::parse(entries).unwrap().optional_labels,
+            [".github/dependabot.yml", ".github/*"]
+        );
+    }
+
+    #[test]
+    fn when_rendering_then_every_placeholder_in_every_file_is_replaced() {
+        let template = ExtractedTemplate::parse(vec![
+            (
+                DEVCONTAINER_JSON.to_string(),
+                br#"{"image":"${templateOption:imageVariant}"}"#.to_vec(),
+            ),
+            (
+                ".devcontainer/Dockerfile".to_string(),
+                b"FROM cpp:3-${templateOption:imageVariant}\nARG V=\"${templateOption:cmake}\"\n"
+                    .to_vec(),
+            ),
+        ])
+        .unwrap();
+        let files = template
+            .select(&[])
+            .render(
+                &[
+                    OptionValue {
+                        id: "imageVariant".to_string(),
+                        value: "debian-12".to_string(),
+                    },
+                    OptionValue {
+                        id: "cmake".to_string(),
+                        value: "none".to_string(),
+                    },
+                ],
+                &[],
+            )
+            .unwrap();
+        let dockerfile = files
+            .iter()
+            .find(|file| file.path == ".devcontainer/Dockerfile")
+            .unwrap();
+        assert_eq!(
+            dockerfile.content,
+            b"FROM cpp:3-debian-12\nARG V=\"none\"\n"
+        );
+        let config = files
+            .iter()
+            .find(|file| file.path == DEVCONTAINER_JSON)
+            .unwrap();
+        assert!(String::from_utf8_lossy(&config.content).contains("debian-12"));
+    }
+
+    #[test]
+    fn when_rendering_an_option_that_has_no_value_then_its_placeholder_remains() {
+        let template = ExtractedTemplate::parse(vec![
+            (DEVCONTAINER_JSON.to_string(), b"{}".to_vec()),
+            (
+                ".devcontainer/Dockerfile".to_string(),
+                b"FROM cpp:3-${templateOption:imageVariant}".to_vec(),
+            ),
+        ])
+        .unwrap();
+        let files = template.select(&[]).render(&[], &[]).unwrap();
+        let dockerfile = files
+            .iter()
+            .find(|file| file.path == ".devcontainer/Dockerfile")
+            .unwrap();
+        assert_eq!(
+            dockerfile.content,
+            b"FROM cpp:3-${templateOption:imageVariant}"
+        );
+    }
+
+    #[test]
+    fn when_rendering_a_file_that_is_not_text_then_its_bytes_are_unchanged() {
+        let bytes = vec![0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe];
+        let template = ExtractedTemplate::parse(vec![
+            (DEVCONTAINER_JSON.to_string(), b"{}".to_vec()),
+            (".devcontainer/logo.png".to_string(), bytes.clone()),
+        ])
+        .unwrap();
+        let files = template
+            .select(&[])
+            .render(
+                &[OptionValue {
+                    id: "v".to_string(),
+                    value: "1".to_string(),
+                }],
+                &[],
+            )
+            .unwrap();
+        let logo = files
+            .iter()
+            .find(|file| file.path == ".devcontainer/logo.png")
+            .unwrap();
+        assert_eq!(logo.content, bytes);
+    }
+
+    #[test]
+    fn when_rendering_with_features_then_devcontainer_json_declares_them() {
+        let template = ExtractedTemplate::parse(vec![(
+            DEVCONTAINER_JSON.to_string(),
+            br#"{"image":"alpine"}"#.to_vec(),
+        )])
+        .unwrap();
+        let files = template
+            .select(&[])
+            .render(&[], &["git".to_string()])
+            .unwrap();
+        let config = jsonc::parse(&String::from_utf8_lossy(&files[0].content)).unwrap();
+        assert!(
+            config
+                .get("features")
+                .and_then(|features| features.get("ghcr.io/devcontainers/features/git:1"))
+                .is_some()
+        );
     }
 }
