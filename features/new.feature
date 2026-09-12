@@ -12,6 +12,16 @@ Feature: cyyc new
     And .devcontainer/devcontainer.json declares the feature "ghcr.io/devcontainers/features/git:1"
     And the command exits successfully
 
+  Scenario: Keep the comments the template writes in devcontainer.json
+    Given no devcontainer config exists
+    And the "java" template is selected
+    And every template option takes its default
+    And the "git" feature is selected
+    When running "cyyc new"
+    Then .devcontainer/devcontainer.json keeps the comments the template ships
+    And .devcontainer/devcontainer.json declares the feature "ghcr.io/devcontainers/features/git:1"
+    And the command exits successfully
+
   Scenario: Write the Dockerfile a dockerfile-type template ships
     Given no devcontainer config exists
     And the "cpp" template is selected
