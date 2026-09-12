@@ -120,7 +120,8 @@ fn new(reg: &mut impl Registry, term: &mut impl Terminal) -> Result<()> {
             return Err(err!("failed to fetch OCI token for templates"));
         }
         let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.body))
-            .map_err(|e| err!("failed to parse OCI token response: {e}"))?;
+            .map_err(|e| err!("failed to parse OCI token response: {e}"))?
+            .value();
         json.get("token")
             .and_then(|v| v.as_str())
             .map(String::from)
@@ -135,7 +136,8 @@ fn new(reg: &mut impl Registry, term: &mut impl Terminal) -> Result<()> {
         return Err(err!("failed to fetch template collection manifest"));
     }
     let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&manifest_output.body))
-        .map_err(|e| err!("failed to parse template collection manifest: {e}"))?;
+        .map_err(|e| err!("failed to parse template collection manifest: {e}"))?
+        .value();
     let digest = manifest
         .get("layers")
         .and_then(|l| l.as_array())
@@ -180,7 +182,8 @@ fn new(reg: &mut impl Registry, term: &mut impl Terminal) -> Result<()> {
             ));
         }
         let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.body))
-            .map_err(|e| err!("failed to parse OCI token response: {e}"))?;
+            .map_err(|e| err!("failed to parse OCI token response: {e}"))?
+            .value();
         json.get("token")
             .and_then(|v| v.as_str())
             .map(String::from)
@@ -201,7 +204,8 @@ fn new(reg: &mut impl Registry, term: &mut impl Terminal) -> Result<()> {
         ));
     }
     let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&manifest_output.body))
-        .map_err(|e| err!("failed to parse template manifest: {e}"))?;
+        .map_err(|e| err!("failed to parse template manifest: {e}"))?
+        .value();
     let digest = manifest
         .get("layers")
         .and_then(|l| l.as_array())
@@ -289,7 +293,8 @@ fn new(reg: &mut impl Registry, term: &mut impl Terminal) -> Result<()> {
             return Err(err!("failed to fetch OCI token for features"));
         }
         let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.body))
-            .map_err(|e| err!("failed to parse OCI token response: {e}"))?;
+            .map_err(|e| err!("failed to parse OCI token response: {e}"))?
+            .value();
         json.get("token")
             .and_then(|v| v.as_str())
             .map(String::from)
@@ -304,7 +309,8 @@ fn new(reg: &mut impl Registry, term: &mut impl Terminal) -> Result<()> {
         return Err(err!("failed to fetch feature collection manifest"));
     }
     let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&manifest_output.body))
-        .map_err(|e| err!("failed to parse feature collection manifest: {e}"))?;
+        .map_err(|e| err!("failed to parse feature collection manifest: {e}"))?
+        .value();
     let digest = manifest
         .get("layers")
         .and_then(|l| l.as_array())
@@ -1332,7 +1338,8 @@ fn download_features(
                         return Err(err!("failed to fetch OCI token for {registry}/{path}"));
                     }
                     let json = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.body))
-                        .map_err(|e| err!("failed to parse OCI token response: {e}"))?;
+                        .map_err(|e| err!("failed to parse OCI token response: {e}"))?
+                        .value();
                     json.get("token")
                         .and_then(|v| v.as_str())
                         .map(String::from)
@@ -1346,7 +1353,8 @@ fn download_features(
                     ));
                 }
                 let manifest = devcontainer::jsonc::parse(&String::from_utf8_lossy(&output.body))
-                    .map_err(|e| err!("failed to parse OCI manifest: {e}"))?;
+                    .map_err(|e| err!("failed to parse OCI manifest: {e}"))?
+                    .value();
                 let digest = manifest
                     .get("layers")
                     .and_then(|l| l.as_array())

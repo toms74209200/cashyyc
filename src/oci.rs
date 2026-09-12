@@ -42,9 +42,10 @@ pub fn parse_features(json: &str) -> Vec<Feature> {
 }
 
 fn parse_collection(json: &str, key: &str) -> Vec<(String, String, String)> {
-    let Ok(value) = jsonc::parse(json) else {
+    let Ok(document) = jsonc::parse(json) else {
         return vec![];
     };
+    let value = document.value();
     let Some(entries) = value.get(key).and_then(|v| v.as_array()) else {
         return vec![];
     };
@@ -72,9 +73,10 @@ fn parse_template_options(json: &str) -> Vec<TemplateOption> {
             _ => None,
         }
     };
-    let Ok(value) = jsonc::parse(json) else {
+    let Ok(document) = jsonc::parse(json) else {
         return vec![];
     };
+    let value = document.value();
     let Some(options) = value.get("options").and_then(|v| v.as_object()) else {
         return vec![];
     };
@@ -158,6 +160,7 @@ impl ExtractedTemplate {
         let metadata = content(TEMPLATE_JSON).unwrap_or_default();
         let optional_paths: Vec<OptionalPath> = jsonc::parse(&metadata)
             .ok()
+            .map(|document| document.value())
             .as_ref()
             .and_then(|manifest| manifest.get("optionalPaths"))
             .and_then(|paths| paths.as_array())
@@ -266,42 +269,43 @@ fn build_devcontainer_json(
         template_json.to_string(),
         |acc, OptionValue { id, value }| acc.replace(&format!("${{templateOption:{id}}}"), value),
     );
-    let value = jsonc::parse(&expanded)?;
-    let mut members = match value {
-        jsonc::Value::Object(members) => members,
-        _ => {
-            return Err(err!("template devcontainer.json is not a JSON object"));
-        }
-    };
-    if !feature_ids.is_empty() {
-        let without_tag = |reference: &str| {
-            reference
-                .rsplit_once(':')
-                .map_or(reference, |(id, _)| id)
-                .to_string()
-        };
-        let mut features = members
-            .iter()
-            .find(|(key, _)| key == "features")
-            .and_then(|(_, value)| value.as_object())
-            .unwrap_or_default()
-            .to_vec();
-        for id in feature_ids {
-            let key = format!("ghcr.io/devcontainers/features/{id}:1");
-            if !features
-                .iter()
-                .any(|(existing, _)| without_tag(existing) == without_tag(&key))
-            {
-                features.push((key, jsonc::Value::Object(vec![])));
-            }
-        }
-        let features = jsonc::Value::Object(features);
-        match members.iter_mut().find(|(key, _)| key == "features") {
-            Some(entry) => entry.1 = features,
-            None => members.push(("features".to_string(), features)),
-        }
+    let mut document = jsonc::parse(&expanded)?;
+    let value = document.value();
+    if value.as_object().is_none() {
+        return Err(err!("template devcontainer.json is not a JSON object"));
     }
-    Ok(jsonc::Value::Object(members).to_json_pretty())
+    if feature_ids.is_empty() {
+        return Ok(expanded);
+    }
+    let without_tag = |reference: &str| {
+        reference
+            .rsplit_once(':')
+            .map_or(reference, |(id, _)| id)
+            .to_string()
+    };
+    let mut declared: Vec<String> = match value.get("features") {
+        Some(features) => features
+            .as_object()
+            .ok_or_else(|| err!("template devcontainer.json 'features' is not a JSON object"))?
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect(),
+        None => vec![],
+    };
+    for id in feature_ids {
+        let key = format!("ghcr.io/devcontainers/features/{id}:1");
+        if declared
+            .iter()
+            .any(|existing| without_tag(existing) == without_tag(&key))
+        {
+            continue;
+        }
+        document
+            .insert(&["features", &key], &jsonc::Value::Object(vec![]))
+            .map_err(|e| err!("failed to declare feature {id}: {e}"))?;
+        declared.push(key);
+    }
+    Ok(document.to_text())
 }
 
 #[cfg(test)]
@@ -363,7 +367,7 @@ mod tests {
     fn when_build_devcontainer_json_with_no_features_then_omits_features_key() {
         let template = r#"{"image":"mcr.microsoft.com/devcontainers/rust:1-trixie"}"#;
         let result = build_devcontainer_json(template, &[], &[]).unwrap();
-        let value = jsonc::parse(&result).unwrap();
+        let value = jsonc::parse(&result).unwrap().value();
         assert_eq!(value.get("features"), None);
         assert_eq!(
             value.get("image").and_then(|v| v.as_str()),
@@ -375,7 +379,7 @@ mod tests {
     fn when_build_devcontainer_json_with_one_feature_then_adds_features_key() {
         let template = r#"{"image":"mcr.microsoft.com/devcontainers/rust:1-trixie"}"#;
         let result = build_devcontainer_json(template, &[], &["git".to_string()]).unwrap();
-        let value = jsonc::parse(&result).unwrap();
+        let value = jsonc::parse(&result).unwrap().value();
         assert_eq!(
             value
                 .get("features")
@@ -394,7 +398,7 @@ mod tests {
             &["git".to_string(), "github-cli".to_string()],
         )
         .unwrap();
-        let value = jsonc::parse(&result).unwrap();
+        let value = jsonc::parse(&result).unwrap().value();
         let features = value.get("features").unwrap();
         assert_eq!(
             features
@@ -414,7 +418,7 @@ mod tests {
     fn when_build_devcontainer_json_with_existing_features_then_keeps_them() {
         let template = r#"{"image":"alpine","features":{"old":{}}}"#;
         let result = build_devcontainer_json(template, &[], &["git".to_string()]).unwrap();
-        let value = jsonc::parse(&result).unwrap();
+        let value = jsonc::parse(&result).unwrap().value();
         let features = value.get("features").unwrap();
         assert_eq!(
             features.get("old").cloned(),
@@ -432,7 +436,7 @@ mod tests {
     fn when_build_devcontainer_json_with_feature_already_in_template_then_keeps_its_options() {
         let template = r#"{"image":"alpine","features":{"ghcr.io/devcontainers/features/java:1":{"installMaven":"true"}}}"#;
         let result = build_devcontainer_json(template, &[], &["java".to_string()]).unwrap();
-        let value = jsonc::parse(&result).unwrap();
+        let value = jsonc::parse(&result).unwrap().value();
         let features = value.get("features").unwrap();
         assert_eq!(
             features
@@ -552,7 +556,7 @@ mod tests {
             &[],
         )
         .unwrap();
-        let value = jsonc::parse(&result).unwrap();
+        let value = jsonc::parse(&result).unwrap().value();
         assert_eq!(
             value.get("image").and_then(|v| v.as_str()),
             Some("java:3-21-bookworm")
@@ -579,7 +583,7 @@ mod tests {
             &[],
         )
         .unwrap();
-        let value = jsonc::parse(&result).unwrap();
+        let value = jsonc::parse(&result).unwrap().value();
         assert_eq!(value.get("image").and_then(|v| v.as_str()), Some("1-1"));
     }
 
@@ -587,7 +591,7 @@ mod tests {
     fn when_build_devcontainer_json_without_option_values_then_placeholder_remains() {
         let template = r#"{"image":"${templateOption:imageVariant}"}"#;
         let result = build_devcontainer_json(template, &[], &[]).unwrap();
-        let value = jsonc::parse(&result).unwrap();
+        let value = jsonc::parse(&result).unwrap().value();
         assert_eq!(
             value.get("image").and_then(|v| v.as_str()),
             Some("${templateOption:imageVariant}")
@@ -599,7 +603,7 @@ mod tests {
         let template =
             r#"{"image":"alpine","features":{"ghcr.io/devcontainers/features/java:2":{}}}"#;
         let result = build_devcontainer_json(template, &[], &["java".to_string()]).unwrap();
-        let value = jsonc::parse(&result).unwrap();
+        let value = jsonc::parse(&result).unwrap().value();
         let features = value.get("features").unwrap();
         assert_eq!(
             features.as_object().map(<[(String, jsonc::Value)]>::len),
@@ -626,7 +630,7 @@ mod tests {
     fn when_build_devcontainer_json_with_comments_then_strips_them() {
         let template = "// comment\n{\"image\":\"alpine\"}\n";
         let result = build_devcontainer_json(template, &[], &[]).unwrap();
-        let value = jsonc::parse(&result).unwrap();
+        let value = jsonc::parse(&result).unwrap().value();
         assert_eq!(value.get("image").and_then(|v| v.as_str()), Some("alpine"));
     }
 
@@ -634,7 +638,7 @@ mod tests {
     fn when_build_devcontainer_json_with_url_in_string_then_preserves_it() {
         let template = r#"{"url":"https://example.com"}"#;
         let result = build_devcontainer_json(template, &[], &[]).unwrap();
-        let value = jsonc::parse(&result).unwrap();
+        let value = jsonc::parse(&result).unwrap().value();
         assert_eq!(
             value.get("url").and_then(|v| v.as_str()),
             Some("https://example.com")
@@ -951,12 +955,48 @@ mod tests {
             .select(&[])
             .render(&[], &["git".to_string()])
             .unwrap();
-        let config = jsonc::parse(&String::from_utf8_lossy(&files[0].content)).unwrap();
+        let config = jsonc::parse(&String::from_utf8_lossy(&files[0].content))
+            .unwrap()
+            .value();
         assert!(
             config
                 .get("features")
                 .and_then(|features| features.get("ghcr.io/devcontainers/features/git:1"))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn when_build_devcontainer_json_without_features_then_returns_the_expanded_template_text() {
+        let template =
+            "// header\n{\n\t// note\n\t\"image\": \"java:${templateOption:variant}\"\n}\n";
+        let result = build_devcontainer_json(
+            template,
+            &[OptionValue {
+                id: "variant".to_string(),
+                value: "17".to_string(),
+            }],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            "// header\n{\n\t// note\n\t\"image\": \"java:17\"\n}\n"
+        );
+    }
+
+    #[test]
+    fn when_build_devcontainer_json_with_a_feature_then_keeps_the_comments_and_the_tab_indent() {
+        let template = "// header\n{\n\t// note\n\t\"features\": {\n\t\t\"ghcr.io/devcontainers/features/java:1\": {}\n\t}\n}\n";
+        let result = build_devcontainer_json(template, &[], &["git".to_string()]).unwrap();
+        assert_eq!(
+            result,
+            "// header\n{\n\t// note\n\t\"features\": {\n\t\t\"ghcr.io/devcontainers/features/java:1\": {},\n\t\t\"ghcr.io/devcontainers/features/git:1\": {}\n\t}\n}\n"
+        );
+    }
+
+    #[test]
+    fn when_build_devcontainer_json_with_features_not_an_object_then_returns_error() {
+        assert!(build_devcontainer_json(r#"{"features": 1}"#, &[], &["git".to_string()]).is_err());
     }
 }

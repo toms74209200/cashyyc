@@ -221,16 +221,406 @@ impl std::fmt::Display for JsoncError {
 
 impl std::error::Error for JsoncError {}
 
-pub fn parse(input: &str) -> Result<Value, JsoncError> {
+#[derive(Debug, Clone, PartialEq)]
+pub struct Document {
+    leading: String,
+    root: Node,
+    trailing: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Node {
+    Object(ObjectNode),
+    Array(ArrayNode),
+    Scalar { raw: String, value: Value },
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Trivia {
+    prefix: String,
+    indent: String,
+}
+
+impl From<&str> for Trivia {
+    fn from(text: &str) -> Self {
+        let prefix = text.trim_end_matches([' ', '\t']);
+        Trivia {
+            prefix: prefix.to_string(),
+            indent: text[prefix.len()..].to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectNode {
+    members: Vec<MemberNode>,
+    inner: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct MemberNode {
+    leading: Trivia,
+    key: String,
+    key_raw: String,
+    colon: String,
+    value: Node,
+    comma: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArrayNode {
+    items: Vec<ItemNode>,
+    inner: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ItemNode {
+    leading: Trivia,
+    value: Node,
+    comma: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum InsertError {
+    EmptyPath,
+    RootNotObject,
+    NotAnObject(String),
+}
+
+impl std::fmt::Display for InsertError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InsertError::EmptyPath => write!(f, "insert path is empty"),
+            InsertError::RootNotObject => write!(f, "document root is not an object"),
+            InsertError::NotAnObject(key) => write!(f, "'{key}' is not an object"),
+        }
+    }
+}
+
+impl std::error::Error for InsertError {}
+
+pub fn parse(input: &str) -> Result<Document, JsoncError> {
     let bytes = input.as_bytes();
     let mut pos = 0;
     skip_whitespace_and_comments(bytes, &mut pos)?;
-    let value = parse_value(bytes, &mut pos, 0)?;
+    let leading = input[..pos].to_string();
+    let root = parse_value(input, &mut pos, 0)?;
+    let start = pos;
     skip_whitespace_and_comments(bytes, &mut pos)?;
-    if pos < bytes.len() {
+    let trailing = input[start..pos].to_string();
+    if pos < input.len() {
         return Err(JsoncError::TrailingCharacters(pos));
     }
-    Ok(value)
+    Ok(Document {
+        leading,
+        root,
+        trailing,
+    })
+}
+
+impl Document {
+    pub fn value(&self) -> Value {
+        self.root.value()
+    }
+
+    pub fn to_text(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&self.leading);
+        self.root.write(&mut out);
+        out.push_str(&self.trailing);
+        out
+    }
+
+    pub fn insert(&mut self, path: &[&str], value: &Value) -> Result<(), InsertError> {
+        let root = match &mut self.root {
+            Node::Object(root) => root,
+            _ => return Err(InsertError::RootNotObject),
+        };
+        let (leading, unit) = match root
+            .members
+            .iter()
+            .find(|member| !member.leading.prefix.is_empty())
+        {
+            Some(member) => (
+                Trivia {
+                    prefix: "\n".to_string(),
+                    indent: String::new(),
+                },
+                member.leading.indent.clone(),
+            ),
+            None => (
+                Trivia {
+                    prefix: String::new(),
+                    indent: String::new(),
+                },
+                String::new(),
+            ),
+        };
+        insert_into(root, path, value, &leading, &unit)
+    }
+}
+
+impl Node {
+    fn value(&self) -> Value {
+        match self {
+            Node::Scalar { value, .. } => value.clone(),
+            Node::Object(object) => Value::Object(
+                object
+                    .members
+                    .iter()
+                    .map(|member| (member.key.clone(), member.value.value()))
+                    .collect(),
+            ),
+            Node::Array(array) => {
+                Value::Array(array.items.iter().map(|item| item.value.value()).collect())
+            }
+        }
+    }
+
+    fn write(&self, out: &mut String) {
+        match self {
+            Node::Scalar { raw, .. } => out.push_str(raw),
+            Node::Object(object) => {
+                out.push('{');
+                for member in &object.members {
+                    out.push_str(&member.leading.prefix);
+                    out.push_str(&member.leading.indent);
+                    out.push_str(&member.key_raw);
+                    out.push_str(&member.colon);
+                    member.value.write(out);
+                    if let Some(comma) = &member.comma {
+                        out.push_str(comma);
+                    }
+                }
+                out.push_str(&object.inner.prefix);
+                out.push_str(&object.inner.indent);
+                out.push('}');
+            }
+            Node::Array(array) => {
+                out.push('[');
+                for item in &array.items {
+                    out.push_str(&item.leading.prefix);
+                    out.push_str(&item.leading.indent);
+                    item.value.write(out);
+                    if let Some(comma) = &item.comma {
+                        out.push_str(comma);
+                    }
+                }
+                out.push_str(&array.inner.prefix);
+                out.push_str(&array.inner.indent);
+                out.push(']');
+            }
+        }
+    }
+}
+
+fn insert_into(
+    object: &mut ObjectNode,
+    path: &[&str],
+    value: &Value,
+    leading: &Trivia,
+    unit: &str,
+) -> Result<(), InsertError> {
+    let (key, rest) = path.split_first().ok_or(InsertError::EmptyPath)?;
+    let found = object.members.iter().rposition(|member| member.key == *key);
+    let member_leading = match found {
+        Some(index) => object.members[index].leading.clone(),
+        None => {
+            let broken = if object.inner.prefix.ends_with('\n') {
+                object.inner.prefix.clone()
+            } else {
+                format!("{}\n", object.inner.prefix)
+            };
+            let member_leading = match object.members.last() {
+                Some(last) if last.leading.prefix.is_empty() => Trivia {
+                    prefix: object.inner.prefix.clone(),
+                    indent: " ".to_string(),
+                },
+                Some(last) => Trivia {
+                    prefix: broken,
+                    indent: last.leading.indent.clone(),
+                },
+                None if leading.prefix.is_empty() => Trivia {
+                    prefix: object.inner.prefix.clone(),
+                    indent: String::new(),
+                },
+                None => Trivia {
+                    prefix: broken,
+                    indent: format!("{}{unit}", leading.indent),
+                },
+            };
+            object.inner = if member_leading.prefix.is_empty() {
+                object.inner.clone()
+            } else if object.inner.prefix.is_empty() {
+                Trivia {
+                    prefix: "\n".to_string(),
+                    indent: leading.indent.clone(),
+                }
+            } else {
+                Trivia {
+                    prefix: "\n".to_string(),
+                    indent: object.inner.indent.clone(),
+                }
+            };
+            member_leading
+        }
+    };
+    match found {
+        Some(index) if rest.is_empty() => {
+            object.members[index].value = build_node(&[], value, &member_leading, unit);
+            Ok(())
+        }
+        Some(index) => match &mut object.members[index].value {
+            Node::Object(inner) => insert_into(inner, rest, value, &member_leading, unit),
+            _ => Err(InsertError::NotAnObject((*key).to_string())),
+        },
+        None => {
+            let node = build_node(rest, value, &member_leading, unit);
+            let colon = match object.members.last_mut() {
+                Some(last) => {
+                    last.comma.get_or_insert_with(|| ",".to_string());
+                    last.colon.clone()
+                }
+                None => ": ".to_string(),
+            };
+            let mut key_raw = String::new();
+            write_string(key, &mut key_raw);
+            object.members.push(MemberNode {
+                leading: member_leading,
+                key: (*key).to_string(),
+                key_raw,
+                colon,
+                value: node,
+                comma: None,
+            });
+            Ok(())
+        }
+    }
+}
+
+fn build_node(path: &[&str], value: &Value, leading: &Trivia, unit: &str) -> Node {
+    let (child, inner) = if leading.prefix.is_empty() {
+        (
+            Trivia {
+                prefix: String::new(),
+                indent: String::new(),
+            },
+            Trivia {
+                prefix: String::new(),
+                indent: String::new(),
+            },
+        )
+    } else {
+        (
+            Trivia {
+                prefix: "\n".to_string(),
+                indent: format!("{}{unit}", leading.indent),
+            },
+            Trivia {
+                prefix: "\n".to_string(),
+                indent: leading.indent.clone(),
+            },
+        )
+    };
+    if let Some((key, rest)) = path.split_first() {
+        let mut key_raw = String::new();
+        write_string(key, &mut key_raw);
+        return Node::Object(ObjectNode {
+            members: vec![MemberNode {
+                leading: child.clone(),
+                key: (*key).to_string(),
+                key_raw,
+                colon: ": ".to_string(),
+                value: build_node(rest, value, &child, unit),
+                comma: None,
+            }],
+            inner,
+        });
+    }
+    match value {
+        Value::Object(source) if !source.is_empty() => {
+            let last = source.len() - 1;
+            Node::Object(ObjectNode {
+                members: source
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (key, member))| {
+                        let mut key_raw = String::new();
+                        write_string(key, &mut key_raw);
+                        MemberNode {
+                            leading: child.clone(),
+                            key: key.clone(),
+                            key_raw,
+                            colon: ": ".to_string(),
+                            value: build_node(&[], member, &child, unit),
+                            comma: (index < last).then(|| ",".to_string()),
+                        }
+                    })
+                    .collect(),
+                inner,
+            })
+        }
+        Value::Array(source) if !source.is_empty() => {
+            let last = source.len() - 1;
+            Node::Array(ArrayNode {
+                items: source
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| ItemNode {
+                        leading: child.clone(),
+                        value: build_node(&[], item, &child, unit),
+                        comma: (index < last).then(|| ",".to_string()),
+                    })
+                    .collect(),
+                inner,
+            })
+        }
+        Value::Object(_) => Node::Object(ObjectNode {
+            members: vec![],
+            inner: Trivia {
+                prefix: String::new(),
+                indent: String::new(),
+            },
+        }),
+        Value::Array(_) => Node::Array(ArrayNode {
+            items: vec![],
+            inner: Trivia {
+                prefix: String::new(),
+                indent: String::new(),
+            },
+        }),
+        scalar => {
+            let mut raw = String::new();
+            write_compact(scalar, &mut raw);
+            Node::Scalar {
+                raw,
+                value: scalar.clone(),
+            }
+        }
+    }
+}
+
+fn parse_value(src: &str, pos: &mut usize, depth: usize) -> Result<Node, JsoncError> {
+    if depth > MAX_DEPTH {
+        return Err(JsoncError::DepthLimitExceeded);
+    }
+    let bytes = src.as_bytes();
+    let start = *pos;
+    let value = match bytes.get(*pos) {
+        None => return Err(JsoncError::UnexpectedEof),
+        Some(b'{') => return parse_object(src, pos, depth),
+        Some(b'[') => return parse_array(src, pos, depth),
+        Some(b'"') => Value::String(parse_string(bytes, pos)?),
+        Some(b't') => parse_keyword(bytes, pos, b"true", Value::Bool(true))?,
+        Some(b'f') => parse_keyword(bytes, pos, b"false", Value::Bool(false))?,
+        Some(b'n') => parse_keyword(bytes, pos, b"null", Value::Null)?,
+        Some(b'-' | b'0'..=b'9') => parse_number(bytes, pos)?,
+        Some(_) => return Err(JsoncError::UnexpectedChar(*pos)),
+    };
+    Ok(Node::Scalar {
+        raw: src[start..*pos].to_string(),
+        value,
+    })
 }
 
 fn skip_whitespace_and_comments(bytes: &[u8], pos: &mut usize) -> Result<(), JsoncError> {
@@ -267,23 +657,6 @@ fn skip_whitespace_and_comments(bytes: &[u8], pos: &mut usize) -> Result<(), Jso
             }
             _ => return Ok(()),
         }
-    }
-}
-
-fn parse_value(bytes: &[u8], pos: &mut usize, depth: usize) -> Result<Value, JsoncError> {
-    if depth > MAX_DEPTH {
-        return Err(JsoncError::DepthLimitExceeded);
-    }
-    match bytes.get(*pos) {
-        None => Err(JsoncError::UnexpectedEof),
-        Some(b'{') => parse_object(bytes, pos, depth),
-        Some(b'[') => parse_array(bytes, pos, depth),
-        Some(b'"') => Ok(Value::String(parse_string(bytes, pos)?)),
-        Some(b't') => parse_keyword(bytes, pos, b"true", Value::Bool(true)),
-        Some(b'f') => parse_keyword(bytes, pos, b"false", Value::Bool(false)),
-        Some(b'n') => parse_keyword(bytes, pos, b"null", Value::Null),
-        Some(b'-' | b'0'..=b'9') => parse_number(bytes, pos),
-        Some(_) => Err(JsoncError::UnexpectedChar(*pos)),
     }
 }
 
@@ -397,44 +770,72 @@ fn parse_hex4(bytes: &[u8], escape_start: usize, at: usize) -> Result<u32, Jsonc
         .ok_or(JsoncError::InvalidEscape(escape_start))
 }
 
-fn parse_array(bytes: &[u8], pos: &mut usize, depth: usize) -> Result<Value, JsoncError> {
+fn parse_array(src: &str, pos: &mut usize, depth: usize) -> Result<Node, JsoncError> {
+    let bytes = src.as_bytes();
     *pos += 1;
     let mut items = Vec::new();
+    let start = *pos;
+    skip_whitespace_and_comments(bytes, pos)?;
+    let mut inner = Trivia::from(&src[start..*pos]);
     loop {
-        skip_whitespace_and_comments(bytes, pos)?;
         match bytes.get(*pos) {
             None => return Err(JsoncError::UnexpectedEof),
             Some(b']') => {
                 *pos += 1;
-                return Ok(Value::Array(items));
+                return Ok(Node::Array(ArrayNode { items, inner }));
             }
             Some(_) => {
-                items.push(parse_value(bytes, pos, depth + 1)?);
+                let leading = std::mem::take(&mut inner);
+                let value = parse_value(src, pos, depth + 1)?;
+                let after_value = *pos;
                 skip_whitespace_and_comments(bytes, pos)?;
-                match bytes.get(*pos) {
-                    Some(b',') => *pos += 1,
-                    Some(b']') => {}
+                let comma = match bytes.get(*pos) {
+                    Some(b',') => {
+                        *pos += 1;
+                        Some(src[after_value..*pos].to_string())
+                    }
+                    Some(b']') => None,
                     None => return Err(JsoncError::UnexpectedEof),
                     Some(_) => return Err(JsoncError::UnexpectedChar(*pos)),
-                }
+                };
+                inner = match comma {
+                    Some(_) => {
+                        let start = *pos;
+                        skip_whitespace_and_comments(bytes, pos)?;
+                        Trivia::from(&src[start..*pos])
+                    }
+                    None => Trivia::from(&src[after_value..*pos]),
+                };
+                items.push(ItemNode {
+                    leading,
+                    value,
+                    comma,
+                });
             }
         }
     }
 }
 
-fn parse_object(bytes: &[u8], pos: &mut usize, depth: usize) -> Result<Value, JsoncError> {
+fn parse_object(src: &str, pos: &mut usize, depth: usize) -> Result<Node, JsoncError> {
+    let bytes = src.as_bytes();
     *pos += 1;
     let mut members = Vec::new();
+    let start = *pos;
+    skip_whitespace_and_comments(bytes, pos)?;
+    let mut inner = Trivia::from(&src[start..*pos]);
     loop {
-        skip_whitespace_and_comments(bytes, pos)?;
         match bytes.get(*pos) {
             None => return Err(JsoncError::UnexpectedEof),
             Some(b'}') => {
                 *pos += 1;
-                return Ok(Value::Object(members));
+                return Ok(Node::Object(ObjectNode { members, inner }));
             }
             Some(b'"') => {
+                let leading = std::mem::take(&mut inner);
+                let key_start = *pos;
                 let key = parse_string(bytes, pos)?;
+                let key_raw = src[key_start..*pos].to_string();
+                let colon_start = *pos;
                 skip_whitespace_and_comments(bytes, pos)?;
                 match bytes.get(*pos) {
                     Some(b':') => *pos += 1,
@@ -442,14 +843,35 @@ fn parse_object(bytes: &[u8], pos: &mut usize, depth: usize) -> Result<Value, Js
                     Some(_) => return Err(JsoncError::UnexpectedChar(*pos)),
                 }
                 skip_whitespace_and_comments(bytes, pos)?;
-                members.push((key, parse_value(bytes, pos, depth + 1)?));
+                let colon = src[colon_start..*pos].to_string();
+                let value = parse_value(src, pos, depth + 1)?;
+                let after_value = *pos;
                 skip_whitespace_and_comments(bytes, pos)?;
-                match bytes.get(*pos) {
-                    Some(b',') => *pos += 1,
-                    Some(b'}') => {}
+                let comma = match bytes.get(*pos) {
+                    Some(b',') => {
+                        *pos += 1;
+                        Some(src[after_value..*pos].to_string())
+                    }
+                    Some(b'}') => None,
                     None => return Err(JsoncError::UnexpectedEof),
                     Some(_) => return Err(JsoncError::UnexpectedChar(*pos)),
-                }
+                };
+                inner = match comma {
+                    Some(_) => {
+                        let start = *pos;
+                        skip_whitespace_and_comments(bytes, pos)?;
+                        Trivia::from(&src[start..*pos])
+                    }
+                    None => Trivia::from(&src[after_value..*pos]),
+                };
+                members.push(MemberNode {
+                    leading,
+                    key,
+                    key_raw,
+                    colon,
+                    value,
+                    comma,
+                });
             }
             Some(_) => return Err(JsoncError::UnexpectedChar(*pos)),
         }
@@ -472,44 +894,65 @@ mod tests {
 
     #[test]
     fn when_parse_with_null_then_returns_null() {
-        assert_eq!(parse("null"), Ok(Value::Null));
+        assert_eq!(
+            parse("null").map(|document| document.value()),
+            Ok(Value::Null)
+        );
     }
 
     #[test]
     fn when_parse_with_true_then_returns_bool_true() {
-        assert_eq!(parse("true"), Ok(Value::Bool(true)));
+        assert_eq!(
+            parse("true").map(|document| document.value()),
+            Ok(Value::Bool(true))
+        );
     }
 
     #[test]
     fn when_parse_with_false_then_returns_bool_false() {
-        assert_eq!(parse("false"), Ok(Value::Bool(false)));
+        assert_eq!(
+            parse("false").map(|document| document.value()),
+            Ok(Value::Bool(false))
+        );
     }
 
     #[test]
     fn when_parse_with_integer_then_returns_number() {
-        assert_eq!(parse("42"), Ok(Value::Number(42.0)));
+        assert_eq!(
+            parse("42").map(|document| document.value()),
+            Ok(Value::Number(42.0))
+        );
     }
 
     #[test]
     fn when_parse_with_negative_float_then_returns_number() {
-        assert_eq!(parse("-3.5"), Ok(Value::Number(-3.5)));
+        assert_eq!(
+            parse("-3.5").map(|document| document.value()),
+            Ok(Value::Number(-3.5))
+        );
     }
 
     #[test]
     fn when_parse_with_exponent_then_returns_number() {
-        assert_eq!(parse("2e3"), Ok(Value::Number(2000.0)));
+        assert_eq!(
+            parse("2e3").map(|document| document.value()),
+            Ok(Value::Number(2000.0))
+        );
     }
 
     #[test]
     fn when_parse_with_string_then_returns_string() {
         let name = random_name();
-        assert_eq!(parse(&format!("\"{}\"", name)), Ok(Value::String(name)));
+        assert_eq!(
+            parse(&format!("\"{}\"", name)).map(|document| document.value()),
+            Ok(Value::String(name))
+        );
     }
 
     #[test]
     fn when_parse_with_escaped_characters_then_unescapes() {
         assert_eq!(
-            parse(r#""a\n\t\r\b\f\"\\\/b""#),
+            parse(r#""a\n\t\r\b\f\"\\\/b""#).map(|document| document.value()),
             Ok(Value::String("a\n\t\r\u{0008}\u{000C}\"\\/b".to_string()))
         );
     }
@@ -517,7 +960,7 @@ mod tests {
     #[test]
     fn when_parse_with_unicode_escape_then_decodes_code_point() {
         assert_eq!(
-            parse(r#""\u00e9""#),
+            parse(r#""\u00e9""#).map(|document| document.value()),
             Ok(Value::String("\u{00e9}".to_string()))
         );
     }
@@ -525,7 +968,7 @@ mod tests {
     #[test]
     fn when_parse_with_surrogate_pair_then_decodes_supplementary_character() {
         assert_eq!(
-            parse(r#""\ud83d\ude00""#),
+            parse(r#""\ud83d\ude00""#).map(|document| document.value()),
             Ok(Value::String("\u{1F600}".to_string()))
         );
     }
@@ -564,17 +1007,23 @@ mod tests {
 
     #[test]
     fn when_parse_with_multibyte_utf8_then_preserves_characters() {
-        assert_eq!(parse("\"日本語\""), Ok(Value::String("日本語".to_string())));
+        assert_eq!(
+            parse("\"日本語\"").map(|document| document.value()),
+            Ok(Value::String("日本語".to_string()))
+        );
     }
 
     #[test]
     fn when_parse_with_empty_object_then_returns_empty_object() {
-        assert_eq!(parse("{}"), Ok(Value::Object(vec![])));
+        assert_eq!(
+            parse("{}").map(|document| document.value()),
+            Ok(Value::Object(vec![]))
+        );
     }
 
     #[test]
     fn when_parse_with_object_then_preserves_member_order() {
-        let result = parse(r#"{"b": 1, "a": 2}"#);
+        let result = parse(r#"{"b": 1, "a": 2}"#).map(|document| document.value());
         assert_eq!(
             result,
             Ok(Value::Object(vec![
@@ -586,7 +1035,8 @@ mod tests {
 
     #[test]
     fn when_parse_with_nested_structures_then_returns_tree() {
-        let result = parse(r#"{"a": [1, {"b": null}], "c": true}"#);
+        let result =
+            parse(r#"{"a": [1, {"b": null}], "c": true}"#).map(|document| document.value());
         assert_eq!(
             result,
             Ok(Value::Object(vec![
@@ -607,7 +1057,7 @@ mod tests {
         let name = random_name();
         let input = format!("{{\n  // comment\n  \"key\": \"{}\"\n}}", name);
         assert_eq!(
-            parse(&input),
+            parse(&input).map(|document| document.value()),
             Ok(Value::Object(vec![(
                 "key".to_string(),
                 Value::String(name)
@@ -619,7 +1069,7 @@ mod tests {
     fn when_parse_with_block_comment_then_ignores_comment() {
         let input = "{ /* multi\nline */ \"key\": 1 }";
         assert_eq!(
-            parse(input),
+            parse(input).map(|document| document.value()),
             Ok(Value::Object(vec![("key".to_string(), Value::Number(1.0))]))
         );
     }
@@ -628,7 +1078,7 @@ mod tests {
     fn when_parse_with_comment_between_members_then_ignores_comment() {
         let input = "[1, // first\n 2 /* second */, 3]";
         assert_eq!(
-            parse(input),
+            parse(input).map(|document| document.value()),
             Ok(Value::Array(vec![
                 Value::Number(1.0),
                 Value::Number(2.0),
@@ -640,7 +1090,7 @@ mod tests {
     #[test]
     fn when_parse_with_trailing_comma_in_object_then_accepts() {
         assert_eq!(
-            parse("{\"a\": 1,}"),
+            parse("{\"a\": 1,}").map(|document| document.value()),
             Ok(Value::Object(vec![("a".to_string(), Value::Number(1.0))]))
         );
     }
@@ -648,7 +1098,7 @@ mod tests {
     #[test]
     fn when_parse_with_trailing_comma_in_array_then_accepts() {
         assert_eq!(
-            parse("[1, 2,]"),
+            parse("[1, 2,]").map(|document| document.value()),
             Ok(Value::Array(vec![Value::Number(1.0), Value::Number(2.0)]))
         );
     }
@@ -656,7 +1106,7 @@ mod tests {
     #[test]
     fn when_parse_with_comment_after_trailing_comma_then_accepts() {
         assert_eq!(
-            parse("{\"a\": 1, // comment\n}"),
+            parse("{\"a\": 1, // comment\n}").map(|document| document.value()),
             Ok(Value::Object(vec![("a".to_string(), Value::Number(1.0))]))
         );
     }
@@ -751,13 +1201,13 @@ mod tests {
 
     #[test]
     fn when_get_with_duplicate_keys_then_returns_last_value() {
-        let value = parse(r#"{"a": 1, "a": 2}"#).unwrap();
+        let value = parse(r#"{"a": 1, "a": 2}"#).unwrap().value();
         assert_eq!(value.get("a"), Some(&Value::Number(2.0)));
     }
 
     #[test]
     fn when_get_with_missing_key_then_returns_none() {
-        let value = parse(r#"{"a": 1}"#).unwrap();
+        let value = parse(r#"{"a": 1}"#).unwrap().value();
         assert_eq!(value.get("b"), None);
     }
 
@@ -774,20 +1224,20 @@ mod tests {
     #[test]
     fn when_to_string_map_with_string_values_then_returns_map() {
         let name = random_name();
-        let value = parse(&format!(r#"{{"k": "{}"}}"#, name)).unwrap();
+        let value = parse(&format!(r#"{{"k": "{}"}}"#, name)).unwrap().value();
         let map = value.to_string_map().unwrap();
         assert_eq!(map.get("k"), Some(&name));
     }
 
     #[test]
     fn when_to_string_map_with_non_string_value_then_returns_none() {
-        let value = parse(r#"{"k": 1}"#).unwrap();
+        let value = parse(r#"{"k": 1}"#).unwrap().value();
         assert_eq!(value.to_string_map(), None);
     }
 
     #[test]
     fn when_to_json_pretty_with_nested_object_then_formats_with_two_space_indent() {
-        let value = parse(r#"{"a": [1, 2], "b": {"c": null}}"#).unwrap();
+        let value = parse(r#"{"a": [1, 2], "b": {"c": null}}"#).unwrap().value();
         assert_eq!(
             value.to_json_pretty(),
             "{\n  \"a\": [\n    1,\n    2\n  ],\n  \"b\": {\n    \"c\": null\n  }\n}"
@@ -796,7 +1246,7 @@ mod tests {
 
     #[test]
     fn when_to_json_pretty_with_empty_containers_then_formats_inline() {
-        let value = parse(r#"{"a": [], "b": {}}"#).unwrap();
+        let value = parse(r#"{"a": [], "b": {}}"#).unwrap().value();
         assert_eq!(value.to_json_pretty(), "{\n  \"a\": [],\n  \"b\": {}\n}");
     }
 
@@ -822,13 +1272,18 @@ mod tests {
     fn when_to_json_pretty_then_roundtrips_through_parse() {
         let name = random_name();
         let input = format!(r#"{{"key": "{}", "list": [true, false, null, 1.5]}}"#, name);
-        let value = parse(&input).unwrap();
-        assert_eq!(parse(&value.to_json_pretty()), Ok(value));
+        let value = parse(&input).unwrap().value();
+        assert_eq!(
+            parse(&value.to_json_pretty()).map(|document| document.value()),
+            Ok(value)
+        );
     }
 
     #[test]
     fn when_display_with_nested_structure_then_returns_compact_json() {
-        let value = parse(r#"{"a": [1, "x", false], "b": {"c": null}, "d": []}"#).unwrap();
+        let value = parse(r#"{"a": [1, "x", false], "b": {"c": null}, "d": []}"#)
+            .unwrap()
+            .value();
         assert_eq!(
             value.to_string(),
             r#"{"a":[1,"x",false],"b":{"c":null},"d":[]}"#
@@ -847,8 +1302,134 @@ mod tests {
 
     #[test]
     fn when_to_json_pretty_then_preserves_member_order() {
-        let value = parse(r#"{"b": 1, "a": 2}"#).unwrap();
+        let value = parse(r#"{"b": 1, "a": 2}"#).unwrap().value();
         let out = value.to_json_pretty();
         assert!(out.find("\"b\"").unwrap() < out.find("\"a\"").unwrap());
+    }
+
+    #[test]
+    fn when_parse_with_comments_and_tabs_then_roundtrips_through_to_text() {
+        let input =
+            "// header\n{\n\t\"name\": \"java\",\n\n\t// note\n\t\"image\": \"java:17\"\n}\n";
+        assert_eq!(parse(input).unwrap().to_text(), input);
+    }
+
+    #[test]
+    fn when_parse_with_trailing_comma_and_blank_lines_then_roundtrips_through_to_text() {
+        let input = "{\n\n  \"a\": [1, 2 , 3,],\n\n  \"b\": {},\n}\n";
+        assert_eq!(parse(input).unwrap().to_text(), input);
+    }
+
+    #[test]
+    fn when_parse_with_escaped_key_then_roundtrips_through_to_text() {
+        let input = r#"{"aA\"b": 1}"#;
+        assert_eq!(parse(input).unwrap().to_text(), input);
+    }
+
+    #[test]
+    fn when_insert_with_existing_object_then_keeps_the_comments_and_the_tab_indent() {
+        let mut document =
+            parse("// header\n{\n\t// note\n\t\"features\": {\n\t\t\"java\": {}\n\t}\n}\n")
+                .unwrap();
+        let result = document.insert(&["features", "git"], &Value::Object(vec![]));
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            document.to_text(),
+            "// header\n{\n\t// note\n\t\"features\": {\n\t\t\"java\": {},\n\t\t\"git\": {}\n\t}\n}\n"
+        );
+    }
+
+    #[test]
+    fn when_insert_with_trailing_comment_then_leaves_the_comment_on_its_line() {
+        let mut document = parse("{\n\t\"image\": \"golang\" // note\n}\n").unwrap();
+        let result = document.insert(&["features", "git"], &Value::Object(vec![]));
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            document.to_text(),
+            "{\n\t\"image\": \"golang\", // note\n\t\"features\": {\n\t\t\"git\": {}\n\t}\n}\n"
+        );
+    }
+
+    #[test]
+    fn when_insert_with_missing_key_then_returns_the_created_object() {
+        let mut document = parse("{\n  \"name\": \"go\"\n}\n").unwrap();
+        let result = document.insert(&["features", "git"], &Value::Object(vec![]));
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            document.to_text(),
+            "{\n  \"name\": \"go\",\n  \"features\": {\n    \"git\": {}\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn when_insert_with_empty_object_then_indents_the_member() {
+        let mut document = parse("{\n  \"features\": {}\n}\n").unwrap();
+        let result = document.insert(&["features", "git"], &Value::Object(vec![]));
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            document.to_text(),
+            "{\n  \"features\": {\n    \"git\": {}\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn when_insert_with_single_line_document_then_stays_on_one_line() {
+        let mut document = parse(r#"{"image": "golang"}"#).unwrap();
+        let result = document.insert(&["features", "git"], &Value::Object(vec![]));
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            document.to_text(),
+            r#"{"image": "golang", "features": {"git": {}}}"#
+        );
+    }
+
+    #[test]
+    fn when_insert_with_trailing_comma_then_does_not_add_another_comma() {
+        let mut document = parse("{\n  \"image\": \"golang\",\n}\n").unwrap();
+        let result = document.insert(&["features", "git"], &Value::Object(vec![]));
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            document.to_text(),
+            "{\n  \"image\": \"golang\",\n  \"features\": {\n    \"git\": {}\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn when_insert_with_existing_key_then_replaces_the_value() {
+        let mut document =
+            parse("{\n  \"features\": {\n    \"git\": {\"version\": \"1\"}\n  }\n}\n").unwrap();
+        let result = document.insert(&["features", "git"], &Value::Object(vec![]));
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            document.to_text(),
+            "{\n  \"features\": {\n    \"git\": {}\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn when_insert_with_non_object_on_the_path_then_returns_not_an_object() {
+        let mut document = parse(r#"{"features": 1}"#).unwrap();
+        assert_eq!(
+            document.insert(&["features", "git"], &Value::Object(vec![])),
+            Err(InsertError::NotAnObject("features".to_string()))
+        );
+    }
+
+    #[test]
+    fn when_insert_with_non_object_root_then_returns_root_not_object() {
+        let mut document = parse("[]").unwrap();
+        assert_eq!(
+            document.insert(&["features"], &Value::Object(vec![])),
+            Err(InsertError::RootNotObject)
+        );
+    }
+
+    #[test]
+    fn when_insert_with_empty_path_then_returns_empty_path() {
+        let mut document = parse("{}").unwrap();
+        assert_eq!(
+            document.insert(&[], &Value::Object(vec![])),
+            Err(InsertError::EmptyPath)
+        );
     }
 }

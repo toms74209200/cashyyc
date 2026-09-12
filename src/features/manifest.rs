@@ -76,7 +76,7 @@ impl FeatureManifest {
     }
 
     fn from_value_content(content: &str) -> Result<Self, String> {
-        let value = jsonc::parse(content).map_err(|e| e.to_string())?;
+        let value = jsonc::parse(content).map_err(|e| e.to_string())?.value();
         let id = match value.get("id") {
             Some(Value::String(s)) => s.clone(),
             Some(_) => return Err("invalid type for field `id`".to_string()),

@@ -2,6 +2,7 @@ pub fn parse_image_config_json(json: &str) -> Vec<String> {
     use crate::devcontainer::jsonc::{self, Value};
     jsonc::parse(json.trim())
         .ok()
+        .map(|document| document.value())
         .and_then(|v| {
             if matches!(v, Value::Null) {
                 Some(vec![])
@@ -24,7 +25,9 @@ pub struct ImageConfig {
 impl ImageConfig {
     pub fn parse(json: &str) -> Self {
         use crate::devcontainer::jsonc::{self, Value};
-        let v = jsonc::parse(json.trim()).unwrap_or(Value::Null);
+        let v = jsonc::parse(json.trim())
+            .map(|document| document.value())
+            .unwrap_or(Value::Null);
         let strings = |key: &str| -> Vec<String> {
             v.get(key)
                 .and_then(|v| v.as_array())
@@ -43,7 +46,7 @@ impl ImageConfig {
 }
 
 pub fn parse_remote_user_from_metadata(metadata: &str) -> Option<String> {
-    let arr = crate::devcontainer::jsonc::parse(metadata).ok()?;
+    let arr = crate::devcontainer::jsonc::parse(metadata).ok()?.value();
     arr.as_array()?.iter().find_map(|obj| {
         obj.get("remoteUser")
             .and_then(|v| v.as_str())
@@ -77,7 +80,9 @@ pub fn find_container(
     config_path: &std::path::Path,
     cwd: &std::path::Path,
 ) -> Option<Container> {
-    let arr = crate::devcontainer::jsonc::parse(inspect_json).ok()?;
+    let arr = crate::devcontainer::jsonc::parse(inspect_json)
+        .ok()?
+        .value();
     let arr = arr.as_array()?;
     let cwd_basename = cwd.file_name()?.to_string_lossy().to_string();
     let rel = config_path.strip_prefix(cwd).ok()?;

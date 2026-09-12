@@ -478,7 +478,7 @@ mod tests {
     use crate::devcontainer::jsonc;
 
     fn value(json: &str) -> Value {
-        jsonc::parse(json).unwrap()
+        jsonc::parse(json).unwrap().value()
     }
 
     #[test]
