@@ -1,6 +1,6 @@
-import json
 import re
 
+import json5
 import pexpect
 import pytest
 from pytest_bdd import given, parsers, scenarios, then, when
@@ -83,7 +83,7 @@ def when_running_new(workspace, cyyc_binary, run_result, answers):
 def then_devcontainer_json_created(workspace):
     path = workspace / ".devcontainer" / "devcontainer.json"
     assert path.exists(), f"{path} was not created"
-    config = json.loads(path.read_text())
+    config = json5.loads(path.read_text())
     assert "image" in config or "dockerFile" in config, (
         f"expected 'image' or 'dockerFile' key, got: {list(config.keys())}"
     )
@@ -94,6 +94,14 @@ def then_no_template_option_placeholder(workspace, path):
     content = (workspace / path).read_text()
     assert "${templateOption:" not in content, (
         f"unresolved template option in {path}: {content}"
+    )
+
+
+@then(parsers.parse("{path} keeps the comments the template ships"))
+def then_keeps_template_comments(workspace, path):
+    content = (workspace / path).read_text()
+    assert re.search(r"^\s*//", content, re.MULTILINE), (
+        f"no comment left in {path}: {content}"
     )
 
 
@@ -118,7 +126,9 @@ def then_file_executable(workspace, path):
     parsers.parse('.devcontainer/devcontainer.json declares the feature "{feature_id}"')
 )
 def then_declares_feature(workspace, feature_id):
-    config = json.loads((workspace / ".devcontainer" / "devcontainer.json").read_text())
+    config = json5.loads(
+        (workspace / ".devcontainer" / "devcontainer.json").read_text()
+    )
     features = config.get("features") or {}
     assert feature_id in features, (
         f"expected feature {feature_id}, got: {list(features)}"

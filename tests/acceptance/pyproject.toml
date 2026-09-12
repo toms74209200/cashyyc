@@ -6,6 +6,7 @@ dependencies = []
 
 [dependency-groups]
 dev = [
+    "json5>=0.12.1",
     "opentelemetry-sdk>=1.42.1",
     "pexpect>=4.9.0",
     "pytest>=9.0.3",
