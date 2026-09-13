@@ -19,7 +19,7 @@ pub struct ComposeResolved {
 
 impl ComposeResolved {
     pub fn parse(json: &str) -> Option<Self> {
-        let value = jsonc::parse(json).ok()?;
+        let value = jsonc::parse(json).ok()?.value();
         let members = value.get("services")?.as_object()?;
         let mut services = HashMap::new();
         for (name, svc) in members {
@@ -321,7 +321,7 @@ mod tests {
     }
 
     fn service_from(json: &str) -> Option<ServiceResolved> {
-        ServiceResolved::from_value(&jsonc::parse(json).unwrap())
+        ServiceResolved::from_value(&jsonc::parse(json).unwrap().value())
     }
 
     #[test]

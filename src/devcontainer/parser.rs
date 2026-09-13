@@ -2,7 +2,7 @@ use super::config::*;
 use super::jsonc;
 
 pub fn parse_config(content: &str) -> Option<DevcontainerConfig> {
-    let value = jsonc::parse(content).ok()?;
+    let value = jsonc::parse(content).ok()?.value();
 
     match (
         value.get("dockerComposeFile"),

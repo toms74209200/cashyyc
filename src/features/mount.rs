@@ -62,7 +62,9 @@ mod tests {
 
     #[test]
     fn when_from_value_with_all_fields_then_parses_them() {
-        let value = jsonc::parse(r#"{"type":"bind","source":"/a","target":"/b"}"#).unwrap();
+        let value = jsonc::parse(r#"{"type":"bind","source":"/a","target":"/b"}"#)
+            .unwrap()
+            .value();
         assert_eq!(
             FeatureMount::from_value(&value),
             Some(FeatureMount {
@@ -75,7 +77,9 @@ mod tests {
 
     #[test]
     fn when_from_value_without_source_then_source_is_none() {
-        let value = jsonc::parse(r#"{"type":"volume","target":"/b"}"#).unwrap();
+        let value = jsonc::parse(r#"{"type":"volume","target":"/b"}"#)
+            .unwrap()
+            .value();
         assert_eq!(
             FeatureMount::from_value(&value).and_then(|m| m.source),
             None
@@ -84,13 +88,13 @@ mod tests {
 
     #[test]
     fn when_from_value_without_type_then_returns_none() {
-        let value = jsonc::parse(r#"{"target":"/b"}"#).unwrap();
+        let value = jsonc::parse(r#"{"target":"/b"}"#).unwrap().value();
         assert_eq!(FeatureMount::from_value(&value), None);
     }
 
     #[test]
     fn when_from_value_without_target_then_returns_none() {
-        let value = jsonc::parse(r#"{"type":"bind"}"#).unwrap();
+        let value = jsonc::parse(r#"{"type":"bind"}"#).unwrap().value();
         assert_eq!(FeatureMount::from_value(&value), None);
     }
 }
