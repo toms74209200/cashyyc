@@ -470,6 +470,21 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the container has a mount destination matching the expansion of "/extra-id"
 
+  Scenario: when mounts has an object-form entry then it is mounted
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has an object-form mount with type "volume", source "cyyc-obj" and target "/extra-obj"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount destination matching the expansion of "/extra-obj"
+
+  Scenario: when an object-form mount source is ${localWorkspaceFolder} then it is expanded
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has an object-form mount with type "bind", source "${localWorkspaceFolder}" and target "/extra-obj-bind"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount source matching the expansion of "${localWorkspaceFolder}"
+    And the container has a mount destination matching the expansion of "/extra-obj-bind"
+
   Scenario: when workspaceMount source is ${localWorkspaceFolder} then it is expanded
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
     And the config has workspaceMount "type=bind,source=${localWorkspaceFolder},target=/home/vscode/custom-ws"
