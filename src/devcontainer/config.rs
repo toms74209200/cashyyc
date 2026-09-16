@@ -119,7 +119,7 @@ pub struct CommonConfig {
     pub post_attach_command: Option<Value>,
     pub wait_for: Option<WaitFor>,
     pub workspace_folder: Option<String>,
-    pub mounts: Vec<Value>,
+    pub mounts: Vec<String>,
     pub container_env: HashMap<String, String>,
     pub container_user: Option<String>,
     pub init: Option<bool>,
@@ -195,7 +195,7 @@ impl CommonConfig {
             post_attach_command: opt_value(value, "postAttachCommand"),
             wait_for,
             workspace_folder: opt_string(value, "workspaceFolder")?,
-            mounts: value_vec(value, "mounts")?,
+            mounts: mounts(value)?,
             container_env: string_map(value, "containerEnv")?,
             container_user: opt_string(value, "containerUser")?,
             init: opt_bool(value, "init")?,
@@ -472,10 +472,38 @@ fn app_port(value: &Value) -> Option<Vec<AppPort>> {
     }
 }
 
+fn mounts(value: &Value) -> Option<Vec<String>> {
+    fn normalize(v: &Value) -> Option<String> {
+        match v {
+            Value::String(s) => Some(s.clone()),
+            Value::Object(_) => {
+                let mount_type = v.get("type")?.as_str()?;
+                let source = match v.get("source") {
+                    None | Some(Value::Null) => String::new(),
+                    Some(s) => match s.as_str()? {
+                        "" => String::new(),
+                        s => format!("src={s},"),
+                    },
+                };
+                let target = v.get("target")?.as_str()?;
+                Some(format!("type={mount_type},{source}dst={target}"))
+            }
+            _ => None,
+        }
+    }
+    match value.get("mounts") {
+        None => Some(vec![]),
+        Some(Value::Array(items)) => items.iter().map(normalize).collect(),
+        Some(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::devcontainer::jsonc;
+    use random_string::{CharacterType, generate_random_string};
+    use std::fs::File;
 
     fn value(json: &str) -> Value {
         jsonc::parse(json).unwrap().value()
@@ -521,6 +549,92 @@ mod tests {
     fn when_app_port_with_null_then_returns_empty() {
         let result = app_port(&value(r#"{"appPort": null}"#)).unwrap();
         assert_eq!(result, vec![]);
+    }
+
+    fn random_path() -> String {
+        let segment = generate_random_string(
+            8,
+            &[CharacterType::Lowercase, CharacterType::Numeric],
+            "",
+            &mut File::open("/dev/urandom").unwrap(),
+        );
+        format!("/{segment}")
+    }
+
+    #[test]
+    fn when_mounts_with_string_then_returns_it_as_is() {
+        let (source, target) = (random_path(), random_path());
+        let mount = format!("type=bind,source={source},target={target}");
+        let result = mounts(&value(&format!(r#"{{"mounts": ["{mount}"]}}"#))).unwrap();
+        assert_eq!(result, vec![mount]);
+    }
+
+    #[test]
+    fn when_mounts_with_object_then_returns_type_src_dst() {
+        let (source, target) = (random_path(), random_path());
+        let result = mounts(&value(&format!(
+            r#"{{"mounts": [{{"type": "bind", "source": "{source}", "target": "{target}"}}]}}"#
+        )))
+        .unwrap();
+        assert_eq!(result, vec![format!("type=bind,src={source},dst={target}")]);
+    }
+
+    #[test]
+    fn when_mounts_with_object_without_source_then_returns_without_src() {
+        let target = random_path();
+        let result = mounts(&value(&format!(
+            r#"{{"mounts": [{{"type": "volume", "target": "{target}"}}]}}"#
+        )))
+        .unwrap();
+        assert_eq!(result, vec![format!("type=volume,dst={target}")]);
+    }
+
+    #[test]
+    fn when_mounts_with_object_with_empty_source_then_returns_without_src() {
+        let target = random_path();
+        let result = mounts(&value(&format!(
+            r#"{{"mounts": [{{"type": "volume", "source": "", "target": "{target}"}}]}}"#
+        )))
+        .unwrap();
+        assert_eq!(result, vec![format!("type=volume,dst={target}")]);
+    }
+
+    #[test]
+    fn when_mounts_with_object_without_target_then_returns_none() {
+        let source = random_path();
+        let result = mounts(&value(&format!(
+            r#"{{"mounts": [{{"type": "bind", "source": "{source}"}}]}}"#
+        )));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn when_mounts_with_object_without_type_then_returns_none() {
+        let (source, target) = (random_path(), random_path());
+        let result = mounts(&value(&format!(
+            r#"{{"mounts": [{{"source": "{source}", "target": "{target}"}}]}}"#
+        )));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn when_mounts_with_string_and_object_then_returns_both_in_order() {
+        let (source, target) = (random_path(), random_path());
+        let string_mount = format!("type=bind,source={source},target={target}");
+        let result = mounts(&value(&format!(
+            r#"{{"mounts": [{{"type": "volume", "target": "{target}"}}, "{string_mount}"]}}"#
+        )))
+        .unwrap();
+        assert_eq!(
+            result,
+            vec![format!("type=volume,dst={target}"), string_mount]
+        );
+    }
+
+    #[test]
+    fn when_mounts_without_key_then_returns_empty() {
+        let result = mounts(&value("{}")).unwrap();
+        assert_eq!(result, Vec::<String>::new());
     }
 
     #[test]

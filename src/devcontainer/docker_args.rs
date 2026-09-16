@@ -130,16 +130,14 @@ pub fn container_run_options(
     args.extend(["-w".to_string(), workspace_folder.clone()]);
 
     for mount in &common.mounts {
-        if let Some(m) = mount.as_str() {
-            let expanded = expand_variables(
-                m,
-                local_folder,
-                &workspace_folder,
-                &Default::default(),
-                local_env,
-            );
-            args.extend(["--mount".to_string(), expanded]);
-        }
+        let expanded = expand_variables(
+            mount,
+            local_folder,
+            &workspace_folder,
+            &Default::default(),
+            local_env,
+        );
+        args.extend(["--mount".to_string(), expanded]);
     }
 
     for (key, value) in &common.container_env {
@@ -735,9 +733,7 @@ mod tests {
     #[test]
     fn when_container_run_options_with_additional_mounts_then_includes_mount_flags() {
         let mut common = empty_common();
-        common.mounts = vec![super::super::jsonc::Value::String(
-            "source=/host/data,target=/container/data,type=bind".to_string(),
-        )];
+        common.mounts = vec!["source=/host/data,target=/container/data,type=bind".to_string()];
         let args = container_run_options(
             &common,
             &[],
