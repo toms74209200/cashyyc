@@ -468,6 +468,22 @@ def given_config_mounts(workspace, config, value):
 
 
 @given(
+    parsers.parse(
+        'the config has an object-form mount with type "{mount_type}", source "{source}" and target "{target}"'
+    ),
+    target_fixture="config",
+)
+def given_config_object_form_mount(workspace, config, mount_type, source, target):
+    mount = {"type": mount_type, "source": source, "target": target}
+    mounts = [*config.get("mounts", []), mount]
+    new_config = {**config, "mounts": mounts}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
     parsers.parse('the config has runArgs with env "{key}" set to "{value}"'),
     target_fixture="config",
 )
