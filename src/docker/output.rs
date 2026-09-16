@@ -20,6 +20,7 @@ pub fn parse_image_config_json(json: &str) -> Vec<String> {
 pub struct ImageConfig {
     pub entrypoint: Vec<String>,
     pub cmd: Vec<String>,
+    pub metadata: crate::devcontainer::Metadata,
 }
 
 impl ImageConfig {
@@ -41,6 +42,14 @@ impl ImageConfig {
         Self {
             entrypoint: strings("Entrypoint"),
             cmd: strings("Cmd"),
+            metadata: crate::devcontainer::Metadata::from(
+                v.get("Labels")
+                    .and_then(|labels| labels.get(crate::devcontainer::Metadata::LABEL))
+                    .and_then(|label| label.as_str())
+                    .and_then(|label| jsonc::parse(label).ok())
+                    .map(|document| document.value())
+                    .unwrap_or(Value::Null),
+            ),
         }
     }
 }
@@ -413,6 +422,51 @@ mod tests {
         let c = ImageConfig::parse("");
         assert!(c.entrypoint.is_empty());
         assert!(c.cmd.is_empty());
+        assert_eq!(c.metadata, crate::devcontainer::Metadata::default());
+    }
+
+    #[test]
+    fn when_image_config_parse_with_metadata_label_then_returns_its_metadata() {
+        use crate::devcontainer::jsonc::{self, Value};
+        let user = random_id();
+        let label = format!(r#"[{{"remoteUser":"{user}"}}]"#);
+        let json = format!(
+            r#"{{"Labels":{{"devcontainer.metadata":{}}}}}"#,
+            Value::String(label.clone())
+        );
+        assert_eq!(
+            ImageConfig::parse(&json).metadata,
+            crate::devcontainer::Metadata::from(jsonc::parse(&label).unwrap().value())
+        );
+    }
+
+    #[test]
+    fn when_image_config_parse_without_metadata_label_then_returns_empty_metadata() {
+        let json = format!(r#"{{"Labels":{{"{}":"x"}}}}"#, random_id());
+        assert_eq!(
+            ImageConfig::parse(&json).metadata,
+            crate::devcontainer::Metadata::default()
+        );
+    }
+
+    #[test]
+    fn when_image_config_parse_with_null_labels_then_returns_empty_metadata() {
+        assert_eq!(
+            ImageConfig::parse(r#"{"Labels":null}"#).metadata,
+            crate::devcontainer::Metadata::default()
+        );
+    }
+
+    #[test]
+    fn when_image_config_parse_with_invalid_metadata_label_then_returns_empty_metadata() {
+        let json = format!(
+            r#"{{"Labels":{{"devcontainer.metadata":"[{{{}"}}}}"#,
+            random_id()
+        );
+        assert_eq!(
+            ImageConfig::parse(&json).metadata,
+            crate::devcontainer::Metadata::default()
+        );
     }
 
     #[test]

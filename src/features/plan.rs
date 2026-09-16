@@ -211,6 +211,7 @@ mod tests {
     fn make_feature(short_id: &str, installs_after: Vec<&str>) -> Feature {
         Feature {
             short_id: short_id.to_string(),
+            metadata: Default::default(),
             dir: PathBuf::from(format!("/{short_id}")),
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: installs_after.into_iter().map(String::from).collect(),
@@ -323,6 +324,7 @@ mod tests {
     fn when_feature_dockerfile_with_no_options_then_runs_install_script() {
         let features = vec![Feature {
             short_id: "git".to_string(),
+            metadata: Default::default(),
             dir: PathBuf::from("/tmp/0"),
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],
@@ -355,6 +357,7 @@ mod tests {
     fn when_feature_dockerfile_with_string_option_then_exports_uppercased_key() {
         let features = vec![Feature {
             short_id: "node".to_string(),
+            metadata: Default::default(),
             dir: PathBuf::from("/tmp/0"),
             options: jsonc::parse(r#"{"version":"18"}"#).unwrap().value(),
             installs_after: vec![],
@@ -384,6 +387,7 @@ mod tests {
     fn when_feature_dockerfile_with_boolean_option_then_exports_serialized_value() {
         let features = vec![Feature {
             short_id: "docker".to_string(),
+            metadata: Default::default(),
             dir: PathBuf::from("/tmp/0"),
             options: jsonc::parse(r#"{"moby":true}"#).unwrap().value(),
             installs_after: vec![],
@@ -413,6 +417,7 @@ mod tests {
     fn when_feature_dockerfile_with_configured_users_then_exports_literal_values() {
         let features = vec![Feature {
             short_id: "git".to_string(),
+            metadata: Default::default(),
             dir: PathBuf::from("/tmp/0"),
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],
@@ -450,6 +455,7 @@ mod tests {
     fn when_feature_dockerfile_with_no_container_user_then_captures_image_default_user() {
         let features = vec![Feature {
             short_id: "git".to_string(),
+            metadata: Default::default(),
             dir: PathBuf::from("/tmp/0"),
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],
@@ -488,6 +494,7 @@ mod tests {
     fn when_feature_dockerfile_with_configured_container_user_then_omits_capture_instruction() {
         let features = vec![Feature {
             short_id: "git".to_string(),
+            metadata: Default::default(),
             dir: PathBuf::from("/tmp/0"),
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],
@@ -518,6 +525,7 @@ mod tests {
     fn when_feature_dockerfile_with_no_remote_user_then_remote_user_matches_container_user() {
         let features = vec![Feature {
             short_id: "git".to_string(),
+            metadata: Default::default(),
             dir: PathBuf::from("/tmp/0"),
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],
@@ -547,6 +555,7 @@ mod tests {
     fn when_feature_dockerfile_with_container_env_then_includes_env_directives() {
         let features = vec![Feature {
             short_id: "node".to_string(),
+            metadata: Default::default(),
             dir: PathBuf::from("/tmp/0"),
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],
@@ -576,6 +585,7 @@ mod tests {
     fn when_feature_dockerfile_with_non_object_options_then_no_option_exports() {
         let features = vec![Feature {
             short_id: "git".to_string(),
+            metadata: Default::default(),
             dir: PathBuf::from("/tmp/0"),
             options: jsonc::parse("null").unwrap().value(),
             installs_after: vec![],
@@ -610,6 +620,7 @@ mod tests {
      {
         let features = vec![Feature {
             short_id: "git".to_string(),
+            metadata: Default::default(),
             dir: PathBuf::from("/tmp/0"),
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],
@@ -645,6 +656,7 @@ mod tests {
     fn when_feature_dockerfile_with_entrypoint_then_includes_entrypoint_directive() {
         let features = vec![Feature {
             short_id: "docker".to_string(),
+            metadata: Default::default(),
             dir: PathBuf::from("/tmp/0"),
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],
@@ -675,6 +687,7 @@ mod tests {
         let features = vec![
             Feature {
                 short_id: "docker".to_string(),
+                metadata: Default::default(),
                 dir: PathBuf::from("/tmp/0"),
                 options: jsonc::parse("{}").unwrap().value(),
                 installs_after: vec![],
@@ -693,6 +706,7 @@ mod tests {
             },
             Feature {
                 short_id: "ssh".to_string(),
+                metadata: Default::default(),
                 dir: PathBuf::from("/tmp/1"),
                 options: jsonc::parse("{}").unwrap().value(),
                 installs_after: vec![],
@@ -725,6 +739,7 @@ mod tests {
     fn when_feature_dockerfile_without_entrypoints_then_no_entrypoint_directive() {
         let features = vec![Feature {
             short_id: "git".to_string(),
+            metadata: Default::default(),
             dir: PathBuf::from("/tmp/0"),
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],

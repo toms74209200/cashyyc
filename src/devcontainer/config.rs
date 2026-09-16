@@ -1,5 +1,33 @@
 use super::jsonc::Value;
+use super::metadata::Metadata;
 use std::collections::HashMap;
+
+const METADATA_PROPERTIES: [&str; 24] = [
+    "onCreateCommand",
+    "updateContentCommand",
+    "postCreateCommand",
+    "postStartCommand",
+    "postAttachCommand",
+    "waitFor",
+    "customizations",
+    "mounts",
+    "containerEnv",
+    "containerUser",
+    "init",
+    "privileged",
+    "capAdd",
+    "securityOpt",
+    "remoteUser",
+    "userEnvProbe",
+    "remoteEnv",
+    "overrideCommand",
+    "portsAttributes",
+    "otherPortsAttributes",
+    "forwardPorts",
+    "shutdownAction",
+    "updateRemoteUserUID",
+    "hostRequirements",
+];
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct AppPort(pub String);
@@ -134,6 +162,7 @@ pub struct CommonConfig {
     pub override_feature_install_order: Vec<String>,
     pub host_requirements: Option<HostRequirements>,
     pub customizations: HashMap<String, Value>,
+    pub metadata: Metadata,
 }
 
 impl CommonConfig {
@@ -210,6 +239,12 @@ impl CommonConfig {
             override_feature_install_order: string_vec(value, "overrideFeatureInstallOrder")?,
             host_requirements,
             customizations: value_map(value, "customizations")?,
+            metadata: Metadata::from(Value::Object(
+                METADATA_PROPERTIES
+                    .iter()
+                    .filter_map(|k| value.get(k).map(|v| (k.to_string(), v.clone())))
+                    .collect(),
+            )),
         })
     }
 }
@@ -551,6 +586,77 @@ mod tests {
         assert_eq!(result, vec![]);
     }
 
+    #[test]
+    fn when_common_from_value_then_metadata_has_metadata_properties_as_written() {
+        let (image, user, target) = (random_path(), random_path(), random_path());
+        let command = format!("echo ${{localWorkspaceFolder}}{user}");
+        let mount = format!(r#"{{"type":"volume","source":"cache","target":"{target}"}}"#);
+        let common = CommonConfig::from_value(&value(&format!(
+            r#"{{
+                "image": "{image}",
+                "name": "{user}",
+                "appPort": 8080,
+                "remoteUser": "{user}",
+                "mounts": [{mount}],
+                "postCreateCommand": "{command}"
+            }}"#
+        )))
+        .unwrap();
+        assert_eq!(
+            common.metadata,
+            Metadata::from(value(&format!(
+                r#"{{"postCreateCommand":"{command}","mounts":[{mount}],"remoteUser":"{user}"}}"#
+            )))
+        );
+    }
+
+    #[test]
+    fn when_common_from_value_with_all_metadata_properties_then_metadata_has_all() {
+        let text = random_path();
+        let json = format!(
+            r#"{{
+                "onCreateCommand": "{text}",
+                "updateContentCommand": "{text}",
+                "postCreateCommand": "{text}",
+                "postStartCommand": "{text}",
+                "postAttachCommand": "{text}",
+                "waitFor": "postCreateCommand",
+                "customizations": {{}},
+                "mounts": [],
+                "containerEnv": {{}},
+                "containerUser": "{text}",
+                "init": true,
+                "privileged": true,
+                "capAdd": [],
+                "securityOpt": [],
+                "remoteUser": "{text}",
+                "userEnvProbe": "none",
+                "remoteEnv": {{}},
+                "overrideCommand": true,
+                "portsAttributes": {{}},
+                "otherPortsAttributes": {{}},
+                "forwardPorts": [],
+                "shutdownAction": "none",
+                "updateRemoteUserUID": true,
+                "hostRequirements": {{}}
+            }}"#
+        );
+        assert_eq!(
+            value(&json).as_object().unwrap().len(),
+            METADATA_PROPERTIES.len()
+        );
+        let common = CommonConfig::from_value(&value(&json)).unwrap();
+        assert_eq!(common.metadata, Metadata::from(value(&json)));
+    }
+
+    #[test]
+    fn when_common_from_value_without_metadata_properties_then_metadata_is_empty() {
+        let common =
+            CommonConfig::from_value(&value(&format!(r#"{{"image": "{}"}}"#, random_path())))
+                .unwrap();
+        assert_eq!(common.metadata, Metadata::default());
+    }
+
     fn random_path() -> String {
         let segment = generate_random_string(
             8,
@@ -685,6 +791,7 @@ mod tests {
             override_feature_install_order: vec![],
             host_requirements: None,
             customizations: Default::default(),
+            metadata: Default::default(),
         }
     }
 
