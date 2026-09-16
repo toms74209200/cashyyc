@@ -685,3 +685,45 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the command exits with a non-zero status
     And the build log is in stderr
+
+  Scenario: when a container is created then its metadata label ends with the config properties as written
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has postCreateCommand "echo ${localWorkspaceFolder}"
+    And the config has remoteUser "vscode"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container metadata label ends with the entry:
+      """
+      {"postCreateCommand": "echo ${localWorkspaceFolder}", "remoteUser": "vscode"}
+      """
+
+  Scenario: when a container is created then its metadata label starts with the base image metadata
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container metadata label starts with the metadata of image "mcr.microsoft.com/devcontainers/base:debian"
+
+  Scenario: when a feature is installed then the metadata label has the feature entry
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature with manifest:
+      """
+      {"id": "myfeature", "version": "1.0.0", "containerEnv": {"MY_FEATURE": "1"}, "postCreateCommand": "echo feature"}
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container metadata label has the entry:
+      """
+      {"id": "./features/myfeature", "postCreateCommand": "echo feature"}
+      """
+
+  Scenario: when a Compose container is created then its metadata label has the base image metadata and the config properties
+    Given a devcontainer config using docker-compose service "app" with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has postCreateCommand "echo '${localWorkspaceFolder}'"
+    And the config has remoteUser "vscode"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container metadata label starts with the metadata of image "mcr.microsoft.com/devcontainers/base:debian"
+    And the container metadata label ends with the entry:
+      """
+      {"postCreateCommand": "echo '${localWorkspaceFolder}'", "remoteUser": "vscode"}
+      """
