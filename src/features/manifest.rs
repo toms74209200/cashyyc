@@ -1,9 +1,25 @@
 use super::mount::FeatureMount;
+use crate::devcontainer::Metadata;
 use crate::devcontainer::jsonc::{self, Value};
 use crate::err;
 use crate::error::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+const METADATA_PROPERTIES: [&str; 12] = [
+    "onCreateCommand",
+    "updateContentCommand",
+    "postCreateCommand",
+    "postStartCommand",
+    "postAttachCommand",
+    "init",
+    "privileged",
+    "capAdd",
+    "securityOpt",
+    "entrypoint",
+    "mounts",
+    "customizations",
+];
 
 pub struct FeatureManifest {
     pub id: String,
@@ -20,6 +36,7 @@ pub struct FeatureManifest {
     pub post_create_command: Option<Value>,
     pub post_start_command: Option<Value>,
     pub post_attach_command: Option<Value>,
+    pub metadata: Metadata,
 }
 
 fn opt_string(value: &Value, key: &str) -> Result<Option<String>, String> {
@@ -70,12 +87,12 @@ fn string_map(value: &Value, key: &str) -> Result<HashMap<String, String>, Strin
 }
 
 impl FeatureManifest {
-    pub fn parse(content: &str) -> Result<Self> {
-        Self::from_value_content(content)
+    pub fn parse(user_feature_id: &str, content: &str) -> Result<Self> {
+        Self::from_value_content(user_feature_id, content)
             .map_err(|e| err!("failed to parse devcontainer-feature.json: {e}"))
     }
 
-    fn from_value_content(content: &str) -> Result<Self, String> {
+    fn from_value_content(user_feature_id: &str, content: &str) -> Result<Self, String> {
         let value = jsonc::parse(content).map_err(|e| e.to_string())?.value();
         let id = match value.get("id") {
             Some(Value::String(s)) => s.clone(),
@@ -108,12 +125,22 @@ impl FeatureManifest {
             post_create_command: opt_value(&value, "postCreateCommand"),
             post_start_command: opt_value(&value, "postStartCommand"),
             post_attach_command: opt_value(&value, "postAttachCommand"),
+            metadata: Metadata::from(Value::Object(
+                std::iter::once(("id".to_string(), Value::String(user_feature_id.to_string())))
+                    .chain(
+                        METADATA_PROPERTIES
+                            .iter()
+                            .filter_map(|k| value.get(k).map(|v| (k.to_string(), v.clone()))),
+                    )
+                    .collect(),
+            )),
         })
     }
 }
 
 pub struct Feature {
     pub short_id: String,
+    pub metadata: Metadata,
     pub dir: PathBuf,
     pub options: Value,
     pub installs_after: Vec<String>,
@@ -149,31 +176,31 @@ mod tests {
     fn when_parse_with_installs_after_then_ids_are_parsed() {
         let dep = random_name();
         let content = format!(r#"{{"id":"git","installsAfter":["{dep}"]}}"#);
-        let m = FeatureManifest::parse(&content).unwrap();
+        let m = FeatureManifest::parse(&random_name(), &content).unwrap();
         assert_eq!(m.installs_after, vec![dep]);
     }
 
     #[test]
     fn when_parse_with_privileged_true_then_privileged_is_some_true() {
-        let m = FeatureManifest::parse(r#"{"id":"f","privileged":true}"#).unwrap();
+        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f","privileged":true}"#).unwrap();
         assert_eq!(m.privileged, Some(true));
     }
 
     #[test]
     fn when_parse_without_privileged_then_privileged_is_none() {
-        let m = FeatureManifest::parse(r#"{"id":"f"}"#).unwrap();
+        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f"}"#).unwrap();
         assert_eq!(m.privileged, None);
     }
 
     #[test]
     fn when_parse_with_init_true_then_init_is_some_true() {
-        let m = FeatureManifest::parse(r#"{"id":"f","init":true}"#).unwrap();
+        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f","init":true}"#).unwrap();
         assert_eq!(m.init, Some(true));
     }
 
     #[test]
     fn when_parse_without_init_then_init_is_none() {
-        let m = FeatureManifest::parse(r#"{"id":"f"}"#).unwrap();
+        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f"}"#).unwrap();
         assert_eq!(m.init, None);
     }
 
@@ -181,13 +208,13 @@ mod tests {
     fn when_parse_with_cap_add_then_capabilities_are_parsed() {
         let cap = random_name();
         let content = format!(r#"{{"id":"f","capAdd":["{cap}"]}}"#);
-        let m = FeatureManifest::parse(&content).unwrap();
+        let m = FeatureManifest::parse(&random_name(), &content).unwrap();
         assert_eq!(m.cap_add, vec![cap]);
     }
 
     #[test]
     fn when_parse_without_cap_add_then_cap_add_is_empty() {
-        let m = FeatureManifest::parse(r#"{"id":"f"}"#).unwrap();
+        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f"}"#).unwrap();
         assert!(m.cap_add.is_empty());
     }
 
@@ -195,13 +222,13 @@ mod tests {
     fn when_parse_with_security_opt_then_options_are_parsed() {
         let opt = random_name();
         let content = format!(r#"{{"id":"f","securityOpt":["{opt}"]}}"#);
-        let m = FeatureManifest::parse(&content).unwrap();
+        let m = FeatureManifest::parse(&random_name(), &content).unwrap();
         assert_eq!(m.security_opt, vec![opt]);
     }
 
     #[test]
     fn when_parse_without_security_opt_then_security_opt_is_empty() {
-        let m = FeatureManifest::parse(r#"{"id":"f"}"#).unwrap();
+        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f"}"#).unwrap();
         assert!(m.security_opt.is_empty());
     }
 
@@ -212,7 +239,7 @@ mod tests {
         let content = format!(
             r#"{{"id":"f","mounts":[{{"type":"bind","source":"{source}","target":"{target}"}}]}}"#
         );
-        let m = FeatureManifest::parse(&content).unwrap();
+        let m = FeatureManifest::parse(&random_name(), &content).unwrap();
         assert_eq!(m.mounts.len(), 1);
         assert_eq!(m.mounts[0].mount_type, "bind");
         assert_eq!(m.mounts[0].source.as_deref(), Some(source.as_str()));
@@ -221,7 +248,7 @@ mod tests {
 
     #[test]
     fn when_parse_without_mounts_then_mounts_is_empty() {
-        let m = FeatureManifest::parse(r#"{"id":"f"}"#).unwrap();
+        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f"}"#).unwrap();
         assert!(m.mounts.is_empty());
     }
 
@@ -229,42 +256,100 @@ mod tests {
     fn when_parse_with_entrypoint_then_entrypoint_is_some() {
         let ep = format!("/usr/local/share/{}-init.sh", random_name());
         let content = format!(r#"{{"id":"f","entrypoint":"{ep}"}}"#);
-        let m = FeatureManifest::parse(&content).unwrap();
+        let m = FeatureManifest::parse(&random_name(), &content).unwrap();
         assert_eq!(m.entrypoint, Some(ep));
     }
 
     #[test]
     fn when_parse_without_entrypoint_then_entrypoint_is_none() {
-        let m = FeatureManifest::parse(r#"{"id":"f"}"#).unwrap();
+        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f"}"#).unwrap();
         assert_eq!(m.entrypoint, None);
     }
 
     #[test]
     fn when_parse_with_invalid_json_then_returns_error() {
-        assert!(FeatureManifest::parse("not json").is_err());
+        assert!(FeatureManifest::parse(&random_name(), "not json").is_err());
     }
 
     #[test]
     fn when_parse_without_id_field_then_returns_error() {
-        assert!(FeatureManifest::parse("{}").is_err());
+        assert!(FeatureManifest::parse(&random_name(), "{}").is_err());
     }
 
     #[test]
     fn when_parse_with_non_string_id_then_returns_error() {
-        assert!(FeatureManifest::parse(r#"{"id":123}"#).is_err());
+        assert!(FeatureManifest::parse(&random_name(), r#"{"id":123}"#).is_err());
     }
 
     #[test]
     fn when_parse_with_post_create_command_string_then_parsed_as_value() {
         let cmd = random_name();
         let content = format!(r#"{{"id":"f","postCreateCommand":"{cmd}"}}"#);
-        let m = FeatureManifest::parse(&content).unwrap();
+        let m = FeatureManifest::parse(&random_name(), &content).unwrap();
         assert_eq!(m.post_create_command, Some(Value::String(cmd)));
     }
 
     #[test]
+    fn when_parse_then_metadata_has_user_feature_id_and_metadata_properties() {
+        let (user_feature_id, name, cmd) = (random_name(), random_name(), random_name());
+        let content = format!(
+            r#"{{
+                "id": "f",
+                "version": "1.0.0",
+                "name": "{name}",
+                "options": {{"version": {{"type": "string", "default": "{name}"}}}},
+                "containerEnv": {{"KEY": "{name}"}},
+                "installsAfter": ["{name}"],
+                "privileged": true,
+                "postCreateCommand": "{cmd}"
+            }}"#
+        );
+        let m = FeatureManifest::parse(&user_feature_id, &content).unwrap();
+        assert_eq!(
+            m.metadata,
+            Metadata::from(
+                jsonc::parse(&format!(
+                    r#"{{"id":"{user_feature_id}","postCreateCommand":"{cmd}","privileged":true}}"#
+                ))
+                .unwrap()
+                .value()
+            )
+        );
+    }
+
+    #[test]
+    fn when_parse_with_all_metadata_properties_then_metadata_has_all() {
+        let (user_feature_id, text) = (random_name(), random_name());
+        let properties = format!(
+            r#""onCreateCommand": "{text}",
+            "updateContentCommand": "{text}",
+            "postCreateCommand": "{text}",
+            "postStartCommand": "{text}",
+            "postAttachCommand": "{text}",
+            "init": true,
+            "privileged": true,
+            "capAdd": [],
+            "securityOpt": [],
+            "entrypoint": "{text}",
+            "mounts": [],
+            "customizations": {{}}"#
+        );
+        let m =
+            FeatureManifest::parse(&user_feature_id, &format!(r#"{{"id": "f", {properties}}}"#))
+                .unwrap();
+        let expected = jsonc::parse(&format!(r#"{{"id": "{user_feature_id}", {properties}}}"#))
+            .unwrap()
+            .value();
+        assert_eq!(
+            expected.as_object().unwrap().len(),
+            METADATA_PROPERTIES.len() + 1
+        );
+        assert_eq!(m.metadata, Metadata::from(expected));
+    }
+
+    #[test]
     fn when_parse_without_lifecycle_commands_then_all_are_none() {
-        let m = FeatureManifest::parse(r#"{"id":"f"}"#).unwrap();
+        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f"}"#).unwrap();
         assert!(m.on_create_command.is_none());
         assert!(m.update_content_command.is_none());
         assert!(m.post_create_command.is_none());

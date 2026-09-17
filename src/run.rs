@@ -652,24 +652,32 @@ fn shell(
             #[cfg(not(target_os = "linux"))]
             let image_tag = s.image_tag.clone();
 
+            let output = docker.image_config(&image_tag)?;
+            if !output.success && s.override_command == Some(false) {
+                return Err(err!(
+                    "Failed to inspect image (overrideCommand: false): {}",
+                    output.stderr.trim()
+                ));
+            }
+            let image_config = docker::ImageConfig::parse(if output.success {
+                output.stdout.trim()
+            } else {
+                ""
+            });
             let mut run_args = s.run_args;
+            run_args.extend(
+                devcontainer::Metadata::for_container(
+                    image_config.metadata,
+                    features_plan
+                        .iter()
+                        .flat_map(|(plan, _)| plan.features())
+                        .map(|f| &f.metadata),
+                    &config.common().metadata,
+                )
+                .to_docker_args(),
+            );
             run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
             run_args.push(image_tag.clone());
-            let image_config = if s.override_command == Some(false) {
-                let output = docker.image_config(&image_tag)?;
-                if !output.success {
-                    return Err(err!(
-                        "Failed to inspect image (overrideCommand: false): {}",
-                        output.stderr.trim()
-                    ));
-                }
-                docker::ImageConfig::parse(output.stdout.trim())
-            } else {
-                docker::ImageConfig {
-                    entrypoint: vec![],
-                    cmd: vec![],
-                }
-            };
             run_args.extend(devcontainer::container_start_args(
                 s.override_command,
                 &image_config.entrypoint,
@@ -822,6 +830,41 @@ fn shell(
                     if !docker.compose_build_streamed(&build_args)? {
                         return Err(err!("`docker compose build` failed"));
                     }
+                    let mut resolved_args = c.global_args.clone();
+                    resolved_args.extend(["-f".to_string(), p.display().to_string()]);
+                    let image = docker
+                        .compose_config_json(&resolved_args)
+                        .ok()
+                        .filter(|o| o.success)
+                        .and_then(|o| devcontainer::ComposeResolved::parse(&o.stdout))
+                        .and_then(|cfg| match cfg.services.get(&c.service)? {
+                            devcontainer::ServiceResolved::Image { image } => Some(image.clone()),
+                            devcontainer::ServiceResolved::Build { build } => {
+                                Some(build.image.clone())
+                            }
+                        })
+                        .unwrap_or_default();
+                    let image_config = docker::ImageConfig::parse(
+                        &docker
+                            .image_config(&image)
+                            .ok()
+                            .filter(|o| o.success)
+                            .map(|o| o.stdout)
+                            .unwrap_or_default(),
+                    );
+                    let metadata = devcontainer::Metadata::for_container(
+                        image_config.metadata,
+                        features_plan
+                            .iter()
+                            .flat_map(|(plan, _)| plan.features())
+                            .map(|f| &f.metadata),
+                        &config.common().metadata,
+                    );
+                    std::fs::write(
+                        &p,
+                        metadata.to_compose_override(&override_content, &c.service),
+                    )
+                    .map_err(|e| err!("Failed to write compose override file: {e}"))?;
                 }
                 p
             };
@@ -1377,9 +1420,10 @@ fn download_features(
         let manifest_content =
             std::fs::read_to_string(feature_dir.join("devcontainer-feature.json"))
                 .map_err(|e| err!("devcontainer-feature.json not found in feature {id}: {e}"))?;
-        let manifest = features::FeatureManifest::parse(&manifest_content)?;
+        let manifest = features::FeatureManifest::parse(id, &manifest_content)?;
         resolved.push(features::Feature {
             short_id: manifest.id,
+            metadata: manifest.metadata,
             dir: feature_dir,
             options: (*options).clone(),
             installs_after: manifest.installs_after,

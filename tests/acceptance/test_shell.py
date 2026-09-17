@@ -584,3 +584,90 @@ def then_image_entrypoint_includes(workspace, config, path):
     assert path in entrypoint, (
         f"expected {path!r} in image entrypoint, got: {entrypoint!r}"
     )
+
+
+@then("the container metadata label ends with the entry:")
+def then_metadata_label_ends_with_entry(workspace, config, docstring):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    result = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            cid,
+            "--format",
+            '{{index .Config.Labels "devcontainer.metadata"}}',
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"docker inspect failed: {result.stderr}"
+    entries = json.loads(result.stdout)
+    assert entries and entries[-1] == json.loads(docstring), (
+        f"last metadata entry mismatch: {entries}"
+    )
+
+
+@then("the container metadata label has the entry:")
+def then_metadata_label_has_entry(workspace, config, docstring):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    result = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            cid,
+            "--format",
+            '{{index .Config.Labels "devcontainer.metadata"}}',
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"docker inspect failed: {result.stderr}"
+    entries = json.loads(result.stdout)
+    assert json.loads(docstring) in entries, f"entry not found in metadata: {entries}"
+
+
+@then(
+    parsers.parse(
+        'the container metadata label starts with the metadata of image "{image}"'
+    )
+)
+def then_metadata_label_starts_with_image_metadata(workspace, config, image):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    container_result = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            cid,
+            "--format",
+            '{{index .Config.Labels "devcontainer.metadata"}}',
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert container_result.returncode == 0, (
+        f"docker inspect failed: {container_result.stderr}"
+    )
+    image_result = subprocess.run(
+        [
+            "docker",
+            "image",
+            "inspect",
+            image,
+            "--format",
+            '{{index .Config.Labels "devcontainer.metadata"}}',
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert image_result.returncode == 0, (
+        f"docker image inspect failed: {image_result.stderr}"
+    )
+    entries = json.loads(container_result.stdout)
+    image_entries = json.loads(image_result.stdout)
+    assert image_entries, f"image {image!r} has no metadata label"
+    assert entries[: len(image_entries)] == image_entries, (
+        f"metadata does not start with the image metadata: {entries}"
+    )

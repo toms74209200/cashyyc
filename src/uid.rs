@@ -267,6 +267,7 @@ mod tests {
             override_feature_install_order: vec![],
             host_requirements: None,
             customizations: Default::default(),
+            metadata: Default::default(),
         }
     }
 

@@ -20,10 +20,14 @@ pub struct ComposeResolved {
 impl ComposeResolved {
     pub fn parse(json: &str) -> Option<Self> {
         let value = jsonc::parse(json).ok()?.value();
+        let project = value.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let members = value.get("services")?.as_object()?;
         let mut services = HashMap::new();
         for (name, svc) in members {
-            services.insert(name.clone(), ServiceResolved::from_value(svc)?);
+            services.insert(
+                name.clone(),
+                ServiceResolved::from_value(svc, &format!("{project}-{name}"))?,
+            );
         }
         Some(ComposeResolved { services })
     }
@@ -35,17 +39,18 @@ pub enum ServiceResolved {
 }
 
 impl ServiceResolved {
-    pub fn from_value(value: &Value) -> Option<Self> {
+    pub fn from_value(value: &Value, default_image: &str) -> Option<Self> {
+        let image = value.get("image").and_then(|v| v.as_str());
         let build = value.get("build").and_then(|b| {
             Some(BuildResolved {
                 dockerfile: b.get("dockerfile")?.as_str()?.to_string(),
                 context: b.get("context")?.as_str()?.to_string(),
+                image: image.unwrap_or(default_image).to_string(),
             })
         });
         if let Some(build) = build {
             return Some(ServiceResolved::Build { build });
         }
-        let image = value.get("image").and_then(|v| v.as_str());
         image.map(|image| ServiceResolved::Image {
             image: image.to_string(),
         })
@@ -55,6 +60,7 @@ impl ServiceResolved {
 pub struct BuildResolved {
     pub dockerfile: String,
     pub context: String,
+    pub image: String,
 }
 
 pub enum FeatureBaseSource {
@@ -171,7 +177,18 @@ services:
 mod tests {
     use super::*;
     use crate::devcontainer::config::CommonConfig;
+    use random_string::{CharacterType, generate_random_string};
     use std::collections::HashMap;
+    use std::fs::File;
+
+    fn random_word() -> String {
+        generate_random_string(
+            8,
+            &[CharacterType::Lowercase, CharacterType::Numeric],
+            "",
+            &mut File::open("/dev/urandom").unwrap(),
+        )
+    }
 
     fn compose_config(service: &str) -> DockerComposeConfig {
         DockerComposeConfig {
@@ -209,6 +226,7 @@ mod tests {
                 override_feature_install_order: vec![],
                 host_requirements: None,
                 customizations: HashMap::new(),
+                metadata: Default::default(),
             },
         }
     }
@@ -321,7 +339,7 @@ mod tests {
     }
 
     fn service_from(json: &str) -> Option<ServiceResolved> {
-        ServiceResolved::from_value(&jsonc::parse(json).unwrap().value())
+        ServiceResolved::from_value(&jsonc::parse(json).unwrap().value(), &random_word())
     }
 
     #[test]
@@ -377,5 +395,34 @@ mod tests {
     #[test]
     fn when_service_resolved_has_neither_then_from_value_fails() {
         assert!(service_from(r#"{}"#).is_none());
+    }
+
+    #[test]
+    fn when_compose_resolved_with_build_service_without_image_then_build_image_is_project_service()
+    {
+        let (project, service) = (random_word(), random_word());
+        let cfg = ComposeResolved::parse(&format!(
+            r#"{{"name":"{project}","services":{{"{service}":{{"build":{{"dockerfile":"D","context":"/c"}}}}}}}}"#
+        ))
+        .unwrap();
+        match cfg.services.get(&service) {
+            Some(ServiceResolved::Build { build }) => {
+                assert_eq!(build.image, format!("{project}-{service}"));
+            }
+            _ => panic!("expected Build"),
+        }
+    }
+
+    #[test]
+    fn when_compose_resolved_with_build_service_with_image_then_build_image_is_the_image() {
+        let (project, service, image) = (random_word(), random_word(), random_word());
+        let cfg = ComposeResolved::parse(&format!(
+            r#"{{"name":"{project}","services":{{"{service}":{{"image":"{image}","build":{{"dockerfile":"D","context":"/c"}}}}}}}}"#
+        ))
+        .unwrap();
+        match cfg.services.get(&service) {
+            Some(ServiceResolved::Build { build }) => assert_eq!(build.image, image),
+            _ => panic!("expected Build"),
+        }
     }
 }

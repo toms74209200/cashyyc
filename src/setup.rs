@@ -187,6 +187,7 @@ mod tests {
             override_feature_install_order: vec![],
             host_requirements: None,
             customizations: HashMap::new(),
+            metadata: Default::default(),
         }
     }
 
