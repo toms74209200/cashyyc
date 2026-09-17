@@ -391,6 +391,31 @@ impl DevcontainerConfig {
         }
     }
 
+    pub fn with_common(&self, common: CommonConfig) -> Self {
+        match self {
+            DevcontainerConfig::Image(c) => DevcontainerConfig::Image(ImageConfig {
+                common,
+                ..c.clone()
+            }),
+            DevcontainerConfig::Dockerfile(c) => DevcontainerConfig::Dockerfile(DockerfileConfig {
+                common,
+                ..c.clone()
+            }),
+            DevcontainerConfig::DockerfileBuild(c) => {
+                DevcontainerConfig::DockerfileBuild(DockerfileBuildConfig {
+                    common,
+                    ..c.clone()
+                })
+            }
+            DevcontainerConfig::DockerCompose(c) => {
+                DevcontainerConfig::DockerCompose(DockerComposeConfig {
+                    common,
+                    ..c.clone()
+                })
+            }
+        }
+    }
+
     pub fn workspace_folder(
         &self,
         cwd: &std::path::Path,
@@ -997,6 +1022,66 @@ mod tests {
                 &HashMap::new()
             ),
             "/workspace"
+        );
+    }
+    #[test]
+    fn when_with_common_with_an_image_config_then_returns_the_image_config_with_the_given_common() {
+        let image = ImageConfig::from_value(&value(r#"{"image":"alpine"}"#)).unwrap();
+        let replacement = CommonConfig::from_value(&value(r#"{"remoteUser":"vscode"}"#)).unwrap();
+        assert_eq!(
+            DevcontainerConfig::Image(image.clone()).with_common(replacement.clone()),
+            DevcontainerConfig::Image(ImageConfig {
+                common: replacement,
+                ..image
+            })
+        );
+    }
+
+    #[test]
+    fn when_with_common_with_a_dockerfile_config_then_returns_the_dockerfile_config_with_the_given_common()
+     {
+        let dockerfile =
+            DockerfileConfig::from_value(&value(r#"{"dockerFile":"Dockerfile"}"#)).unwrap();
+        let replacement = CommonConfig::from_value(&value(r#"{"remoteUser":"vscode"}"#)).unwrap();
+        assert_eq!(
+            DevcontainerConfig::Dockerfile(dockerfile.clone()).with_common(replacement.clone()),
+            DevcontainerConfig::Dockerfile(DockerfileConfig {
+                common: replacement,
+                ..dockerfile
+            })
+        );
+    }
+
+    #[test]
+    fn when_with_common_with_a_dockerfile_build_config_then_returns_the_dockerfile_build_config_with_the_given_common()
+     {
+        let build =
+            DockerfileBuildConfig::from_value(&value(r#"{"build":{"dockerfile":"Dockerfile"}}"#))
+                .unwrap();
+        let replacement = CommonConfig::from_value(&value(r#"{"remoteUser":"vscode"}"#)).unwrap();
+        assert_eq!(
+            DevcontainerConfig::DockerfileBuild(build.clone()).with_common(replacement.clone()),
+            DevcontainerConfig::DockerfileBuild(DockerfileBuildConfig {
+                common: replacement,
+                ..build
+            })
+        );
+    }
+
+    #[test]
+    fn when_with_common_with_a_compose_config_then_returns_the_compose_config_with_the_given_common()
+     {
+        let compose = DockerComposeConfig::from_value(&value(
+            r#"{"dockerComposeFile":"compose.yml","service":"app","workspaceFolder":"/workspaces/app"}"#,
+        ))
+        .unwrap();
+        let replacement = CommonConfig::from_value(&value(r#"{"remoteUser":"vscode"}"#)).unwrap();
+        assert_eq!(
+            DevcontainerConfig::DockerCompose(compose.clone()).with_common(replacement.clone()),
+            DevcontainerConfig::DockerCompose(DockerComposeConfig {
+                common: replacement,
+                ..compose
+            })
         );
     }
 }

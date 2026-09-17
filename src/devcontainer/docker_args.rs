@@ -1,4 +1,5 @@
 use super::config::{AppPort, BuildConfig, CommonConfig, DockerfileConfig};
+use super::metadata::mount_target;
 use super::variables::expand_variables;
 use std::path::Path;
 
@@ -193,6 +194,80 @@ pub fn container_run_options(
     }));
 
     args
+}
+
+pub fn image_metadata_run_options(
+    effective: &CommonConfig,
+    common: &CommonConfig,
+    local_folder: &Path,
+    workspace_folder: &str,
+    local_env: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    let expand = |value: &str| {
+        expand_variables(
+            value,
+            local_folder,
+            workspace_folder,
+            &Default::default(),
+            local_env,
+        )
+    };
+
+    [
+        {
+            let configured: Vec<&str> = common
+                .mounts
+                .iter()
+                .filter_map(|mount| mount_target(mount))
+                .collect();
+            effective
+                .mounts
+                .iter()
+                .filter(|mount| {
+                    !common.mounts.contains(mount)
+                        && !mount_target(mount).is_some_and(|target| configured.contains(&target))
+                })
+                .flat_map(|mount| ["--mount".to_string(), expand(mount)])
+                .collect::<Vec<String>>()
+        },
+        effective
+            .container_env
+            .iter()
+            .filter(|(key, _)| !common.container_env.contains_key(*key))
+            .collect::<std::collections::BTreeMap<_, _>>()
+            .into_iter()
+            .flat_map(|(key, value)| ["--env".to_string(), format!("{key}={}", expand(value))])
+            .collect(),
+        match &effective.container_user {
+            Some(user) if common.container_user.is_none() => {
+                vec!["--user".to_string(), expand(user)]
+            }
+            _ => vec![],
+        },
+        if effective.init == Some(true) && common.init != Some(true) {
+            vec!["--init".to_string()]
+        } else {
+            vec![]
+        },
+        if effective.privileged == Some(true) && common.privileged != Some(true) {
+            vec!["--privileged".to_string()]
+        } else {
+            vec![]
+        },
+        effective
+            .cap_add
+            .iter()
+            .filter(|cap| !common.cap_add.contains(cap))
+            .flat_map(|cap| ["--cap-add".to_string(), cap.clone()])
+            .collect(),
+        effective
+            .security_opt
+            .iter()
+            .filter(|opt| !common.security_opt.contains(opt))
+            .flat_map(|opt| ["--security-opt".to_string(), opt.clone()])
+            .collect(),
+    ]
+    .concat()
 }
 
 #[cfg(test)]
@@ -748,6 +823,286 @@ mod tests {
         assert_eq!(
             args[mount_idx + 1],
             "source=/host/data,target=/container/data,type=bind"
+        );
+    }
+
+    #[test]
+    fn when_image_metadata_run_options_with_no_difference_then_returns_empty() {
+        assert_eq!(
+            image_metadata_run_options(
+                &empty_common(),
+                &empty_common(),
+                Path::new("/project"),
+                "/workspaces/project",
+                &HashMap::new(),
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn when_image_metadata_run_options_with_container_env_only_in_image_then_returns_env_flag() {
+        let effective = CommonConfig {
+            container_env: HashMap::from([("TZ".to_string(), "Asia/Tokyo".to_string())]),
+            ..empty_common()
+        };
+        assert_eq!(
+            image_metadata_run_options(
+                &effective,
+                &empty_common(),
+                Path::new("/project"),
+                "/workspaces/project",
+                &HashMap::new(),
+            ),
+            vec!["--env".to_string(), "TZ=Asia/Tokyo".to_string()]
+        );
+    }
+
+    #[test]
+    fn when_image_metadata_run_options_with_container_env_in_both_then_returns_nothing_for_that_key()
+     {
+        let common = CommonConfig {
+            container_env: HashMap::from([("TZ".to_string(), "Asia/Tokyo".to_string())]),
+            ..empty_common()
+        };
+        let effective = CommonConfig {
+            container_env: HashMap::from([("TZ".to_string(), "UTC".to_string())]),
+            ..empty_common()
+        };
+        assert_eq!(
+            image_metadata_run_options(
+                &effective,
+                &common,
+                Path::new("/project"),
+                "/workspaces/project",
+                &HashMap::new(),
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn when_image_metadata_run_options_with_variable_in_container_env_then_returns_it_expanded() {
+        let effective = CommonConfig {
+            container_env: HashMap::from([(
+                "EXTRA_PATH".to_string(),
+                "${localWorkspaceFolder}/bin".to_string(),
+            )]),
+            ..empty_common()
+        };
+        assert_eq!(
+            image_metadata_run_options(
+                &effective,
+                &empty_common(),
+                Path::new("/project"),
+                "/workspaces/project",
+                &HashMap::new(),
+            ),
+            vec!["--env".to_string(), "EXTRA_PATH=/project/bin".to_string()]
+        );
+    }
+
+    #[test]
+    fn when_image_metadata_run_options_with_mount_only_in_image_then_returns_mount_flag() {
+        let effective = CommonConfig {
+            mounts: vec!["type=bind,src=/host/data,dst=/mnt/data".to_string()],
+            ..empty_common()
+        };
+        assert_eq!(
+            image_metadata_run_options(
+                &effective,
+                &empty_common(),
+                Path::new("/project"),
+                "/workspaces/project",
+                &HashMap::new(),
+            ),
+            vec![
+                "--mount".to_string(),
+                "type=bind,src=/host/data,dst=/mnt/data".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn when_image_metadata_run_options_with_mount_of_the_same_target_then_returns_no_mount_flag() {
+        let common = CommonConfig {
+            mounts: vec!["type=bind,src=/host/config,dst=/mnt/data".to_string()],
+            ..empty_common()
+        };
+        let effective = CommonConfig {
+            mounts: vec!["type=bind,src=/host/image,dst=/mnt/data".to_string()],
+            ..empty_common()
+        };
+        assert_eq!(
+            image_metadata_run_options(
+                &effective,
+                &common,
+                Path::new("/project"),
+                "/workspaces/project",
+                &HashMap::new(),
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn when_image_metadata_run_options_with_container_user_only_in_image_then_returns_user_flag() {
+        let effective = CommonConfig {
+            container_user: Some("vscode".to_string()),
+            ..empty_common()
+        };
+        assert_eq!(
+            image_metadata_run_options(
+                &effective,
+                &empty_common(),
+                Path::new("/project"),
+                "/workspaces/project",
+                &HashMap::new(),
+            ),
+            vec!["--user".to_string(), "vscode".to_string()]
+        );
+    }
+
+    #[test]
+    fn when_image_metadata_run_options_with_container_user_in_both_then_returns_no_user_flag() {
+        let common = CommonConfig {
+            container_user: Some("node".to_string()),
+            ..empty_common()
+        };
+        let effective = CommonConfig {
+            container_user: Some("vscode".to_string()),
+            ..empty_common()
+        };
+        assert_eq!(
+            image_metadata_run_options(
+                &effective,
+                &common,
+                Path::new("/project"),
+                "/workspaces/project",
+                &HashMap::new(),
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn when_image_metadata_run_options_with_init_only_in_image_then_returns_init_flag() {
+        let effective = CommonConfig {
+            init: Some(true),
+            ..empty_common()
+        };
+        assert_eq!(
+            image_metadata_run_options(
+                &effective,
+                &empty_common(),
+                Path::new("/project"),
+                "/workspaces/project",
+                &HashMap::new(),
+            ),
+            vec!["--init".to_string()]
+        );
+    }
+
+    #[test]
+    fn when_image_metadata_run_options_with_init_in_both_then_returns_no_init_flag() {
+        let common = CommonConfig {
+            init: Some(true),
+            ..empty_common()
+        };
+        let effective = CommonConfig {
+            init: Some(true),
+            ..empty_common()
+        };
+        assert_eq!(
+            image_metadata_run_options(
+                &effective,
+                &common,
+                Path::new("/project"),
+                "/workspaces/project",
+                &HashMap::new(),
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn when_image_metadata_run_options_with_privileged_only_in_image_then_returns_privileged_flag()
+    {
+        let effective = CommonConfig {
+            privileged: Some(true),
+            ..empty_common()
+        };
+        assert_eq!(
+            image_metadata_run_options(
+                &effective,
+                &empty_common(),
+                Path::new("/project"),
+                "/workspaces/project",
+                &HashMap::new(),
+            ),
+            vec!["--privileged".to_string()]
+        );
+    }
+
+    #[test]
+    fn when_image_metadata_run_options_with_cap_add_only_in_image_then_returns_cap_add_flag() {
+        let effective = CommonConfig {
+            cap_add: vec!["SYS_PTRACE".to_string()],
+            ..empty_common()
+        };
+        assert_eq!(
+            image_metadata_run_options(
+                &effective,
+                &empty_common(),
+                Path::new("/project"),
+                "/workspaces/project",
+                &HashMap::new(),
+            ),
+            vec!["--cap-add".to_string(), "SYS_PTRACE".to_string()]
+        );
+    }
+
+    #[test]
+    fn when_image_metadata_run_options_with_cap_add_in_both_then_returns_only_the_image_one() {
+        let common = CommonConfig {
+            cap_add: vec!["NET_ADMIN".to_string()],
+            ..empty_common()
+        };
+        let effective = CommonConfig {
+            cap_add: vec!["NET_ADMIN".to_string(), "SYS_PTRACE".to_string()],
+            ..empty_common()
+        };
+        assert_eq!(
+            image_metadata_run_options(
+                &effective,
+                &common,
+                Path::new("/project"),
+                "/workspaces/project",
+                &HashMap::new(),
+            ),
+            vec!["--cap-add".to_string(), "SYS_PTRACE".to_string()]
+        );
+    }
+
+    #[test]
+    fn when_image_metadata_run_options_with_security_opt_only_in_image_then_returns_security_opt_flag()
+     {
+        let effective = CommonConfig {
+            security_opt: vec!["seccomp=unconfined".to_string()],
+            ..empty_common()
+        };
+        assert_eq!(
+            image_metadata_run_options(
+                &effective,
+                &empty_common(),
+                Path::new("/project"),
+                "/workspaces/project",
+                &HashMap::new(),
+            ),
+            vec![
+                "--security-opt".to_string(),
+                "seccomp=unconfined".to_string()
+            ]
         );
     }
 }

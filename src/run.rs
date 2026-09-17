@@ -549,6 +549,7 @@ fn shell(
         }
     }
 
+    let mut image_metadata = devcontainer::Metadata::default();
     let id: String = match target {
         ContainerTarget::Single(s) => {
             if let Some((_, ref fdir)) = features_plan {
@@ -665,6 +666,14 @@ fn shell(
                 ""
             });
             let mut run_args = s.run_args;
+            image_metadata = image_config.metadata.clone();
+            run_args.extend(devcontainer::image_metadata_run_options(
+                &image_metadata.merge_into(config.common()),
+                config.common(),
+                &cwd,
+                &config.workspace_folder(&cwd, &local_env),
+                &local_env,
+            ));
             run_args.extend(
                 devcontainer::Metadata::for_container(
                     image_config.metadata,
@@ -852,6 +861,7 @@ fn shell(
                             .map(|o| o.stdout)
                             .unwrap_or_default(),
                     );
+                    image_metadata = image_config.metadata.clone();
                     let metadata = devcontainer::Metadata::for_container(
                         image_config.metadata,
                         features_plan
@@ -886,6 +896,7 @@ fn shell(
                 .ok_or_else(|| err!("Failed to get container ID from `docker compose up`"))?
         }
     };
+    let config = config.with_common(image_metadata.merge_into(config.common()));
     let created_at = docker
         .inspect_format(&id, "{{.Created}}")
         .map(|o| o.stdout.trim().to_string())?;
