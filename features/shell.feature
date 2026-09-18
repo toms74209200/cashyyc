@@ -727,3 +727,26 @@ Feature: cyyc shell
       """
       {"postCreateCommand": "echo '${localWorkspaceFolder}'", "remoteUser": "vscode"}
       """
+
+  Scenario: when the base image metadata declares a property then it takes effect
+    Given an image built from:
+      """
+      FROM mcr.microsoft.com/devcontainers/base:debian
+      LABEL devcontainer.metadata='[{"containerEnv":{"FROM_IMAGE":"1"}}]'
+      """
+    And a devcontainer config based on that image
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container env "FROM_IMAGE" is "1"
+
+  Scenario: when the base image metadata and the config declare the same property then the config wins
+    Given an image built from:
+      """
+      FROM mcr.microsoft.com/devcontainers/base:debian
+      LABEL devcontainer.metadata='[{"containerEnv":{"SHARED":"from-image"}}]'
+      """
+    And a devcontainer config based on that image
+    And the config has containerEnv "SHARED" set to "from-config"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container env "SHARED" is "from-config"

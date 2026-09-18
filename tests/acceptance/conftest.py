@@ -215,6 +215,29 @@ def given_image_config(workspace, image):
     return config
 
 
+@given("an image built from:", target_fixture="base_image")
+def given_image_built_from(workspace, docstring):
+    build_dir = workspace / "base-image"
+    build_dir.mkdir(parents=True, exist_ok=True)
+    (build_dir / "Dockerfile").write_text(docstring)
+    tag = f"vsc-{workspace.name.lower()}-base"
+    result = subprocess.run(
+        ["docker", "build", "-t", tag, str(build_dir)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"docker build failed: {result.stderr}"
+    return tag
+
+
+@given("a devcontainer config based on that image", target_fixture="config")
+def given_config_based_on_base_image(workspace, base_image):
+    (workspace / ".devcontainer" / "Dockerfile").write_text(f"FROM {base_image}\n")
+    config = {"dockerFile": "Dockerfile"}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(json.dumps(config))
+    return config
+
+
 @given("a devcontainer config with Dockerfile:", target_fixture="config")
 def given_dockerfile_config(workspace, docstring):
     (workspace / ".devcontainer" / "Dockerfile").write_text(docstring)

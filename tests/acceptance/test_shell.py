@@ -289,6 +289,21 @@ def given_local_features_alpha_beta(workspace, config):
     return new_config
 
 
+@then(parsers.parse('the container env "{key}" is "{value}"'))
+def then_container_env_is(workspace, config, key, value):
+    cid = _container_id(workspace, config)
+    assert cid, "no running container found"
+    result = subprocess.run(
+        ["docker", "exec", cid, "printenv", key],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"env {key!r} not set: {result.stderr!r}"
+    assert result.stdout.strip() == value, (
+        f"env {key!r}: expected {value!r}, got {result.stdout.strip()!r}"
+    )
+
+
 @then(parsers.parse('the container env "{key}" is the expansion of "{template}"'))
 def then_container_env_is_expansion(workspace, config, key, template):
     cid = _container_id(workspace, config)
