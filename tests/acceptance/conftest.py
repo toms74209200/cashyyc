@@ -428,6 +428,30 @@ def given_update_remote_user_uid_false(workspace, config):
 
 
 @given(
+    parsers.parse("the config has init true"),
+    target_fixture="config",
+)
+def given_init_true(workspace, config):
+    new_config = {**config, "init": True}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse("the config has privileged true"),
+    target_fixture="config",
+)
+def given_privileged_true(workspace, config):
+    new_config = {**config, "privileged": True}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
     parsers.parse('the config has containerEnv "{key}" set to "{value}"'),
     target_fixture="config",
 )
