@@ -142,25 +142,27 @@ trap "exit 0" 15
 exec "$$@"
 while sleep 1 & wait $$!; do :; done"#;
     let script = script.replace('"', r#"\""#).replace('\n', r"\n");
+    let init_line = match config.common.init {
+        Some(true) => "\n    init: true".to_string(),
+        _ => String::new(),
+    };
     let user_line = config
         .common
         .container_user
         .as_deref()
-        .map(|u| {
-            format!(
-                "
-    user: {}",
-                u
-            )
-        })
+        .map(|u| format!("\n    user: {u}"))
         .unwrap_or_default();
+    let privileged_line = match config.common.privileged {
+        Some(true) => "\n    privileged: true".to_string(),
+        _ => String::new(),
+    };
     let override_content = format!(
         "\
 services:
   '{}':
-    entrypoint: [\"/bin/sh\", \"-c\", \"{}\", \"-\"]{}
+    entrypoint: [\"/bin/sh\", \"-c\", \"{}\", \"-\"]{}{}{}
 ",
-        config.service, script, user_line
+        config.service, script, init_line, user_line, privileged_line
     );
     ComposeArgs {
         project_name,
@@ -336,6 +338,42 @@ mod tests {
         config.common.container_user = Some("vscode".to_string());
         let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
         assert!(args.override_content.contains("user: vscode"));
+    }
+
+    #[test]
+    fn when_compose_args_with_init_then_override_content_contains_init() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.init = Some(true);
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
+        assert!(args.override_content.contains("\n    init: true"));
+    }
+
+    #[test]
+    fn when_compose_args_with_init_false_then_override_content_has_no_init() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.init = Some(false);
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
+        assert!(!args.override_content.contains("init:"));
+    }
+
+    #[test]
+    fn when_compose_args_with_privileged_then_override_content_contains_privileged() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.privileged = Some(true);
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
+        assert!(args.override_content.contains("\n    privileged: true"));
+    }
+
+    #[test]
+    fn when_compose_args_with_privileged_false_then_override_content_has_no_privileged() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.privileged = Some(false);
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
+        assert!(!args.override_content.contains("privileged:"));
     }
 
     fn service_from(json: &str) -> Option<ServiceResolved> {

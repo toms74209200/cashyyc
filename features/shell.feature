@@ -750,3 +750,19 @@ Feature: cyyc shell
     And no container exists for this config
     When running "cyyc shell"
     Then the container env "SHARED" is "from-config"
+
+  Scenario: when a Compose config has init then the container runs with init process
+    Given a devcontainer config using docker-compose service "app" with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has init true
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the container runs with init process
+
+  Scenario: when a Compose config has privileged then the container runs in privileged mode
+    Given a devcontainer config using docker-compose service "app" with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has privileged true
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the container runs in privileged mode
