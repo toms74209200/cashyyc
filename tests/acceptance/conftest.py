@@ -3,6 +3,7 @@ import os
 import random
 import string
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 _SPAN_REPORT_OPTION = "--span-report"
 _CYYC_BIN_OPTION = "--cyyc-bin"
 _REPORT_FILE = Path(__file__).parent / "reports" / "spanTiming" / "spanTiming.txt"
+_STOP_SETTLE_TIMEOUT = 30.0
+_STOP_SETTLE_INTERVAL = 0.1
 _step_timer = StepTimer()
 _span_report_enabled = False
 
@@ -158,10 +161,11 @@ def container_id_before():
     return [None]
 
 
-def container_id_by_devcontainer(
+def container_ids_by_devcontainer(
     workspace: Path, *, all_states: bool = False
-) -> str | None:
+) -> list[str]:
     flag = "-aq" if all_states else "-q"
+    ids: list[str] = []
     for cfg_path in (workspace / ".devcontainer").rglob("devcontainer.json"):
         r = subprocess.run(
             [
@@ -174,10 +178,15 @@ def container_id_by_devcontainer(
             capture_output=True,
             text=True,
         )
-        out = r.stdout.strip()
-        if out:
-            return out.split("\n")[0]
-    return None
+        ids.extend(r.stdout.split())
+    return ids
+
+
+def container_id_by_devcontainer(
+    workspace: Path, *, all_states: bool = False
+) -> str | None:
+    ids = container_ids_by_devcontainer(workspace, all_states=all_states)
+    return ids[0] if ids else None
 
 
 def container_ids_by_compose(workspace: Path, *, all_states: bool = False) -> list[str]:
@@ -197,13 +206,38 @@ def container_ids_by_compose(workspace: Path, *, all_states: bool = False) -> li
     return out.split("\n") if out else []
 
 
+def _container_ids(
+    workspace: Path, config: dict, *, all_states: bool = False
+) -> list[str]:
+    if "dockerComposeFile" in config:
+        return container_ids_by_compose(workspace, all_states=all_states)
+    return container_ids_by_devcontainer(workspace, all_states=all_states)
+
+
 def _container_id(
     workspace: Path, config: dict, *, all_states: bool = False
 ) -> str | None:
-    if "dockerComposeFile" in config:
-        ids = container_ids_by_compose(workspace, all_states=all_states)
-        return ids[0] if ids else None
-    return container_id_by_devcontainer(workspace, all_states=all_states)
+    ids = _container_ids(workspace, config, all_states=all_states)
+    return ids[0] if ids else None
+
+
+def _wait_until_no_container_runs(workspace: Path, config: dict) -> None:
+    deadline = time.monotonic() + _STOP_SETTLE_TIMEOUT
+    while True:
+        running = _container_ids(workspace, config)
+        if not running:
+            return
+        if time.monotonic() >= deadline:
+            states = subprocess.run(
+                ["docker", "inspect", "-f", "{{.Id}} {{.State.Status}}", *running],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            raise AssertionError(
+                "precondition failed: container still runs "
+                f"{_STOP_SETTLE_TIMEOUT}s after `docker stop`:\n{states}"
+            )
+        time.sleep(_STOP_SETTLE_INTERVAL)
 
 
 @given(
@@ -339,10 +373,11 @@ def given_stopped_container(workspace, config, cyyc_binary, container_id_before)
         text=True,
         timeout=600,
     )
-    cid = _container_id(workspace, config, all_states=True)
-    assert cid, "precondition failed: container was not created"
-    container_id_before[0] = cid
-    subprocess.run(["docker", "stop", cid], capture_output=True, check=True)
+    cids = _container_ids(workspace, config, all_states=True)
+    assert cids, "precondition failed: container was not created"
+    container_id_before[0] = cids[0]
+    subprocess.run(["docker", "stop", *cids], capture_output=True, check=True)
+    _wait_until_no_container_runs(workspace, config)
 
 
 @given("a running container exists for this config")
