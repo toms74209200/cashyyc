@@ -487,6 +487,30 @@ def given_privileged_true(workspace, config):
 
 
 @given(
+    parsers.parse('the config has capAdd "{value}"'),
+    target_fixture="config",
+)
+def given_cap_add(workspace, config, value):
+    new_config = {**config, "capAdd": [*config.get("capAdd", []), value]}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse('the config has securityOpt "{value}"'),
+    target_fixture="config",
+)
+def given_security_opt(workspace, config, value):
+    new_config = {**config, "securityOpt": [*config.get("securityOpt", []), value]}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
     parsers.parse('the config has containerEnv "{key}" set to "{value}"'),
     target_fixture="config",
 )
