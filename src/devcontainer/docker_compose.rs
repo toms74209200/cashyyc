@@ -79,6 +79,14 @@ impl ServiceResolved {
     }
 }
 
+fn list_block(key: &str, values: &[String]) -> String {
+    if values.is_empty() {
+        return String::new();
+    }
+    let items: String = values.iter().map(|v| format!("\n      - {v}")).collect();
+    format!("\n    {key}:{items}")
+}
+
 pub fn compose_args(
     config: &DockerComposeConfig,
     cwd: &Path,
@@ -156,13 +164,15 @@ while sleep 1 & wait $$!; do :; done"#;
         Some(true) => "\n    privileged: true".to_string(),
         _ => String::new(),
     };
+    let cap_add_block = list_block("cap_add", &config.common.cap_add);
+    let security_opt_block = list_block("security_opt", &config.common.security_opt);
+    let service = &config.service;
     let override_content = format!(
         "\
 services:
-  '{}':
-    entrypoint: [\"/bin/sh\", \"-c\", \"{}\", \"-\"]{}{}{}
-",
-        config.service, script, init_line, user_line, privileged_line
+  '{service}':
+    entrypoint: [\"/bin/sh\", \"-c\", \"{script}\", \"-\"]{init_line}{user_line}{privileged_line}{cap_add_block}{security_opt_block}
+"
     );
     ComposeArgs {
         project_name,
@@ -374,6 +384,44 @@ mod tests {
         config.common.privileged = Some(false);
         let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
         assert!(!args.override_content.contains("privileged:"));
+    }
+
+    #[test]
+    fn when_compose_args_with_cap_add_then_override_content_contains_cap_add() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.cap_add = vec!["SYS_PTRACE".to_string(), "NET_ADMIN".to_string()];
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
+        assert!(
+            args.override_content
+                .contains("\n    cap_add:\n      - SYS_PTRACE\n      - NET_ADMIN")
+        );
+    }
+
+    #[test]
+    fn when_compose_args_without_cap_add_then_override_content_has_no_cap_add() {
+        let cwd = Path::new("/home/user/myproject");
+        let args = compose_args(&compose_config("app"), cwd, &cwd.join(".devcontainer"));
+        assert!(!args.override_content.contains("cap_add:"));
+    }
+
+    #[test]
+    fn when_compose_args_with_security_opt_then_override_content_contains_security_opt() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.security_opt = vec!["seccomp=unconfined".to_string()];
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
+        assert!(
+            args.override_content
+                .contains("\n    security_opt:\n      - seccomp=unconfined")
+        );
+    }
+
+    #[test]
+    fn when_compose_args_without_security_opt_then_override_content_has_no_security_opt() {
+        let cwd = Path::new("/home/user/myproject");
+        let args = compose_args(&compose_config("app"), cwd, &cwd.join(".devcontainer"));
+        assert!(!args.override_content.contains("security_opt:"));
     }
 
     fn service_from(json: &str) -> Option<ServiceResolved> {
