@@ -766,3 +766,19 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the container is running
     And the container runs in privileged mode
+
+  Scenario: when a Compose config has capAdd then the container has the capability
+    Given a devcontainer config using docker-compose service "app" with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has capAdd "SYS_PTRACE"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the container has capability "SYS_PTRACE"
+
+  Scenario: when a Compose config has securityOpt then the container has the security option
+    Given a devcontainer config using docker-compose service "app" with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has securityOpt "seccomp=unconfined"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the container has security option "seccomp=unconfined"
