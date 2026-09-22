@@ -1,5 +1,6 @@
 use super::config::DockerComposeConfig;
 use super::jsonc::{self, Value};
+use super::variables::expand_variables;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -91,6 +92,7 @@ pub fn compose_args(
     config: &DockerComposeConfig,
     cwd: &Path,
     devcontainer_dir: &Path,
+    local_env: &HashMap<String, String>,
 ) -> ComposeArgs {
     let compose_working_dir = config
         .docker_compose_file
@@ -160,6 +162,33 @@ while sleep 1 & wait $$!; do :; done"#;
         .as_deref()
         .map(|u| format!("\n    user: {u}"))
         .unwrap_or_default();
+    let env_block = {
+        let items: String = config
+            .common
+            .container_env
+            .iter()
+            .collect::<std::collections::BTreeMap<_, _>>()
+            .into_iter()
+            .map(|(key, value)| {
+                let expanded = expand_variables(
+                    value,
+                    cwd,
+                    &config.workspace_folder,
+                    &Default::default(),
+                    local_env,
+                )
+                .replace('\n', "\\n")
+                .replace('$', "$$")
+                .replace('\'', "''");
+                format!("\n      - '{key}={expanded}'")
+            })
+            .collect();
+        if items.is_empty() {
+            String::new()
+        } else {
+            format!("\n    environment:{items}")
+        }
+    };
     let privileged_line = match config.common.privileged {
         Some(true) => "\n    privileged: true".to_string(),
         _ => String::new(),
@@ -171,7 +200,7 @@ while sleep 1 & wait $$!; do :; done"#;
         "\
 services:
   '{service}':
-    entrypoint: [\"/bin/sh\", \"-c\", \"{script}\", \"-\"]{init_line}{user_line}{privileged_line}{cap_add_block}{security_opt_block}
+    entrypoint: [\"/bin/sh\", \"-c\", \"{script}\", \"-\"]{init_line}{user_line}{env_block}{privileged_line}{cap_add_block}{security_opt_block}
 "
     );
     ComposeArgs {
@@ -249,14 +278,24 @@ mod tests {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
         config.docker_compose_file = vec!["../../docker-compose.yml".to_string()];
-        let args = compose_args(&config, cwd, &cwd.join(".devcontainer/server"));
+        let args = compose_args(
+            &config,
+            cwd,
+            &cwd.join(".devcontainer/server"),
+            &HashMap::new(),
+        );
         assert_eq!(args.project_name, "myproject");
     }
 
     #[test]
     fn when_compose_args_with_devcontainer_dir_then_project_name_has_devcontainer_suffix() {
         let cwd = Path::new("/home/user/myproject");
-        let args = compose_args(&compose_config("app"), cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(
+            &compose_config("app"),
+            cwd,
+            &cwd.join(".devcontainer"),
+            &HashMap::new(),
+        );
         assert_eq!(args.project_name, "myproject_devcontainer");
     }
 
@@ -267,6 +306,7 @@ mod tests {
             &compose_config("app"),
             cwd,
             Path::new("/home/user/myproject/compose"),
+            &HashMap::new(),
         );
         assert_eq!(args.project_name, "compose");
     }
@@ -274,7 +314,12 @@ mod tests {
     #[test]
     fn when_compose_args_then_global_args_contain_project_name_flag() {
         let cwd = Path::new("/home/user/myproject");
-        let args = compose_args(&compose_config("app"), cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(
+            &compose_config("app"),
+            cwd,
+            &cwd.join(".devcontainer"),
+            &HashMap::new(),
+        );
         let idx = args
             .global_args
             .iter()
@@ -286,7 +331,12 @@ mod tests {
     #[test]
     fn when_compose_args_then_global_args_contain_f_flag_with_absolute_path() {
         let cwd = Path::new("/home/user/myproject");
-        let args = compose_args(&compose_config("app"), cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(
+            &compose_config("app"),
+            cwd,
+            &cwd.join(".devcontainer"),
+            &HashMap::new(),
+        );
         let idx = args.global_args.iter().position(|a| a == "-f").unwrap();
         assert_eq!(
             args.global_args[idx + 1],
@@ -297,7 +347,12 @@ mod tests {
     #[test]
     fn when_compose_args_without_run_services_then_services_contains_service_only() {
         let cwd = Path::new("/home/user/myproject");
-        let args = compose_args(&compose_config("app"), cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(
+            &compose_config("app"),
+            cwd,
+            &cwd.join(".devcontainer"),
+            &HashMap::new(),
+        );
         assert_eq!(args.services, vec!["app".to_string()]);
     }
 
@@ -306,7 +361,7 @@ mod tests {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
         config.run_services = vec!["db".to_string(), "cache".to_string()];
-        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
         assert_eq!(
             args.services,
             vec!["db".to_string(), "cache".to_string(), "app".to_string()]
@@ -318,14 +373,19 @@ mod tests {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
         config.run_services = vec!["db".to_string(), "app".to_string()];
-        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
         assert_eq!(args.services, vec!["db".to_string(), "app".to_string()]);
     }
 
     #[test]
     fn when_compose_args_then_filters_contain_project_and_service_labels() {
         let cwd = Path::new("/home/user/myproject");
-        let args = compose_args(&compose_config("app"), cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(
+            &compose_config("app"),
+            cwd,
+            &cwd.join(".devcontainer"),
+            &HashMap::new(),
+        );
         assert_eq!(
             args.filter1,
             "label=com.docker.compose.project=myproject_devcontainer"
@@ -336,7 +396,12 @@ mod tests {
     #[test]
     fn when_compose_args_then_override_content_contains_keepalive_entrypoint() {
         let cwd = Path::new("/home/user/myproject");
-        let args = compose_args(&compose_config("app"), cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(
+            &compose_config("app"),
+            cwd,
+            &cwd.join(".devcontainer"),
+            &HashMap::new(),
+        );
         assert!(args.override_content.contains("while sleep 1"));
         assert!(args.override_content.contains("$$@"));
     }
@@ -346,7 +411,7 @@ mod tests {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
         config.common.container_user = Some("vscode".to_string());
-        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
         assert!(args.override_content.contains("user: vscode"));
     }
 
@@ -355,7 +420,7 @@ mod tests {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
         config.common.init = Some(true);
-        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
         assert!(args.override_content.contains("\n    init: true"));
     }
 
@@ -364,7 +429,7 @@ mod tests {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
         config.common.init = Some(false);
-        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
         assert!(!args.override_content.contains("init:"));
     }
 
@@ -373,7 +438,7 @@ mod tests {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
         config.common.privileged = Some(true);
-        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
         assert!(args.override_content.contains("\n    privileged: true"));
     }
 
@@ -382,8 +447,87 @@ mod tests {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
         config.common.privileged = Some(false);
-        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
         assert!(!args.override_content.contains("privileged:"));
+    }
+
+    #[test]
+    fn when_compose_args_with_container_env_then_override_content_contains_environment() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.container_env = HashMap::from([("FOO".to_string(), "bar".to_string())]);
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
+        assert!(
+            args.override_content
+                .contains("\n    environment:\n      - 'FOO=bar'")
+        );
+    }
+
+    #[test]
+    fn when_compose_args_without_container_env_then_override_content_has_no_environment() {
+        let cwd = Path::new("/home/user/myproject");
+        let args = compose_args(
+            &compose_config("app"),
+            cwd,
+            &cwd.join(".devcontainer"),
+            &HashMap::new(),
+        );
+        assert!(!args.override_content.contains("environment:"));
+    }
+
+    #[test]
+    fn when_compose_args_with_multiple_container_env_then_entries_are_sorted_by_key() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.container_env = HashMap::from([
+            ("ZED".to_string(), "1".to_string()),
+            ("ALPHA".to_string(), "2".to_string()),
+        ]);
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
+        assert!(
+            args.override_content
+                .contains("\n      - 'ALPHA=2'\n      - 'ZED=1'")
+        );
+    }
+
+    #[test]
+    fn when_compose_args_with_container_env_dollar_then_it_is_escaped_for_compose() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.container_env = HashMap::from([("FOO".to_string(), "a$b".to_string())]);
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
+        assert!(args.override_content.contains("- 'FOO=a$$b'"));
+    }
+
+    #[test]
+    fn when_compose_args_with_container_env_quote_then_it_is_escaped_for_yaml() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.container_env = HashMap::from([("FOO".to_string(), "it's".to_string())]);
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
+        assert!(args.override_content.contains("- 'FOO=it''s'"));
+    }
+
+    #[test]
+    fn when_compose_args_with_container_env_newline_then_it_is_escaped_for_yaml() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.container_env = HashMap::from([("FOO".to_string(), "a\nb".to_string())]);
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
+        assert!(args.override_content.contains("- 'FOO=a\\nb'"));
+    }
+
+    #[test]
+    fn when_compose_args_with_container_env_variable_then_it_is_expanded() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.container_env =
+            HashMap::from([("RESULT".to_string(), "${localWorkspaceFolder}".to_string())]);
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
+        assert!(
+            args.override_content
+                .contains("- 'RESULT=/home/user/myproject'")
+        );
     }
 
     #[test]
@@ -391,7 +535,7 @@ mod tests {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
         config.common.cap_add = vec!["SYS_PTRACE".to_string(), "NET_ADMIN".to_string()];
-        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
         assert!(
             args.override_content
                 .contains("\n    cap_add:\n      - SYS_PTRACE\n      - NET_ADMIN")
@@ -401,7 +545,12 @@ mod tests {
     #[test]
     fn when_compose_args_without_cap_add_then_override_content_has_no_cap_add() {
         let cwd = Path::new("/home/user/myproject");
-        let args = compose_args(&compose_config("app"), cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(
+            &compose_config("app"),
+            cwd,
+            &cwd.join(".devcontainer"),
+            &HashMap::new(),
+        );
         assert!(!args.override_content.contains("cap_add:"));
     }
 
@@ -410,7 +559,7 @@ mod tests {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
         config.common.security_opt = vec!["seccomp=unconfined".to_string()];
-        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
         assert!(
             args.override_content
                 .contains("\n    security_opt:\n      - seccomp=unconfined")
@@ -420,7 +569,12 @@ mod tests {
     #[test]
     fn when_compose_args_without_security_opt_then_override_content_has_no_security_opt() {
         let cwd = Path::new("/home/user/myproject");
-        let args = compose_args(&compose_config("app"), cwd, &cwd.join(".devcontainer"));
+        let args = compose_args(
+            &compose_config("app"),
+            cwd,
+            &cwd.join(".devcontainer"),
+            &HashMap::new(),
+        );
         assert!(!args.override_content.contains("security_opt:"));
     }
 
