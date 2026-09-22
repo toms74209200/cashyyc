@@ -782,3 +782,18 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the container is running
     And the container has security option "seccomp=unconfined"
+
+  Scenario: when a Compose config has containerEnv then the container env is set
+    Given a devcontainer config using docker-compose service "app" with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has containerEnv "FOO" set to "bar"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the container env "FOO" is "bar"
+
+  Scenario: when a Compose config containerEnv value contains ${localWorkspaceFolder} then it is expanded
+    Given a devcontainer config using docker-compose service "app" with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has containerEnv "RESULT" set to "${localWorkspaceFolder}"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container env "RESULT" is the expansion of "${localWorkspaceFolder}"
