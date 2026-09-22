@@ -36,7 +36,7 @@ pub fn from_config(
             ContainerTarget::Single(from_dockerfile_build(c, cwd, config_path, local_env))
         }
         DevcontainerConfig::DockerCompose(c) => {
-            ContainerTarget::Compose(compose_args(c, cwd, config_dir))
+            ContainerTarget::Compose(compose_args(c, cwd, config_dir, local_env))
         }
     }
 }
