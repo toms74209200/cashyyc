@@ -797,3 +797,18 @@ Feature: cyyc shell
     And no container exists for this config
     When running "cyyc shell"
     Then the container env "RESULT" is the expansion of "${localWorkspaceFolder}"
+
+  Scenario: when a Compose config has mounts then the container has the mount
+    Given a devcontainer config using docker-compose service "app" with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has mounts with "type=bind,source=${localWorkspaceFolder},target=/home/vscode/extra-bind"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount source matching the expansion of "${localWorkspaceFolder}"
+    And the container has a mount destination matching the expansion of "/home/vscode/extra-bind"
+
+  Scenario: when a Compose config has a named volume mount then the container has the mount
+    Given a devcontainer config using docker-compose service "app" with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has mounts with "type=volume,source=cyyc-compose-vol,target=/extra-vol"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container has a mount destination matching the expansion of "/extra-vol"
