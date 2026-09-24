@@ -149,11 +149,15 @@ impl Metadata {
     }
 }
 
-pub fn mount_target(mount: &str) -> Option<&str> {
+pub fn mount_field<'a>(mount: &'a str, keys: &[&str]) -> Option<&'a str> {
     mount.split(',').find_map(|field| {
         let (key, value) = field.split_once('=')?;
-        matches!(key.trim(), "target" | "dst" | "destination").then_some(value)
+        keys.contains(&key.trim()).then_some(value)
     })
+}
+
+pub fn mount_target(mount: &str) -> Option<&str> {
+    mount_field(mount, &["target", "dst", "destination"])
 }
 
 #[cfg(test)]

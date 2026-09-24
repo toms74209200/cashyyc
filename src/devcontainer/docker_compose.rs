@@ -1,5 +1,6 @@
 use super::config::DockerComposeConfig;
 use super::jsonc::{self, Value};
+use super::metadata::{mount_field, mount_target};
 use super::variables::expand_variables;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -162,6 +163,15 @@ while sleep 1 & wait $$!; do :; done"#;
         .as_deref()
         .map(|u| format!("\n    user: {u}"))
         .unwrap_or_default();
+    let expand = |value: &str| {
+        expand_variables(
+            value,
+            cwd,
+            &config.workspace_folder,
+            &Default::default(),
+            local_env,
+        )
+    };
     let env_block = {
         let items: String = config
             .common
@@ -170,16 +180,10 @@ while sleep 1 & wait $$!; do :; done"#;
             .collect::<std::collections::BTreeMap<_, _>>()
             .into_iter()
             .map(|(key, value)| {
-                let expanded = expand_variables(
-                    value,
-                    cwd,
-                    &config.workspace_folder,
-                    &Default::default(),
-                    local_env,
-                )
-                .replace('\n', "\\n")
-                .replace('$', "$$")
-                .replace('\'', "''");
+                let expanded = expand(value)
+                    .replace('\n', "\\n")
+                    .replace('$', "$$")
+                    .replace('\'', "''");
                 format!("\n      - '{key}={expanded}'")
             })
             .collect();
@@ -187,6 +191,37 @@ while sleep 1 & wait $$!; do :; done"#;
             String::new()
         } else {
             format!("\n    environment:{items}")
+        }
+    };
+    let mounts: Vec<String> = config.common.mounts.iter().map(|m| expand(m)).collect();
+    let volumes_block = {
+        let items: String = mounts
+            .iter()
+            .filter_map(|mount| {
+                let target = mount_target(mount)?;
+                Some(match mount_field(mount, &["source", "src"]) {
+                    Some(source) => format!("\n      - {source}:{target}"),
+                    None => format!("\n      - {target}"),
+                })
+            })
+            .collect();
+        if items.is_empty() {
+            String::new()
+        } else {
+            format!("\n    volumes:{items}")
+        }
+    };
+    let named_volumes = {
+        let items: String = mounts
+            .iter()
+            .filter(|mount| mount_field(mount, &["type"]) == Some("volume"))
+            .filter_map(|mount| mount_field(mount, &["source", "src"]))
+            .map(|name| format!("\n  {name}:"))
+            .collect();
+        if items.is_empty() {
+            String::new()
+        } else {
+            format!("volumes:{items}\n")
         }
     };
     let privileged_line = match config.common.privileged {
@@ -198,9 +233,9 @@ while sleep 1 & wait $$!; do :; done"#;
     let service = &config.service;
     let override_content = format!(
         "\
-services:
+{named_volumes}services:
   '{service}':
-    entrypoint: [\"/bin/sh\", \"-c\", \"{script}\", \"-\"]{init_line}{user_line}{env_block}{privileged_line}{cap_add_block}{security_opt_block}
+    entrypoint: [\"/bin/sh\", \"-c\", \"{script}\", \"-\"]{init_line}{user_line}{env_block}{privileged_line}{cap_add_block}{security_opt_block}{volumes_block}
 "
     );
     ComposeArgs {
@@ -576,6 +611,66 @@ mod tests {
             &HashMap::new(),
         );
         assert!(!args.override_content.contains("security_opt:"));
+    }
+
+    #[test]
+    fn when_compose_args_with_bind_mount_then_override_content_contains_volume() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.mounts = vec!["type=bind,source=/tmp,target=/mnt/extra".to_string()];
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
+        assert!(
+            args.override_content
+                .contains("\n    volumes:\n      - /tmp:/mnt/extra")
+        );
+    }
+
+    #[test]
+    fn when_compose_args_without_mounts_then_override_content_has_no_volumes() {
+        let cwd = Path::new("/home/user/myproject");
+        let args = compose_args(
+            &compose_config("app"),
+            cwd,
+            &cwd.join(".devcontainer"),
+            &HashMap::new(),
+        );
+        assert!(!args.override_content.contains("volumes:"));
+    }
+
+    #[test]
+    fn when_compose_args_with_mount_without_source_then_volume_is_the_target_only() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.mounts = vec!["type=volume,target=/data".to_string()];
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
+        assert!(
+            args.override_content
+                .contains("\n    volumes:\n      - /data")
+        );
+        assert!(!args.override_content.starts_with("volumes:"));
+    }
+
+    #[test]
+    fn when_compose_args_with_named_volume_mount_then_it_is_declared_at_top_level() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.mounts = vec!["type=volume,source=myvol,target=/data".to_string()];
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
+        assert!(args.override_content.starts_with("volumes:\n  myvol:\n"));
+        assert!(args.override_content.contains("\n      - myvol:/data"));
+    }
+
+    #[test]
+    fn when_compose_args_with_mount_variable_then_it_is_expanded() {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.mounts =
+            vec!["type=bind,source=${localWorkspaceFolder},target=/extra".to_string()];
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
+        assert!(
+            args.override_content
+                .contains("\n      - /home/user/myproject:/extra")
+        );
     }
 
     fn service_from(json: &str) -> Option<ServiceResolved> {
