@@ -316,6 +316,28 @@ def given_compose_config(workspace, service, image):
 
 @given(
     parsers.parse(
+        'a devcontainer config using docker-compose service "{service}" based on that image'
+    ),
+    target_fixture="config",
+)
+def given_compose_config_based_on_base_image(workspace, service, base_image):
+    return given_compose_config(workspace, service, base_image)
+
+
+@given(
+    parsers.parse("the config has overrideCommand true"),
+    target_fixture="config",
+)
+def given_override_command_true(workspace, config):
+    new_config = {**config, "overrideCommand": True}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse(
         'a devcontainer config using docker-compose service "{service}" with runService "{run_service}" and image "{image}"'
     ),
     target_fixture="config",

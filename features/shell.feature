@@ -812,3 +812,28 @@ Feature: cyyc shell
     And no container exists for this config
     When running "cyyc shell"
     Then the container has a mount destination matching the expansion of "/extra-vol"
+
+  Scenario: when a Compose config does not set overrideCommand then the image entrypoint runs
+    Given an image built from:
+      """
+      FROM mcr.microsoft.com/devcontainers/base:debian
+      ENTRYPOINT ["/bin/sh", "-c", "touch /tmp/image-entrypoint-ran && exec \"$@\"", "-"]
+      """
+    And a devcontainer config using docker-compose service "app" based on that image
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/image-entrypoint-ran" exists in the container
+
+  Scenario: when a Compose config has overrideCommand true then the image entrypoint does not run
+    Given an image built from:
+      """
+      FROM mcr.microsoft.com/devcontainers/base:debian
+      ENTRYPOINT ["/bin/sh", "-c", "touch /tmp/image-entrypoint-ran && exec \"$@\"", "-"]
+      """
+    And a devcontainer config using docker-compose service "app" based on that image
+    And the config has overrideCommand true
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/image-entrypoint-ran" does not exist in the container
