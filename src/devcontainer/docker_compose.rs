@@ -153,6 +153,12 @@ trap "exit 0" 15
 exec "$$@"
 while sleep 1 & wait $$!; do :; done"#;
     let script = script.replace('"', r#"\""#).replace('\n', r"\n");
+    let command_lines = match config.common.override_command {
+        Some(true) => {
+            format!("\n    entrypoint: [\"/bin/sh\", \"-c\", \"{script}\", \"-\"]\n    command: []")
+        }
+        _ => String::new(),
+    };
     let init_line = match config.common.init {
         Some(true) => "\n    init: true".to_string(),
         _ => String::new(),
@@ -234,8 +240,7 @@ while sleep 1 & wait $$!; do :; done"#;
     let override_content = format!(
         "\
 {named_volumes}services:
-  '{service}':
-    entrypoint: [\"/bin/sh\", \"-c\", \"{script}\", \"-\"]{init_line}{user_line}{env_block}{privileged_line}{cap_add_block}{security_opt_block}{volumes_block}
+  '{service}':{command_lines}{init_line}{user_line}{env_block}{privileged_line}{cap_add_block}{security_opt_block}{volumes_block}
 "
     );
     ComposeArgs {
@@ -429,7 +434,20 @@ mod tests {
     }
 
     #[test]
-    fn when_compose_args_then_override_content_contains_keepalive_entrypoint() {
+    fn when_compose_args_with_override_command_then_override_content_contains_keepalive_entrypoint_and_empty_command()
+     {
+        let cwd = Path::new("/home/user/myproject");
+        let mut config = compose_config("app");
+        config.common.override_command = Some(true);
+        let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
+        assert!(args.override_content.contains("while sleep 1"));
+        assert!(args.override_content.contains("$$@"));
+        assert!(args.override_content.contains("\n    command: []"));
+    }
+
+    #[test]
+    fn when_compose_args_without_override_command_then_override_content_has_no_entrypoint_and_command()
+     {
         let cwd = Path::new("/home/user/myproject");
         let args = compose_args(
             &compose_config("app"),
@@ -437,8 +455,8 @@ mod tests {
             &cwd.join(".devcontainer"),
             &HashMap::new(),
         );
-        assert!(args.override_content.contains("while sleep 1"));
-        assert!(args.override_content.contains("$$@"));
+        assert!(!args.override_content.contains("entrypoint:"));
+        assert!(!args.override_content.contains("command:"));
     }
 
     #[test]
