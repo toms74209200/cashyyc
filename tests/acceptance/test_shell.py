@@ -126,6 +126,17 @@ def then_file_exists_in_container(workspace, config, path):
     assert result.returncode == 0, f"file {path!r} not found in container"
 
 
+@then(parsers.parse('the file "{path}" does not exist in the container'))
+def then_file_not_exists_in_container(workspace, config, path):
+    container_id = _container_id(workspace, config)
+    assert container_id, "no running container found"
+    result = subprocess.run(
+        ["docker", "exec", container_id, "test", "-e", path],
+        capture_output=True,
+    )
+    assert result.returncode != 0, f"file {path!r} unexpectedly found in container"
+
+
 @given(
     parsers.re(r'the config has waitFor "(?P<value>\w+)"'),
     target_fixture="config",
