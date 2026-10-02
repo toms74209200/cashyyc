@@ -601,16 +601,13 @@ Feature: cyyc shell
     And the container has a mount destination matching the expansion of "/mnt/feature-mount"
     And the container has a mount source matching the expansion of "/tmp"
 
-  Scenario: when a feature sets entrypoint then the image entrypoint is set
+  Scenario: when a feature sets entrypoint then it runs on container start
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
-    And the config has a local feature with manifest:
-      """
-      {"id": "myfeature", "version": "1.0.0", "entrypoint": "/usr/local/share/myfeature-init.sh"}
-      """
+    And the config has a local feature whose entrypoint creates "/tmp/feature-entrypoint-ran"
     And no container exists for this config
     When running "cyyc shell"
     Then the container is running
-    And the container image entrypoint includes "/usr/local/share/myfeature-init.sh"
+    And the file "/tmp/feature-entrypoint-ran" eventually exists in the container
 
   Scenario: when a feature sets postCreateCommand then it runs after container creation
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
@@ -837,3 +834,34 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the container is running
     And the file "/tmp/image-entrypoint-ran" does not exist in the container
+
+  Scenario: when a Compose config has a feature that sets entrypoint then it runs on container start
+    Given a devcontainer config using docker-compose service "app" with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature whose entrypoint creates "/tmp/feature-entrypoint-ran"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/feature-entrypoint-ran" eventually exists in the container
+
+  Scenario: when a Compose config has overrideCommand true then a feature entrypoint still runs
+    Given a devcontainer config using docker-compose service "app" with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature whose entrypoint creates "/tmp/feature-entrypoint-ran"
+    And the config has overrideCommand true
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/feature-entrypoint-ran" eventually exists in the container
+
+  Scenario: when a Compose config has a feature that sets entrypoint then the image entrypoint also runs
+    Given an image built from:
+      """
+      FROM mcr.microsoft.com/devcontainers/base:debian
+      ENTRYPOINT ["/bin/sh", "-c", "touch /tmp/image-entrypoint-ran && exec \"$@\"", "-"]
+      """
+    And a devcontainer config using docker-compose service "app" based on that image
+    And the config has a local feature whose entrypoint creates "/tmp/feature-entrypoint-ran"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/feature-entrypoint-ran" eventually exists in the container
+    And the file "/tmp/image-entrypoint-ran" eventually exists in the container

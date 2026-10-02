@@ -65,17 +65,24 @@ pub fn container_build_args(
     args
 }
 
-const CONTAINER_LOOP_SCRIPT: &str =
-    "echo Container started\ntrap \"exit 0\" 15\nexec \"$@\"\nwhile sleep 1 & wait $!; do :; done";
+pub fn container_start_script(entrypoints: &[String]) -> String {
+    ["echo Container started", "trap \"exit 0\" 15"]
+        .into_iter()
+        .chain(entrypoints.iter().map(String::as_str))
+        .chain(["exec \"$@\"", "while sleep 1 & wait $!; do :; done"])
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 pub fn container_start_args(
     override_command: Option<bool>,
+    entrypoints: &[String],
     image_entrypoint: &[String],
     image_cmd: &[String],
 ) -> Vec<String> {
     let mut args = vec![
         "-c".to_string(),
-        CONTAINER_LOOP_SCRIPT.to_string(),
+        container_start_script(entrypoints),
         "-".to_string(),
     ];
     if override_command == Some(false) {
@@ -651,7 +658,7 @@ mod tests {
 
     #[test]
     fn when_container_start_args_with_override_command_unset_then_returns_loop_script() {
-        let args = container_start_args(None, &[], &[]);
+        let args = container_start_args(None, &[], &[], &[]);
         assert_eq!(args[0], "-c");
         assert!(args[1].contains("while sleep 1"));
         assert_eq!(args[2], "-");
@@ -659,7 +666,7 @@ mod tests {
 
     #[test]
     fn when_container_start_args_with_override_command_true_then_returns_loop_script() {
-        let args = container_start_args(Some(true), &[], &[]);
+        let args = container_start_args(Some(true), &[], &[], &[]);
         assert_eq!(args[0], "-c");
         assert!(args[1].contains("while sleep 1"));
         assert_eq!(args[2], "-");
@@ -670,7 +677,7 @@ mod tests {
     {
         let entrypoint = vec!["/entrypoint.sh".to_string()];
         let cmd = vec!["--flag".to_string()];
-        let args = container_start_args(Some(false), &entrypoint, &cmd);
+        let args = container_start_args(Some(false), &[], &entrypoint, &cmd);
         assert_eq!(args[2], "-");
         assert_eq!(args[3], "/entrypoint.sh");
         assert_eq!(args[4], "--flag");
@@ -680,8 +687,32 @@ mod tests {
     fn when_container_start_args_with_override_command_true_then_does_not_append_image_cmd() {
         let entrypoint = vec!["/entrypoint.sh".to_string()];
         let cmd = vec!["--flag".to_string()];
-        let args = container_start_args(Some(true), &entrypoint, &cmd);
+        let args = container_start_args(Some(true), &[], &entrypoint, &cmd);
         assert_eq!(args.len(), 3);
+    }
+
+    #[test]
+    fn when_container_start_script_with_entrypoints_then_runs_them_in_order_before_exec() {
+        let script = container_start_script(&[
+            "/usr/local/share/docker-init.sh".to_string(),
+            "/usr/local/share/ssh-init.sh".to_string(),
+        ]);
+        let docker = script.find("/usr/local/share/docker-init.sh\n").unwrap();
+        let ssh = script.find("/usr/local/share/ssh-init.sh\n").unwrap();
+        let exec = script.find("exec \"$@\"").unwrap();
+        assert!(docker < ssh && ssh < exec);
+    }
+
+    #[test]
+    fn when_container_start_args_with_override_command_true_and_entrypoints_then_script_runs_them()
+    {
+        let args = container_start_args(
+            Some(true),
+            &["/usr/local/share/docker-init.sh".to_string()],
+            &[],
+            &[],
+        );
+        assert!(args[1].contains("/usr/local/share/docker-init.sh\n"));
     }
 
     #[test]

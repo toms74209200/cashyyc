@@ -30,7 +30,6 @@ pub struct FeatureManifest {
     pub cap_add: Vec<String>,
     pub security_opt: Vec<String>,
     pub mounts: Vec<FeatureMount>,
-    pub entrypoint: Option<String>,
     pub on_create_command: Option<Value>,
     pub update_content_command: Option<Value>,
     pub post_create_command: Option<Value>,
@@ -110,6 +109,7 @@ impl FeatureManifest {
                 .collect::<Result<_, _>>()?,
             Some(_) => return Err("invalid type for field `mounts`".to_string()),
         };
+        opt_string(&value, "entrypoint")?;
         Ok(FeatureManifest {
             id,
             installs_after: string_vec(&value, "installsAfter")?,
@@ -119,7 +119,6 @@ impl FeatureManifest {
             cap_add: string_vec(&value, "capAdd")?,
             security_opt: string_vec(&value, "securityOpt")?,
             mounts,
-            entrypoint: opt_string(&value, "entrypoint")?,
             on_create_command: opt_value(&value, "onCreateCommand"),
             update_content_command: opt_value(&value, "updateContentCommand"),
             post_create_command: opt_value(&value, "postCreateCommand"),
@@ -150,7 +149,6 @@ pub struct Feature {
     pub cap_add: Vec<String>,
     pub security_opt: Vec<String>,
     pub mounts: Vec<FeatureMount>,
-    pub entrypoint: Option<String>,
     pub on_create_command: Option<Value>,
     pub update_content_command: Option<Value>,
     pub post_create_command: Option<Value>,
@@ -253,17 +251,22 @@ mod tests {
     }
 
     #[test]
-    fn when_parse_with_entrypoint_then_entrypoint_is_some() {
+    fn when_parse_with_entrypoint_then_metadata_has_the_entrypoint() {
         let ep = format!("/usr/local/share/{}-init.sh", random_name());
         let content = format!(r#"{{"id":"f","entrypoint":"{ep}"}}"#);
         let m = FeatureManifest::parse(&random_name(), &content).unwrap();
-        assert_eq!(m.entrypoint, Some(ep));
+        assert_eq!(m.metadata.entrypoints(), vec![ep]);
     }
 
     #[test]
-    fn when_parse_without_entrypoint_then_entrypoint_is_none() {
+    fn when_parse_with_non_string_entrypoint_then_returns_error() {
+        assert!(FeatureManifest::parse(&random_name(), r#"{"id":"f","entrypoint":1}"#).is_err());
+    }
+
+    #[test]
+    fn when_parse_without_entrypoint_then_metadata_has_no_entrypoint() {
         let m = FeatureManifest::parse(&random_name(), r#"{"id":"f"}"#).unwrap();
-        assert_eq!(m.entrypoint, None);
+        assert!(m.metadata.entrypoints().is_empty());
     }
 
     #[test]

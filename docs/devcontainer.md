@@ -150,13 +150,14 @@ features を適用する場合、compose override の `build:` セクション�
 ```yaml
 services:
   '<service>':
-    entrypoint: [...]
     build:
       dockerfile: /tmp/.../Dockerfile-with-features
       context: <features_dir>
 ```
 
 features がない場合は `build:` は追加されない。
+
+feature の `entrypoint` は Dockerfile の `ENTRYPOINT` には書かず、キープアライブスクリプトの中で実行する（「overrideCommand のデフォルト」参照）。
 
 ### overrideCommand のデフォルト
 
@@ -167,16 +168,34 @@ features がない場合は `build:` は追加されない。
 ```sh
 echo Container started
 trap "exit 0" 15
+<feature の entrypoint（1行に1つ）>
 exec "$@"
 while sleep 1 & wait $!; do :; done
 ```
 
 `while sleep 1 & wait $!` は `sleep infinity` と異なり、SIGTERM（シグナル15）を `trap` で受け取れる。
 
+feature の `entrypoint` は、`devcontainer.metadata`（ベースイメージのラベル、features、設定）に含まれるものを順に集め、`exec "$@"` の前に実行する。そのため `overrideCommand` に関係なく必ず実行される。
+
 | `overrideCommand` | 動作 |
 |---|---|
 | 未指定 / `true` | `exec "$@"` は no-op → ループでコンテナを維持 |
 | `false` | `docker image inspect` でイメージの Entrypoint + Cmd を取得し `"$@"` として渡す → `exec` でイメージ本来のプロセスに置き換わる |
+
+#### Compose の場合
+
+定義: `devcontainers/cli` `src/spec-node/dockerCompose.ts`
+
+Compose では `overrideCommand` の既定値は `false`。同じスクリプトを compose override の `entrypoint:` に指定し、`"$@"` に渡すものを以下のように決める。
+
+| `overrideCommand` | `entrypoint:` の後続引数 | `command:` |
+|---|---|---|
+| 未指定 / `false` | サービスの entrypoint、なければイメージの Entrypoint | サービスに command があれば書かない。なければイメージの Cmd |
+| `true` | なし | `[]` |
+
+`entrypoint:` を上書きするとイメージの Cmd は無効になるため、サービスに command がない場合はイメージの Cmd を明示する。サービスの entrypoint / command は build 後の `docker compose config` から、イメージの Entrypoint / Cmd は build 後のイメージから取得する。
+
+イメージ由来の値と feature の entrypoint の `$` は、compose の変数展開を避けるため `$$` にエスケープする。`docker compose config` の出力は `$$` をエスケープ済みのまま返すため、サービス由来の値はそのまま使う。
 
 ### workspaceFolder のデフォルト
 
@@ -258,10 +277,13 @@ ImageConfig / DockerfileConfig では CLI がワークスペースマウント�
 
 `docker run --entrypoint` ではなく、一時的な YAML オーバーライドファイルの `entrypoint:` フィールドでキープアライブスクリプトを注入する。`containerUser` が指定されている場合は同ファイルの `user:` フィールドで注入する。
 
+`entrypoint:` と `command:` は build 後に書き加える。build 前の override に `entrypoint:` がないため、build 後の `docker compose config` にはサービス本来の entrypoint / command が現れる。
+
 ```yaml
 services:
   '<service>':
-    entrypoint: ["/bin/sh", "-c", "<keepalive script>", "-"]
+    entrypoint: ["/bin/sh", "-c", "<keepalive script>", "-", <後続引数>...]
+    command: [...]          # 「overrideCommand のデフォルト」の Compose の表を参照
     user: <containerUser>   # containerUser が指定された場合のみ
 ```
 
