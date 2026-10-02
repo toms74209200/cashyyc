@@ -493,6 +493,35 @@ def given_local_feature_with_manifest(workspace, config, docstring):
 
 
 @given(
+    parsers.parse('the config has a local feature whose entrypoint creates "{path}"'),
+    target_fixture="config",
+)
+def given_local_feature_with_entrypoint(workspace, config, path):
+    feature_id = "entrypoint-feature"
+    entrypoint = f"/usr/local/share/{feature_id}-init.sh"
+    feature_dir = workspace / ".devcontainer" / "features" / feature_id
+    feature_dir.mkdir(parents=True, exist_ok=True)
+    (feature_dir / "devcontainer-feature.json").write_text(
+        json.dumps({"id": feature_id, "version": "1.0.0", "entrypoint": entrypoint})
+    )
+    (feature_dir / "install.sh").write_text(
+        "#!/bin/sh\n"
+        f"cat > {entrypoint} <<'EOF'\n"
+        "#!/bin/sh\n"
+        f"touch {path}\n"
+        'exec "$@"\n'
+        "EOF\n"
+        f"chmod +x {entrypoint}\n"
+    )
+    features = {**config.get("features", {}), f"./features/{feature_id}": {}}
+    new_config = {**config, "features": features}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
     "the config has a local feature that logs install user variables",
     target_fixture="config",
 )
@@ -577,38 +606,6 @@ def then_container_has_security_option(workspace, config, opt):
     assert result.returncode == 0, f"docker inspect failed: {result.stderr}"
     assert opt in result.stdout, (
         f"expected security option {opt!r} in SecurityOpt, got: {result.stdout.strip()!r}"
-    )
-
-
-@then(parsers.parse('the container image entrypoint includes "{path}"'))
-def then_image_entrypoint_includes(workspace, config, path):
-    cid = _container_id(workspace, config)
-    assert cid, "no running container found"
-    image_id_result = subprocess.run(
-        ["docker", "inspect", cid, "--format", "{{.Image}}"],
-        capture_output=True,
-        text=True,
-    )
-    assert image_id_result.returncode == 0, (
-        f"docker inspect failed: {image_id_result.stderr}"
-    )
-    image_id = image_id_result.stdout.strip()
-    result = subprocess.run(
-        [
-            "docker",
-            "image",
-            "inspect",
-            image_id,
-            "--format",
-            "{{json .Config.Entrypoint}}",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, f"docker image inspect failed: {result.stderr}"
-    entrypoint = json.loads(result.stdout.strip())
-    assert path in entrypoint, (
-        f"expected {path!r} in image entrypoint, got: {entrypoint!r}"
     )
 
 
