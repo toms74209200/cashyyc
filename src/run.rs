@@ -674,21 +674,20 @@ fn shell(
                 &config.workspace_folder(&cwd, &local_env),
                 &local_env,
             ));
-            run_args.extend(
-                devcontainer::Metadata::for_container(
-                    image_config.metadata,
-                    features_plan
-                        .iter()
-                        .flat_map(|(plan, _)| plan.features())
-                        .map(|f| &f.metadata),
-                    &config.common().metadata,
-                )
-                .to_docker_args(),
+            let metadata = devcontainer::Metadata::for_container(
+                image_config.metadata,
+                features_plan
+                    .iter()
+                    .flat_map(|(plan, _)| plan.features())
+                    .map(|f| &f.metadata),
+                &config.common().metadata,
             );
+            run_args.extend(metadata.to_docker_args());
             run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
             run_args.push(image_tag.clone());
             run_args.extend(devcontainer::container_start_args(
                 s.override_command,
+                &metadata.entrypoints(),
                 &image_config.entrypoint,
                 &image_config.cmd,
             ));
@@ -841,22 +840,16 @@ fn shell(
                     }
                     let mut resolved_args = c.global_args.clone();
                     resolved_args.extend(["-f".to_string(), p.display().to_string()]);
-                    let image = docker
+                    let resolved = docker
                         .compose_config_json(&resolved_args)
                         .ok()
                         .filter(|o| o.success)
                         .and_then(|o| devcontainer::ComposeResolved::parse(&o.stdout))
-                        .and_then(|cfg| match cfg.services.get(&c.service)? {
-                            devcontainer::ServiceResolved::Image { image } => Some(image.clone()),
-                            devcontainer::ServiceResolved::Build { build } => {
-                                Some(build.image.clone())
-                            }
-                        })
-                        .unwrap_or_default();
+                        .and_then(|mut cfg| cfg.services.remove(&c.service));
                     let image_config = docker::ImageConfig::parse(
-                        &docker
-                            .image_config(&image)
-                            .ok()
+                        &resolved
+                            .as_ref()
+                            .and_then(|svc| docker.image_config(svc.image()).ok())
                             .filter(|o| o.success)
                             .map(|o| o.stdout)
                             .unwrap_or_default(),
@@ -870,6 +863,17 @@ fn shell(
                             .map(|f| &f.metadata),
                         &config.common().metadata,
                     );
+                    let override_content = resolved
+                        .map(|svc| svc.command)
+                        .unwrap_or_default()
+                        .to_compose_override(
+                            &override_content,
+                            &c.service,
+                            metadata.merge_into(config.common()).override_command,
+                            &metadata.entrypoints(),
+                            &image_config.entrypoint,
+                            &image_config.cmd,
+                        );
                     std::fs::write(
                         &p,
                         metadata.to_compose_override(&override_content, &c.service),
@@ -1444,7 +1448,6 @@ fn download_features(
             cap_add: manifest.cap_add,
             security_opt: manifest.security_opt,
             mounts: manifest.mounts,
-            entrypoint: manifest.entrypoint,
             on_create_command: manifest.on_create_command,
             update_content_command: manifest.update_content_command,
             post_create_command: manifest.post_create_command,

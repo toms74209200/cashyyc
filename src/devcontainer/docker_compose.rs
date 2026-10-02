@@ -1,4 +1,5 @@
 use super::config::DockerComposeConfig;
+use super::docker_args::container_start_script;
 use super::jsonc::{self, Value};
 use super::metadata::{mount_field, mount_target};
 use super::variables::expand_variables;
@@ -35,7 +36,12 @@ impl ComposeResolved {
     }
 }
 
-pub enum ServiceResolved {
+pub struct ServiceResolved {
+    pub source: ServiceSource,
+    pub command: ServiceCommand,
+}
+
+pub enum ServiceSource {
     Build { build: BuildResolved },
     Image { image: String },
 }
@@ -50,12 +56,23 @@ impl ServiceResolved {
                 image: image.unwrap_or(default_image).to_string(),
             })
         });
-        if let Some(build) = build {
-            return Some(ServiceResolved::Build { build });
-        }
-        image.map(|image| ServiceResolved::Image {
-            image: image.to_string(),
+        let source = match build {
+            Some(build) => ServiceSource::Build { build },
+            None => ServiceSource::Image {
+                image: image?.to_string(),
+            },
+        };
+        Some(ServiceResolved {
+            source,
+            command: ServiceCommand::from_value(value),
         })
+    }
+
+    pub fn image(&self) -> &str {
+        match &self.source {
+            ServiceSource::Image { image } => image,
+            ServiceSource::Build { build } => &build.image,
+        }
     }
 }
 
@@ -72,13 +89,88 @@ pub enum FeatureBaseSource {
 
 impl ServiceResolved {
     pub fn feature_base_source(&self) -> FeatureBaseSource {
-        match self {
-            Self::Image { image } => FeatureBaseSource::Image(image.clone()),
-            Self::Build { build } => {
+        match &self.source {
+            ServiceSource::Image { image } => FeatureBaseSource::Image(image.clone()),
+            ServiceSource::Build { build } => {
                 FeatureBaseSource::DockerfilePath(Path::new(&build.context).join(&build.dockerfile))
             }
         }
     }
+}
+
+/// The service's own entrypoint and command as `docker compose config` resolves them.
+/// Values keep compose's `$$` escaping.
+#[derive(Debug, Default, PartialEq)]
+pub struct ServiceCommand {
+    pub entrypoint: Option<Vec<String>>,
+    pub command: Option<Vec<String>>,
+}
+
+impl ServiceCommand {
+    fn from_value(value: &Value) -> Self {
+        let strings = |key: &str| -> Option<Vec<String>> {
+            let items = value.get(key)?.as_array()?;
+            Some(
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect(),
+            )
+        };
+        ServiceCommand {
+            entrypoint: strings("entrypoint"),
+            command: strings("command"),
+        }
+    }
+
+    /// Adds the keepalive entrypoint to the service in `content`. It runs `entrypoints` first,
+    /// then execs the service's own entrypoint and command unless `override_command` is true.
+    pub fn to_compose_override(
+        &self,
+        content: &str,
+        service: &str,
+        override_command: Option<bool>,
+        entrypoints: &[String],
+        image_entrypoint: &[String],
+        image_cmd: &[String],
+    ) -> String {
+        let escape = |args: &[String]| -> Vec<String> {
+            args.iter().map(|a| a.replace('$', "$$")).collect()
+        };
+        let (passthrough, command) = if override_command == Some(true) {
+            (vec![], Some(vec![]))
+        } else {
+            (
+                self.entrypoint
+                    .clone()
+                    .unwrap_or_else(|| escape(image_entrypoint)),
+                match self.command {
+                    Some(_) => None,
+                    None => Some(escape(image_cmd)),
+                },
+            )
+        };
+        let script = container_start_script(entrypoints).replace('$', "$$");
+        let entrypoint = ["/bin/sh", "-c", &script, "-"]
+            .map(str::to_string)
+            .into_iter()
+            .chain(passthrough);
+        let command_line = command
+            .map(|args| format!("    command: {}\n", flow_sequence(args)))
+            .unwrap_or_default();
+        content.replacen(
+            &format!("  '{service}':\n"),
+            &format!(
+                "  '{service}':\n    entrypoint: {}\n{command_line}",
+                flow_sequence(entrypoint)
+            ),
+            1,
+        )
+    }
+}
+
+fn flow_sequence(items: impl IntoIterator<Item = String>) -> String {
+    Value::Array(items.into_iter().map(Value::String).collect()).to_string()
 }
 
 fn list_block(key: &str, values: &[String]) -> String {
@@ -148,17 +240,6 @@ pub fn compose_args(
     };
     let filter1 = format!("label=com.docker.compose.project={}", project_name);
     let filter2 = format!("label=com.docker.compose.service={}", config.service);
-    let script = r#"echo Container started
-trap "exit 0" 15
-exec "$$@"
-while sleep 1 & wait $$!; do :; done"#;
-    let script = script.replace('"', r#"\""#).replace('\n', r"\n");
-    let command_lines = match config.common.override_command {
-        Some(true) => {
-            format!("\n    entrypoint: [\"/bin/sh\", \"-c\", \"{script}\", \"-\"]\n    command: []")
-        }
-        _ => String::new(),
-    };
     let init_line = match config.common.init {
         Some(true) => "\n    init: true".to_string(),
         _ => String::new(),
@@ -240,7 +321,7 @@ while sleep 1 & wait $$!; do :; done"#;
     let override_content = format!(
         "\
 {named_volumes}services:
-  '{service}':{command_lines}{init_line}{user_line}{env_block}{privileged_line}{cap_add_block}{security_opt_block}{volumes_block}
+  '{service}':{init_line}{user_line}{env_block}{privileged_line}{cap_add_block}{security_opt_block}{volumes_block}
 "
     );
     ComposeArgs {
@@ -434,27 +515,12 @@ mod tests {
     }
 
     #[test]
-    fn when_compose_args_with_override_command_then_override_content_contains_keepalive_entrypoint_and_empty_command()
-     {
+    fn when_compose_args_with_override_command_then_override_content_has_no_entrypoint_and_command()
+    {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
         config.common.override_command = Some(true);
         let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
-        assert!(args.override_content.contains("while sleep 1"));
-        assert!(args.override_content.contains("$$@"));
-        assert!(args.override_content.contains("\n    command: []"));
-    }
-
-    #[test]
-    fn when_compose_args_without_override_command_then_override_content_has_no_entrypoint_and_command()
-     {
-        let cwd = Path::new("/home/user/myproject");
-        let args = compose_args(
-            &compose_config("app"),
-            cwd,
-            &cwd.join(".devcontainer"),
-            &HashMap::new(),
-        );
         assert!(!args.override_content.contains("entrypoint:"));
         assert!(!args.override_content.contains("command:"));
     }
@@ -758,12 +824,9 @@ mod tests {
             r#"{{"name":"{project}","services":{{"{service}":{{"build":{{"dockerfile":"D","context":"/c"}}}}}}}}"#
         ))
         .unwrap();
-        match cfg.services.get(&service) {
-            Some(ServiceResolved::Build { build }) => {
-                assert_eq!(build.image, format!("{project}-{service}"));
-            }
-            _ => panic!("expected Build"),
-        }
+        let svc = cfg.services.get(&service).unwrap();
+        assert!(matches!(svc.source, ServiceSource::Build { .. }));
+        assert_eq!(svc.image(), format!("{project}-{service}"));
     }
 
     #[test]
@@ -773,9 +836,167 @@ mod tests {
             r#"{{"name":"{project}","services":{{"{service}":{{"image":"{image}","build":{{"dockerfile":"D","context":"/c"}}}}}}}}"#
         ))
         .unwrap();
-        match cfg.services.get(&service) {
-            Some(ServiceResolved::Build { build }) => assert_eq!(build.image, image),
-            _ => panic!("expected Build"),
-        }
+        let svc = cfg.services.get(&service).unwrap();
+        assert!(matches!(svc.source, ServiceSource::Build { .. }));
+        assert_eq!(svc.image(), image);
+    }
+
+    #[test]
+    fn when_service_resolved_image_then_image_is_the_image() {
+        let image = random_word();
+        let svc = service_from(&format!(r#"{{"image":"{image}"}}"#)).unwrap();
+        assert_eq!(svc.image(), image);
+    }
+
+    #[test]
+    fn when_service_resolved_with_entrypoint_and_command_then_command_has_them() {
+        let (entrypoint, command) = (random_word(), random_word());
+        let svc = service_from(&format!(
+            r#"{{"image":"a:1","entrypoint":["{entrypoint}"],"command":["{command}"]}}"#
+        ))
+        .unwrap();
+        assert_eq!(
+            svc.command,
+            ServiceCommand {
+                entrypoint: Some(vec![entrypoint]),
+                command: Some(vec![command]),
+            }
+        );
+    }
+
+    #[test]
+    fn when_service_resolved_with_null_entrypoint_and_command_then_command_is_empty() {
+        let svc = service_from(r#"{"image":"a:1","entrypoint":null,"command":null}"#).unwrap();
+        assert_eq!(svc.command, ServiceCommand::default());
+    }
+
+    const SERVICE_OVERRIDE: &str = "services:\n  'app':\n";
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn when_to_compose_override_then_entrypoint_is_keepalive_script_under_the_service() {
+        let content = ServiceCommand::default().to_compose_override(
+            SERVICE_OVERRIDE,
+            "app",
+            None,
+            &[],
+            &[],
+            &[],
+        );
+        assert!(content.starts_with("services:\n  'app':\n    entrypoint: [\"/bin/sh\",\"-c\","));
+        assert!(content.contains("exec \\\"$$@\\\""));
+        assert!(content.contains("while sleep 1 & wait $$!"));
+    }
+
+    #[test]
+    fn when_override_command_is_unset_then_image_entrypoint_and_cmd_are_passed_through() {
+        let content = ServiceCommand::default().to_compose_override(
+            SERVICE_OVERRIDE,
+            "app",
+            None,
+            &[],
+            &strings(&["/entrypoint.sh"]),
+            &strings(&["serve"]),
+        );
+        assert!(content.contains(r#"done","-","/entrypoint.sh"]"#));
+        assert!(content.contains("\n    command: [\"serve\"]\n"));
+    }
+
+    #[test]
+    fn when_service_has_entrypoint_then_it_wins_over_image_entrypoint() {
+        let service = ServiceCommand {
+            entrypoint: Some(strings(&["/service.sh"])),
+            command: None,
+        };
+        let content = service.to_compose_override(
+            SERVICE_OVERRIDE,
+            "app",
+            Some(false),
+            &[],
+            &strings(&["/entrypoint.sh"]),
+            &[],
+        );
+        assert!(content.contains(r#"done","-","/service.sh"]"#));
+        assert!(!content.contains("/entrypoint.sh"));
+    }
+
+    #[test]
+    fn when_service_has_command_then_override_has_no_command() {
+        let service = ServiceCommand {
+            entrypoint: None,
+            command: Some(strings(&["sleep", "infinity"])),
+        };
+        let content = service.to_compose_override(
+            SERVICE_OVERRIDE,
+            "app",
+            None,
+            &[],
+            &[],
+            &strings(&["serve"]),
+        );
+        assert!(!content.contains("command:"));
+    }
+
+    #[test]
+    fn when_override_command_is_true_then_nothing_is_passed_through_and_command_is_empty() {
+        let service = ServiceCommand {
+            entrypoint: Some(strings(&["/service.sh"])),
+            command: Some(strings(&["sleep", "infinity"])),
+        };
+        let content = service.to_compose_override(
+            SERVICE_OVERRIDE,
+            "app",
+            Some(true),
+            &[],
+            &strings(&["/entrypoint.sh"]),
+            &strings(&["serve"]),
+        );
+        assert!(content.contains(r#"done","-"]"#));
+        assert!(content.contains("\n    command: []\n"));
+        assert!(!content.contains("/service.sh"));
+        assert!(!content.contains("/entrypoint.sh"));
+    }
+
+    #[test]
+    fn when_override_command_is_true_then_feature_entrypoints_still_run_before_exec() {
+        let content = ServiceCommand::default().to_compose_override(
+            SERVICE_OVERRIDE,
+            "app",
+            Some(true),
+            &strings(&["/usr/local/share/docker-init.sh"]),
+            &[],
+            &[],
+        );
+        let init = content.find("/usr/local/share/docker-init.sh\\n").unwrap();
+        let exec = content.find("exec \\\"$$@\\\"").unwrap();
+        assert!(init < exec);
+    }
+
+    #[test]
+    fn when_image_values_contain_dollar_then_they_are_escaped_for_compose() {
+        let content = ServiceCommand::default().to_compose_override(
+            SERVICE_OVERRIDE,
+            "app",
+            None,
+            &[],
+            &strings(&["/bin/sh", "-c", "echo $HOME"]),
+            &strings(&["$PORT"]),
+        );
+        assert!(content.contains(r#""echo $$HOME""#));
+        assert!(content.contains(r#"["$$PORT"]"#));
+    }
+
+    #[test]
+    fn when_service_values_contain_escaped_dollar_then_they_are_kept_as_is() {
+        let service = ServiceCommand {
+            entrypoint: Some(strings(&["/bin/sh", "-c", "echo $$HOME"])),
+            command: None,
+        };
+        let content = service.to_compose_override(SERVICE_OVERRIDE, "app", None, &[], &[], &[]);
+        assert!(content.contains(r#""echo $$HOME""#));
+        assert!(!content.contains("$$$$"));
     }
 }

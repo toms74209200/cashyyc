@@ -61,6 +61,14 @@ impl Metadata {
             .collect()
     }
 
+    pub fn entrypoints(&self) -> Vec<String> {
+        self.0
+            .iter()
+            .filter_map(|entry| entry.get("entrypoint")?.as_str())
+            .map(str::to_string)
+            .collect()
+    }
+
     pub fn merge_into(&self, config: &CommonConfig) -> CommonConfig {
         self.0
             .iter()
@@ -693,6 +701,33 @@ mod tests {
                 .value(),
         );
         assert_eq!(metadata.lifecycle_commands("postCreateCommand"), vec![]);
+    }
+
+    #[test]
+    fn when_entrypoints_with_entries_then_returns_them_in_order() {
+        let (first, last) = (random_word(), random_word());
+        let metadata = Metadata::from(
+            jsonc::parse(&format!(
+                r#"[{{"entrypoint":"/{first}"}},{{"id":"{}"}},{{"entrypoint":"/{last}"}}]"#,
+                random_word()
+            ))
+            .unwrap()
+            .value(),
+        );
+        assert_eq!(
+            metadata.entrypoints(),
+            vec![format!("/{first}"), format!("/{last}")]
+        );
+    }
+
+    #[test]
+    fn when_entrypoints_without_the_key_then_returns_empty() {
+        let metadata = Metadata::from(
+            jsonc::parse(&format!(r#"[{{"remoteUser":"{}"}}]"#, random_word()))
+                .unwrap()
+                .value(),
+        );
+        assert!(metadata.entrypoints().is_empty());
     }
 
     #[test]
