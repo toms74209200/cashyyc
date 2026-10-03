@@ -102,13 +102,46 @@ vsc-{basename(cwd)}-{fnv1a(cwd)}
 
 **ライフサイクルコマンドの実行**もどの設定タイプでも同じ手順:
 
-1. `initializeCommand`（ホスト上）
+1. `initializeCommand`（ホスト上で、イメージの pull / build の前に実行）
 2. `onCreateCommand`
 3. `updateContentCommand`
 4. `postCreateCommand`
 5. `postStartCommand` / `postAttachCommand`
 
 `waitFor` で同期ポイントを制御する（デフォルト: `updateContentCommand`）。
+
+2〜5 の各フックは、後述のメタデータに含まれるコマンドを、ベースイメージ → features → devcontainer.json の順にすべて実行する。初回のみ実行するフックは、実行済みマーカー（`$HOME/.devcontainer/.<フック名>Marker`）をフックごとに 1 回だけ確認する。
+
+### メタデータのマージ
+
+仕様: https://containers.dev/implementors/spec/#merge-logic
+
+定義: `devcontainers/cli` `src/spec-node/imageMetadata.ts` `getDevcontainerMetadata`、`mergeConfiguration`、`getImageMetadataFromContainer`
+
+`devcontainer.json` の各プロパティが実際に取る値は、次の順に並べたメタデータをマージして決まる。
+
+| 順序 | 取得元 | 取得タイミング |
+|---|---|---|
+| 1 | ベースイメージの `devcontainer.metadata` ラベル | イメージの pull / build の前 |
+| 2 | 各 feature の `devcontainer-feature.json`（`init`、`privileged`、`capAdd`、`securityOpt`、`entrypoint`、`mounts`、ライフサイクルコマンドなど） | feature のダウンロード後 |
+| 3 | `devcontainer.json` | 起動時 |
+
+この順に並べた配列をメタデータとし、コンテナの `devcontainer.metadata` ラベルにも書き込む。マージ規則はプロパティごとに異なる。
+
+| プロパティ | マージ規則 |
+|---|---|
+| `remoteUser`、`containerUser`、`overrideCommand`、`waitFor`、`userEnvProbe`、`updateRemoteUserUID` | 後勝ち |
+| `containerEnv`、`remoteEnv` | キーごとに後勝ち |
+| `mounts` | target が同じものは後勝ち |
+| `capAdd`、`securityOpt` | 和集合 |
+| `init`、`privileged` | 論理和 |
+| `entrypoint`、ライフサイクルコマンド | すべてを順に連結 |
+
+ベースイメージは、ImageConfig ではそのイメージ、DockerfileConfig / DockerfileBuildConfig では Dockerfile の `FROM` から決定する。`FROM` の解決では、`ARG`（`build.args` による上書きを含む）、`${VAR:-word}` / `${VAR:+word}`、`--platform`、`AS` によるステージ参照、`build.target` を扱う。DockerComposeConfig では、`docker compose config` で得たサービスの `image`、または `build` の Dockerfile の `FROM` から決定する。ローカルにないベースイメージは pull してから inspect する。
+
+#### 既存コンテナに入る場合
+
+コンテナの `devcontainer.metadata` ラベル（作成時のメタデータ）の末尾に、現在の `devcontainer.json` の `remoteUser`、`userEnvProbe`、`remoteEnv` を追加してマージする。それ以外のプロパティは作成時の値を使うため、作成後に `devcontainer.json` へ追加したライフサイクルコマンドは実行されない。ラベルがない場合は `devcontainer.json` のみを使う。
 
 ### features の処理
 
@@ -221,16 +254,11 @@ type=bind,source=${localWorkspaceFolder},target=/workspaces/<フォルダ名>
 
 コンテナ内で操作を行うユーザーは以下の優先順位で決定される:
 
-1. `devcontainer.json` の `remoteUser`
-2. コンテナの Docker ラベル `devcontainer.metadata`（JSON 配列）内の `remoteUser`
-3. イメージの `USER` 命令で指定されたユーザー（`docker inspect` の `.Config.User`）
-4. フォールバック: `root`
+1. マージ後の `remoteUser`（`devcontainer.json`、features、ベースイメージのメタデータの順に優先）
+2. コンテナの `USER`（`docker inspect` の `.Config.User`）
+3. フォールバック: `root`
 
-`devcontainer.metadata` ラベルは features のメタデータを含む JSON 配列:
-
-```json
-[{"id": "feature:1"}, {"remoteUser": "vscode"}, {"id": "feature:2"}]
-```
+feature の `install.sh` に渡す `_REMOTE_USER` もマージ後の `remoteUser` を使う。`_CONTAINER_USER` はマージ後の `containerUser`、Compose のサービスの `user:`、イメージの `USER` の順に決める。
 
 ### DockerCompose 固有の仕様
 
@@ -314,9 +342,10 @@ services:
 
 #### remoteUser の解決順序（updateRemoteUserUid 用）
 
-1. `devcontainer.json` の `remoteUser`
+1. マージ後の `remoteUser`
 2. `runArgs` の `--user` / `-u`（Single）または compose ファイルの `user:` フィールド（Compose）
-3. イメージの `USER` 命令（`docker inspect` の `.Config.User`）
+3. マージ後の `containerUser`
+4. イメージの `USER` 命令（`docker inspect` の `.Config.User`）
 
 上記が `root`・空・未指定の場合はスキップ。
 
