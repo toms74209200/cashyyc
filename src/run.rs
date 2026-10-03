@@ -1,5 +1,6 @@
 use crate::cli;
 use crate::devcontainer;
+use crate::devcontainer::WaitFor;
 use crate::docker;
 use crate::docker::{Docker, DockerCli};
 use crate::err;
@@ -376,156 +377,102 @@ fn shell(
 
     let target = setup::from_config(&config, &cwd, &config_path, config_dir, &local_env);
 
-    let (found_container, container_id) =
-        match lookup_existing(docker, &target, &config_path, &cwd)? {
-            Existing::Running { id, meta } => (meta, Some(id)),
-            Existing::Stopped { id, meta } => {
-                start_existing(docker, &target, &id)?;
-                let started_at = docker
-                    .inspect_format(&id, "{{.State.StartedAt}}")
-                    .map(|o| o.stdout.trim().to_string())?;
-                let wait_for = config.common().wait_for.clone();
-                if let Some(value) = config.common().post_start_command.as_ref()
-                    && let Ok(cmd) = LifecycleCmd::try_from(value)
-                {
-                    let workdir = config.workspace_folder(&cwd, &local_env);
-                    let cmd =
-                        expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-                    let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
-                    run_lifecycle_in_container(
-                        docker,
-                        &cmd,
-                        &id,
-                        &workdir,
-                        "postStartCommand",
-                        LifecycleMarker::Once(&started_at),
-                        expanded_remote_user.as_deref(),
-                        wait_for
-                            .as_ref()
-                            .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
-                    )?;
-                }
-                (meta, Some(id))
-            }
-            Existing::None => (None, None),
-        };
+    let (container_id, restarted) = match lookup_existing(docker, &target, &config_path, &cwd)? {
+        Existing::Running { id, .. } => (Some(id), false),
+        Existing::Stopped { id, .. } => {
+            start_existing(docker, &target, &id)?;
+            (Some(id), true)
+        }
+        Existing::None => (None, false),
+    };
 
     if let Some(id) = container_id {
-        let wait_for = config.common().wait_for.clone();
-        if let Some(value) = config.common().post_attach_command.as_ref()
-            && let Ok(cmd) = LifecycleCmd::try_from(value)
+        let metadata = devcontainer::Metadata::for_existing_container(
+            docker
+                .inspect_format(&id, "{{index .Config.Labels \"devcontainer.metadata\"}}")
+                .ok()
+                .filter(|o| o.success)
+                .map(|o| devcontainer::Metadata::from_label(&o.stdout))
+                .unwrap_or_default(),
+            &config.common().metadata,
+        );
+        let config = config.with_common(metadata.merge_into(config.common()));
+        let started_at = match restarted {
+            true => Some(
+                docker
+                    .inspect_format(&id, "{{.State.StartedAt}}")
+                    .map(|o| o.stdout.trim().to_string())?,
+            ),
+            false => None,
+        };
+        for (name, hook, marker) in started_at
+            .iter()
+            .map(|started_at| {
+                (
+                    "postStartCommand",
+                    WaitFor::PostStartCommand,
+                    LifecycleMarker::Once(started_at),
+                )
+            })
+            .chain([(
+                "postAttachCommand",
+                WaitFor::PostAttachCommand,
+                LifecycleMarker::Always,
+            )])
         {
             let workdir = config.workspace_folder(&cwd, &local_env);
-            let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-            let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
-            run_lifecycle_in_container(
-                docker,
-                &cmd,
-                &id,
-                &workdir,
-                "postAttachCommand",
-                LifecycleMarker::Always,
-                expanded_remote_user.as_deref(),
-                wait_for
-                    .as_ref()
-                    .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
-            )?;
+            let cmds: Vec<LifecycleCmd> = metadata
+                .lifecycle_commands(name)
+                .iter()
+                .filter_map(|value| LifecycleCmd::try_from(value).ok())
+                .map(|cmd| {
+                    expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env)
+                })
+                .collect();
+            if cmds.is_empty() {
+                continue;
+            }
+            let remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
+            if let LifecycleMarker::Once(epoch) = marker
+                && !docker.exec_interactive(
+                    &remote_user
+                        .iter()
+                        .flat_map(|user| ["--user".to_string(), user.clone()])
+                        .chain([
+                            id.clone(),
+                            "sh".to_string(),
+                            "-c".to_string(),
+                            format!(
+                                "mkdir -p \"$HOME/.devcontainer\" && \
+                                 CONTENT=$(cat \"$HOME/.devcontainer/.{name}Marker\" 2>/dev/null || echo ENOENT) && \
+                                 [ \"${{CONTENT:-{epoch}}}\" != '{epoch}' ] && \
+                                 echo '{epoch}' > \"$HOME/.devcontainer/.{name}Marker\""
+                            ),
+                        ])
+                        .collect::<Vec<_>>(),
+                )?
+            {
+                continue;
+            }
+            let wait = config
+                .common()
+                .wait_for
+                .as_ref()
+                .is_none_or(|wait_for| wait_for.requires(&hook));
+            for cmd in &cmds {
+                run_lifecycle_in_container(
+                    docker,
+                    cmd,
+                    &id,
+                    &workdir,
+                    name,
+                    remote_user.as_deref(),
+                    wait,
+                )?;
+            }
         }
-        return exec_in_container(docker, id, found_container, &config, &cwd);
+        return exec_in_container(docker, id, &config, &cwd);
     }
-
-    let features_map = &config.common().features;
-
-    let features_plan: Option<(features::InstallPlan, std::path::PathBuf)> =
-        if !features_map.is_empty() {
-            Some(download_features(
-                reg,
-                host,
-                features_map,
-                &config.common().override_feature_install_order,
-                config_dir,
-                &cwd,
-            )?)
-        } else {
-            None
-        };
-
-    let feature_users = features::FeatureInstallUsers::new(
-        config.common().container_user.as_deref(),
-        config.common().remote_user.as_deref(),
-    );
-    let target = if let Some((ref plan, ref fdir)) = features_plan {
-        match target {
-            ContainerTarget::Single(s) => {
-                let base = match &s.dockerfile {
-                    None => format!("FROM {}", s.image_tag),
-                    Some(p) => std::fs::read_to_string(p)
-                        .map_err(|e| err!("failed to read Dockerfile: {e}"))?,
-                };
-                let content = features::feature_dockerfile(&base, plan, &feature_users);
-                let dockerfile_path = fdir.join("Dockerfile.features");
-                std::fs::write(&dockerfile_path, &content)
-                    .map_err(|e| err!("failed to write feature Dockerfile: {e}"))?;
-                let mut run_args = s.run_args;
-                if plan.features().iter().any(|f| f.privileged == Some(true)) {
-                    run_args.push("--privileged".to_string());
-                }
-                if plan.features().iter().any(|f| f.init == Some(true)) {
-                    run_args.push("--init".to_string());
-                }
-                for cap in plan.features().iter().flat_map(|f| &f.cap_add) {
-                    run_args.push("--cap-add".to_string());
-                    run_args.push(cap.clone());
-                }
-                for opt in plan.features().iter().flat_map(|f| &f.security_opt) {
-                    run_args.push("--security-opt".to_string());
-                    run_args.push(opt.clone());
-                }
-                for mount in plan.features().iter().flat_map(|f| &f.mounts) {
-                    run_args.push("--mount".to_string());
-                    run_args.push(mount.to_docker_arg());
-                }
-                ContainerTarget::Single(setup::ContainerSetup {
-                    image_tag: format!("{}-features", docker::image_tag(&cwd)),
-                    dockerfile: Some(dockerfile_path),
-                    run_args,
-                    override_command: s.override_command,
-                })
-            }
-            ContainerTarget::Compose(c) => {
-                let base = (|| -> Option<String> {
-                    let out = docker.compose_config_json(&c.global_args).ok()?;
-                    if !out.success {
-                        return None;
-                    }
-                    let cfg = devcontainer::ComposeResolved::parse(&out.stdout)?;
-                    match cfg.services.get(&c.service)?.feature_base_source() {
-                        devcontainer::FeatureBaseSource::Image(img) => Some(format!("FROM {img}")),
-                        devcontainer::FeatureBaseSource::DockerfilePath(p) => {
-                            std::fs::read_to_string(p).ok()
-                        }
-                    }
-                })()
-                .ok_or_else(|| err!("failed to resolve compose service base for features"))?;
-                let content = features::feature_dockerfile(&base, plan, &feature_users);
-                let dockerfile_path = fdir.join("Dockerfile.features");
-                std::fs::write(&dockerfile_path, &content)
-                    .map_err(|e| err!("failed to write feature Dockerfile: {e}"))?;
-                let override_content = format!(
-                    "{}    build:\n      dockerfile: {}\n      context: {}\n",
-                    c.override_content,
-                    dockerfile_path.display(),
-                    fdir.display()
-                );
-                ContainerTarget::Compose(devcontainer::ComposeArgs {
-                    override_content,
-                    ..c
-                })
-            }
-        }
-    } else {
-        target
-    };
 
     if let Some(value) = config.common().initialize_command.as_ref()
         && let Ok(cmd) = LifecycleCmd::try_from(value)
@@ -549,7 +496,166 @@ fn shell(
         }
     }
 
-    let mut image_metadata = devcontainer::Metadata::default();
+    let features_plan: Option<(features::InstallPlan, std::path::PathBuf)> =
+        if !config.common().features.is_empty() {
+            Some(download_features(
+                reg,
+                host,
+                &config.common().features,
+                &config.common().override_feature_install_order,
+                config_dir,
+                &cwd,
+            )?)
+        } else {
+            None
+        };
+
+    let service = match &target {
+        ContainerTarget::Compose(c) => Some(
+            docker
+                .compose_config_json(&c.global_args)
+                .ok()
+                .filter(|o| o.success)
+                .and_then(|o| devcontainer::ComposeResolved::parse(&o.stdout))
+                .and_then(|mut cfg| cfg.services.remove(&c.service))
+                .ok_or_else(|| err!("failed to resolve compose service `{}`", c.service))?,
+        ),
+        ContainerTarget::Single(_) => None,
+    };
+    let (dockerfile, build_args, build_target) = match (&config, &target, service.as_ref()) {
+        (devcontainer::DevcontainerConfig::Dockerfile(c), ContainerTarget::Single(s), _) => {
+            let build = devcontainer::normalize_dockerfile_config(c);
+            (s.dockerfile.clone(), build.args, build.target)
+        }
+        (devcontainer::DevcontainerConfig::DockerfileBuild(c), ContainerTarget::Single(s), _) => (
+            s.dockerfile.clone(),
+            c.build.args.clone(),
+            c.build.target.clone(),
+        ),
+        (
+            _,
+            _,
+            Some(devcontainer::ServiceResolved {
+                source: devcontainer::ServiceSource::Build { build },
+                ..
+            }),
+        ) => (
+            Some(std::path::Path::new(&build.context).join(&build.dockerfile)),
+            build.args.clone(),
+            build.target.clone(),
+        ),
+        _ => (None, Default::default(), None),
+    };
+    let metadata = devcontainer::Metadata::for_container(
+        match match (&config, service.as_ref(), dockerfile) {
+            (devcontainer::DevcontainerConfig::Image(c), _, _) => {
+                if !docker.pull_streamed(&c.image)? {
+                    return Err(err!("`docker pull` failed"));
+                }
+                Some(c.image.clone())
+            }
+            (
+                _,
+                Some(devcontainer::ServiceResolved {
+                    source: devcontainer::ServiceSource::Image { image },
+                    ..
+                }),
+                _,
+            ) => Some(image.clone()),
+            (_, _, Some(path)) => devcontainer::Dockerfile::parse(
+                &std::fs::read_to_string(&path)
+                    .map_err(|e| err!("failed to read Dockerfile {}: {e}", path.display()))?,
+            )
+            .and_then(|dockerfile| dockerfile.base_image(&build_args, build_target.as_deref())),
+            _ => None,
+        }
+        .filter(|image| image != "scratch")
+        {
+            None => devcontainer::Metadata::default(),
+            Some(image) => match match docker.image_config(&image)? {
+                output if output.success => output,
+                _ if !docker.pull_streamed(&image)? => {
+                    return Err(err!("`docker pull` failed for base image `{image}`"));
+                }
+                _ => docker.image_config(&image)?,
+            } {
+                output if output.success => {
+                    docker::ImageConfig::parse(output.stdout.trim()).metadata
+                }
+                output => {
+                    return Err(err!(
+                        "failed to inspect base image `{image}`: {}",
+                        output.stderr.trim()
+                    ));
+                }
+            },
+        },
+        features_plan
+            .iter()
+            .flat_map(|(plan, _)| plan.features())
+            .map(|f| &f.metadata),
+        &config.common().metadata,
+    );
+    let config = config.with_common(metadata.merge_into(config.common()));
+    let target = setup::from_config(&config, &cwd, &config_path, config_dir, &local_env);
+
+    let feature_users = features::FeatureInstallUsers::new(
+        config
+            .common()
+            .container_user
+            .as_deref()
+            .or(service.as_ref().and_then(|s| s.user.as_deref())),
+        config.common().remote_user.as_deref(),
+    );
+    let target = if let Some((ref plan, ref fdir)) = features_plan {
+        match target {
+            ContainerTarget::Single(s) => {
+                let base = match &s.dockerfile {
+                    None => format!("FROM {}", s.image_tag),
+                    Some(p) => std::fs::read_to_string(p)
+                        .map_err(|e| err!("failed to read Dockerfile: {e}"))?,
+                };
+                let content = features::feature_dockerfile(&base, plan, &feature_users);
+                let dockerfile_path = fdir.join("Dockerfile.features");
+                std::fs::write(&dockerfile_path, &content)
+                    .map_err(|e| err!("failed to write feature Dockerfile: {e}"))?;
+                ContainerTarget::Single(setup::ContainerSetup {
+                    image_tag: format!("{}-features", docker::image_tag(&cwd)),
+                    dockerfile: Some(dockerfile_path),
+                    ..s
+                })
+            }
+            ContainerTarget::Compose(c) => {
+                let base = match service.as_ref().map(|s| s.feature_base_source()) {
+                    Some(devcontainer::FeatureBaseSource::Image(img)) => {
+                        Some(format!("FROM {img}"))
+                    }
+                    Some(devcontainer::FeatureBaseSource::DockerfilePath(p)) => {
+                        std::fs::read_to_string(p).ok()
+                    }
+                    None => None,
+                }
+                .ok_or_else(|| err!("failed to resolve compose service base for features"))?;
+                let content = features::feature_dockerfile(&base, plan, &feature_users);
+                let dockerfile_path = fdir.join("Dockerfile.features");
+                std::fs::write(&dockerfile_path, &content)
+                    .map_err(|e| err!("failed to write feature Dockerfile: {e}"))?;
+                let override_content = format!(
+                    "{}    build:\n      dockerfile: {}\n      context: {}\n",
+                    c.override_content,
+                    dockerfile_path.display(),
+                    fdir.display()
+                );
+                ContainerTarget::Compose(devcontainer::ComposeArgs {
+                    override_content,
+                    ..c
+                })
+            }
+        }
+    } else {
+        target
+    };
+
     let id: String = match target {
         ContainerTarget::Single(s) => {
             if let Some((_, ref fdir)) = features_plan {
@@ -566,11 +672,7 @@ fn shell(
                 }
             } else {
                 match &config {
-                    devcontainer::DevcontainerConfig::Image(c) => {
-                        if !docker.pull_streamed(&c.image)? {
-                            return Err(err!("`docker pull` failed"));
-                        }
-                    }
+                    devcontainer::DevcontainerConfig::Image(_) => {}
                     devcontainer::DevcontainerConfig::Dockerfile(c) => {
                         let build = devcontainer::normalize_dockerfile_config(c);
                         let build_args =
@@ -598,13 +700,6 @@ fn shell(
                     .filter(|o| o.success)
                     .map(|o| o.stdout.trim().to_string())
                     .unwrap_or_default();
-                let metadata_remote_user = docker
-                    .inspect_format(
-                        &s.image_tag,
-                        "{{index .Config.Labels \"devcontainer.metadata\"}}",
-                    )
-                    .ok()
-                    .and_then(|o| docker::parse_remote_user_from_metadata(o.stdout.trim()));
                 let meta = std::fs::metadata("/proc/self")
                     .map_err(|e| err!("Failed to get process metadata: {e}"))?;
                 let host_uid = meta.uid();
@@ -613,7 +708,6 @@ fn shell(
                     UidContext::Single {
                         base_image: &s.image_tag,
                         image_user: &image_user,
-                        metadata_remote_user: metadata_remote_user.as_deref(),
                     },
                     config.common(),
                     &s.run_args,
@@ -666,22 +760,6 @@ fn shell(
                 ""
             });
             let mut run_args = s.run_args;
-            image_metadata = image_config.metadata.clone();
-            run_args.extend(devcontainer::image_metadata_run_options(
-                &image_metadata.merge_into(config.common()),
-                config.common(),
-                &cwd,
-                &config.workspace_folder(&cwd, &local_env),
-                &local_env,
-            ));
-            let metadata = devcontainer::Metadata::for_container(
-                image_config.metadata,
-                features_plan
-                    .iter()
-                    .flat_map(|(plan, _)| plan.features())
-                    .map(|f| &f.metadata),
-                &config.common().metadata,
-            );
             run_args.extend(metadata.to_docker_args());
             run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
             run_args.push(image_tag.clone());
@@ -754,12 +832,7 @@ fn shell(
                 let override_content = if !no_recreate {
                     (|| -> Option<String> {
                         use std::os::unix::fs::MetadataExt;
-                        let out = docker
-                            .compose_config_json(&c.global_args)
-                            .ok()
-                            .filter(|o| o.success)?;
-                        let cfg = devcontainer::ComposeResolved::parse(&out.stdout)?;
-                        let image = match cfg.services.get(&c.service)?.feature_base_source() {
+                        let image = match service.as_ref()?.feature_base_source() {
                             devcontainer::FeatureBaseSource::Image(img) => img,
                             devcontainer::FeatureBaseSource::DockerfilePath(_) => return None,
                         };
@@ -769,13 +842,6 @@ fn shell(
                             .filter(|o| o.success)
                             .map(|o| o.stdout.trim().to_string())
                             .unwrap_or_default();
-                        let metadata_remote_user = docker
-                            .inspect_format(
-                                &image,
-                                "{{index .Config.Labels \"devcontainer.metadata\"}}",
-                            )
-                            .ok()
-                            .and_then(|o| docker::parse_remote_user_from_metadata(o.stdout.trim()));
                         let meta = std::fs::metadata("/proc/self").ok()?;
                         let host_uid = meta.uid();
                         let host_gid = meta.gid();
@@ -785,7 +851,6 @@ fn shell(
                                 service: &c.service,
                                 image: &image,
                                 image_user: &image_user,
-                                metadata_remote_user: metadata_remote_user.as_deref(),
                             },
                             config.common(),
                             &[],
@@ -854,22 +919,13 @@ fn shell(
                             .map(|o| o.stdout)
                             .unwrap_or_default(),
                     );
-                    image_metadata = image_config.metadata.clone();
-                    let metadata = devcontainer::Metadata::for_container(
-                        image_config.metadata,
-                        features_plan
-                            .iter()
-                            .flat_map(|(plan, _)| plan.features())
-                            .map(|f| &f.metadata),
-                        &config.common().metadata,
-                    );
                     let override_content = resolved
                         .map(|svc| svc.command)
                         .unwrap_or_default()
                         .to_compose_override(
                             &override_content,
                             &c.service,
-                            metadata.merge_into(config.common()).override_command,
+                            config.common().override_command,
                             &metadata.entrypoints(),
                             &image_config.entrypoint,
                             &image_config.cmd,
@@ -900,230 +956,89 @@ fn shell(
                 .ok_or_else(|| err!("Failed to get container ID from `docker compose up`"))?
         }
     };
-    let config = config.with_common(image_metadata.merge_into(config.common()));
     let created_at = docker
         .inspect_format(&id, "{{.Created}}")
         .map(|o| o.stdout.trim().to_string())?;
     let started_at = docker
         .inspect_format(&id, "{{.State.StartedAt}}")
         .map(|o| o.stdout.trim().to_string())?;
-    let wait_for = config.common().wait_for.clone();
-    if let Some(value) = config.common().on_create_command.as_ref()
-        && let Ok(cmd) = LifecycleCmd::try_from(value)
-    {
-        let workdir = config.workspace_folder(&cwd, &local_env);
-        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-        let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
-        run_lifecycle_in_container(
-            docker,
-            &cmd,
-            &id,
-            &workdir,
+    for (name, hook, marker) in [
+        (
             "onCreateCommand",
+            WaitFor::OnCreateCommand,
             LifecycleMarker::Once(&created_at),
-            expanded_remote_user.as_deref(),
-            wait_for
-                .as_ref()
-                .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::OnCreateCommand)),
-        )?;
-    }
-    if let Some((ref plan, _)) = features_plan {
-        for feature in plan.features() {
-            if let Some(value) = feature.on_create_command.as_ref()
-                && let Ok(cmd) = LifecycleCmd::try_from(value)
-            {
-                let workdir = config.workspace_folder(&cwd, &local_env);
-                let cmd =
-                    expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-                let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
-                run_lifecycle_in_container(
-                    docker,
-                    &cmd,
-                    &id,
-                    &workdir,
-                    "onCreateCommand",
-                    LifecycleMarker::Once(&created_at),
-                    expanded_remote_user.as_deref(),
-                    wait_for
-                        .as_ref()
-                        .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::OnCreateCommand)),
-                )?;
-            }
-        }
-    }
-    if let Some(value) = config.common().update_content_command.as_ref()
-        && let Ok(cmd) = LifecycleCmd::try_from(value)
-    {
-        let workdir = config.workspace_folder(&cwd, &local_env);
-        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-        let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
-        run_lifecycle_in_container(
-            docker,
-            &cmd,
-            &id,
-            &workdir,
+        ),
+        (
             "updateContentCommand",
+            WaitFor::UpdateContentCommand,
             LifecycleMarker::Once(&created_at),
-            expanded_remote_user.as_deref(),
-            wait_for
-                .as_ref()
-                .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::UpdateContentCommand)),
-        )?;
-    }
-    if let Some((ref plan, _)) = features_plan {
-        for feature in plan.features() {
-            if let Some(value) = feature.update_content_command.as_ref()
-                && let Ok(cmd) = LifecycleCmd::try_from(value)
-            {
-                let workdir = config.workspace_folder(&cwd, &local_env);
-                let cmd =
-                    expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-                let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
-                run_lifecycle_in_container(
-                    docker,
-                    &cmd,
-                    &id,
-                    &workdir,
-                    "updateContentCommand",
-                    LifecycleMarker::Once(&created_at),
-                    expanded_remote_user.as_deref(),
-                    wait_for
-                        .as_ref()
-                        .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::UpdateContentCommand)),
-                )?;
-            }
-        }
-    }
-    if let Some(value) = config.common().post_create_command.as_ref()
-        && let Ok(cmd) = LifecycleCmd::try_from(value)
-    {
-        let workdir = config.workspace_folder(&cwd, &local_env);
-        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-        let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
-        run_lifecycle_in_container(
-            docker,
-            &cmd,
-            &id,
-            &workdir,
+        ),
+        (
             "postCreateCommand",
+            WaitFor::PostCreateCommand,
             LifecycleMarker::Once(&created_at),
-            expanded_remote_user.as_deref(),
-            wait_for
-                .as_ref()
-                .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostCreateCommand)),
-        )?;
-    }
-    if let Some((ref plan, _)) = features_plan {
-        for feature in plan.features() {
-            if let Some(value) = feature.post_create_command.as_ref()
-                && let Ok(cmd) = LifecycleCmd::try_from(value)
-            {
-                let workdir = config.workspace_folder(&cwd, &local_env);
-                let cmd =
-                    expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-                let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
-                run_lifecycle_in_container(
-                    docker,
-                    &cmd,
-                    &id,
-                    &workdir,
-                    "postCreateCommand",
-                    LifecycleMarker::Once(&created_at),
-                    expanded_remote_user.as_deref(),
-                    wait_for
-                        .as_ref()
-                        .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostCreateCommand)),
-                )?;
-            }
-        }
-    }
-    if let Some(value) = config.common().post_start_command.as_ref()
-        && let Ok(cmd) = LifecycleCmd::try_from(value)
-    {
-        let workdir = config.workspace_folder(&cwd, &local_env);
-        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-        let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
-        run_lifecycle_in_container(
-            docker,
-            &cmd,
-            &id,
-            &workdir,
+        ),
+        (
             "postStartCommand",
+            WaitFor::PostStartCommand,
             LifecycleMarker::Once(&started_at),
-            expanded_remote_user.as_deref(),
-            wait_for
-                .as_ref()
-                .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
-        )?;
-    }
-    if let Some((ref plan, _)) = features_plan {
-        for feature in plan.features() {
-            if let Some(value) = feature.post_start_command.as_ref()
-                && let Ok(cmd) = LifecycleCmd::try_from(value)
-            {
-                let workdir = config.workspace_folder(&cwd, &local_env);
-                let cmd =
-                    expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-                let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
-                run_lifecycle_in_container(
-                    docker,
-                    &cmd,
-                    &id,
-                    &workdir,
-                    "postStartCommand",
-                    LifecycleMarker::Once(&started_at),
-                    expanded_remote_user.as_deref(),
-                    wait_for
-                        .as_ref()
-                        .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostStartCommand)),
-                )?;
-            }
-        }
-    }
-    if let Some(value) = config.common().post_attach_command.as_ref()
-        && let Ok(cmd) = LifecycleCmd::try_from(value)
-    {
-        let workdir = config.workspace_folder(&cwd, &local_env);
-        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-        let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
-        run_lifecycle_in_container(
-            docker,
-            &cmd,
-            &id,
-            &workdir,
+        ),
+        (
             "postAttachCommand",
+            WaitFor::PostAttachCommand,
             LifecycleMarker::Always,
-            expanded_remote_user.as_deref(),
-            wait_for
-                .as_ref()
-                .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
-        )?;
-    }
-    if let Some((ref plan, _)) = features_plan {
-        for feature in plan.features() {
-            if let Some(value) = feature.post_attach_command.as_ref()
-                && let Ok(cmd) = LifecycleCmd::try_from(value)
-            {
-                let workdir = config.workspace_folder(&cwd, &local_env);
-                let cmd =
-                    expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-                let expanded_remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
-                run_lifecycle_in_container(
-                    docker,
-                    &cmd,
-                    &id,
-                    &workdir,
-                    "postAttachCommand",
-                    LifecycleMarker::Always,
-                    expanded_remote_user.as_deref(),
-                    wait_for
-                        .as_ref()
-                        .is_none_or(|wf| wf.requires(&devcontainer::WaitFor::PostAttachCommand)),
-                )?;
-            }
+        ),
+    ] {
+        let workdir = config.workspace_folder(&cwd, &local_env);
+        let cmds: Vec<LifecycleCmd> = metadata
+            .lifecycle_commands(name)
+            .iter()
+            .filter_map(|value| LifecycleCmd::try_from(value).ok())
+            .map(|cmd| expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env))
+            .collect();
+        if cmds.is_empty() {
+            continue;
+        }
+        let remote_user = resolve_lifecycle_user(docker, &config, &id, &cwd);
+        if let LifecycleMarker::Once(epoch) = marker
+            && !docker.exec_interactive(
+                &remote_user
+                    .iter()
+                    .flat_map(|user| ["--user".to_string(), user.clone()])
+                    .chain([
+                        id.clone(),
+                        "sh".to_string(),
+                        "-c".to_string(),
+                        format!(
+                            "mkdir -p \"$HOME/.devcontainer\" && \
+                             CONTENT=$(cat \"$HOME/.devcontainer/.{name}Marker\" 2>/dev/null || echo ENOENT) && \
+                             [ \"${{CONTENT:-{epoch}}}\" != '{epoch}' ] && \
+                             echo '{epoch}' > \"$HOME/.devcontainer/.{name}Marker\""
+                        ),
+                    ])
+                    .collect::<Vec<_>>(),
+            )?
+        {
+            continue;
+        }
+        let wait = config
+            .common()
+            .wait_for
+            .as_ref()
+            .is_none_or(|wait_for| wait_for.requires(&hook));
+        for cmd in &cmds {
+            run_lifecycle_in_container(
+                docker,
+                cmd,
+                &id,
+                &workdir,
+                name,
+                remote_user.as_deref(),
+                wait,
+            )?;
         }
     }
-    exec_in_container(docker, id, None, &config, &cwd)
+    exec_in_container(docker, id, &config, &cwd)
 }
 
 fn stop(docker: &mut impl Docker, name: Option<String>) -> Result<()> {
@@ -1234,7 +1149,6 @@ fn down(docker: &mut impl Docker, name: Option<String>) -> Result<()> {
 fn exec_in_container(
     d: &mut impl Docker,
     id: String,
-    found_container: Option<docker::Container>,
     config: &devcontainer::DevcontainerConfig,
     cwd: &std::path::Path,
 ) -> Result<()> {
@@ -1266,22 +1180,12 @@ fn exec_in_container(
             &local_env,
         )
     });
-    let remote_user_from_container = if let Some(ref c) = found_container {
-        c.remote_user.clone()
-    } else {
-        d.inspect_format(&id, "{{index .Config.Labels \"devcontainer.metadata\"}}")
+    let remote_user = remote_user_from_config.or_else(|| {
+        d.inspect_format(&id, "{{.Config.User}}")
             .ok()
-            .and_then(|o| docker::parse_remote_user_from_metadata(o.stdout.trim()))
-            .or_else(|| {
-                d.inspect_format(&id, "{{.Config.User}}")
-                    .ok()
-                    .and_then(|o| {
-                        let user = o.stdout.trim().to_string();
-                        if user.is_empty() { None } else { Some(user) }
-                    })
-            })
-    };
-    let remote_user = remote_user_from_config.or(remote_user_from_container);
+            .map(|o| o.stdout.trim().to_string())
+            .filter(|user| !user.is_empty())
+    });
     let shell = d
         .exec_capture(&[id.as_str(), "printenv", "SHELL"].map(String::from))
         .ok()
@@ -1443,16 +1347,6 @@ fn download_features(
             options: (*options).clone(),
             installs_after: manifest.installs_after,
             container_env: manifest.container_env,
-            privileged: manifest.privileged,
-            init: manifest.init,
-            cap_add: manifest.cap_add,
-            security_opt: manifest.security_opt,
-            mounts: manifest.mounts,
-            on_create_command: manifest.on_create_command,
-            update_content_command: manifest.update_content_command,
-            post_create_command: manifest.post_create_command,
-            post_start_command: manifest.post_start_command,
-            post_attach_command: manifest.post_attach_command,
         });
     }
 
@@ -1461,14 +1355,8 @@ fn download_features(
 }
 
 enum Existing {
-    Running {
-        id: String,
-        meta: Option<docker::Container>,
-    },
-    Stopped {
-        id: String,
-        meta: Option<docker::Container>,
-    },
+    Running { id: String },
+    Stopped { id: String },
     None,
 }
 
@@ -1564,25 +1452,19 @@ fn lookup_existing(
     match target {
         ContainerTarget::Compose(c) => {
             if let Some(id) = compose_ps(docker, c, false)? {
-                return Ok(Existing::Running { id, meta: None });
+                return Ok(Existing::Running { id });
             }
             if let Some(id) = compose_ps(docker, c, true)? {
-                return Ok(Existing::Stopped { id, meta: None });
+                return Ok(Existing::Stopped { id });
             }
             Ok(Existing::None)
         }
         ContainerTarget::Single(_) => {
             if let Some(c) = single_lookup(docker, false, config_path, cwd)? {
-                return Ok(Existing::Running {
-                    id: c.id.clone(),
-                    meta: Some(c),
-                });
+                return Ok(Existing::Running { id: c.id });
             }
             if let Some(c) = single_lookup(docker, true, config_path, cwd)? {
-                return Ok(Existing::Stopped {
-                    id: c.id.clone(),
-                    meta: Some(c),
-                });
+                return Ok(Existing::Stopped { id: c.id });
             }
             Ok(Existing::None)
         }
@@ -1639,14 +1521,12 @@ enum LifecycleMarker<'a> {
     Once(&'a str),
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_lifecycle_in_container(
     d: &mut impl Docker,
     cmd: &LifecycleCmd,
     container_id: &str,
     workdir: &str,
     name: &str,
-    marker: LifecycleMarker<'_>,
     remote_user: Option<&str>,
     wait: bool,
 ) -> Result<()> {
@@ -1655,24 +1535,6 @@ fn run_lifecycle_in_container(
     } else {
         vec![]
     };
-    if let LifecycleMarker::Once(epoch) = marker {
-        let script = format!(
-            "mkdir -p \"$HOME/.devcontainer\" && \
-             CONTENT=$(cat \"$HOME/.devcontainer/.{name}Marker\" 2>/dev/null || echo ENOENT) && \
-             [ \"${{CONTENT:-{epoch}}}\" != '{epoch}' ] && \
-             echo '{epoch}' > \"$HOME/.devcontainer/.{name}Marker\""
-        );
-        let mut args = user_args.clone();
-        args.extend([
-            container_id.to_string(),
-            "sh".to_string(),
-            "-c".to_string(),
-            script,
-        ]);
-        if !d.exec_interactive(&args)? {
-            return Ok(());
-        }
-    }
     let exec_prefix = || {
         let mut a = user_args.clone();
         a.extend([
@@ -1789,29 +1651,20 @@ fn resolve_lifecycle_user(
 ) -> Option<String> {
     let local_env = local_env_snapshot();
     let workdir = config.workspace_folder(cwd, &local_env);
-    if let Some(u) = config.common().remote_user.as_deref() {
-        return Some(devcontainer::expand_variables(
+    match config.common().remote_user.as_deref() {
+        Some(u) => Some(devcontainer::expand_variables(
             u,
             cwd,
             &workdir,
             &Default::default(),
             &local_env,
-        ));
-    }
-    d.inspect_format(
-        container_id,
-        "{{index .Config.Labels \"devcontainer.metadata\"}}",
-    )
-    .ok()
-    .and_then(|o| docker::parse_remote_user_from_metadata(o.stdout.trim()))
-    .or_else(|| {
-        d.inspect_format(container_id, "{{.Config.User}}")
+        )),
+        None => d
+            .inspect_format(container_id, "{{.Config.User}}")
             .ok()
-            .and_then(|o| {
-                let user = o.stdout.trim().to_string();
-                if user.is_empty() { None } else { Some(user) }
-            })
-    })
+            .map(|o| o.stdout.trim().to_string())
+            .filter(|user| !user.is_empty()),
+    }
 }
 
 fn start_existing(docker: &mut impl Docker, target: &ContainerTarget, id: &str) -> Result<()> {

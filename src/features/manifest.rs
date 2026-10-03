@@ -25,16 +25,6 @@ pub struct FeatureManifest {
     pub id: String,
     pub installs_after: Vec<String>,
     pub container_env: HashMap<String, String>,
-    pub privileged: Option<bool>,
-    pub init: Option<bool>,
-    pub cap_add: Vec<String>,
-    pub security_opt: Vec<String>,
-    pub mounts: Vec<FeatureMount>,
-    pub on_create_command: Option<Value>,
-    pub update_content_command: Option<Value>,
-    pub post_create_command: Option<Value>,
-    pub post_start_command: Option<Value>,
-    pub post_attach_command: Option<Value>,
     pub metadata: Metadata,
 }
 
@@ -69,13 +59,6 @@ fn string_vec(value: &Value, key: &str) -> Result<Vec<String>, String> {
     }
 }
 
-fn opt_value(value: &Value, key: &str) -> Option<Value> {
-    value
-        .get(key)
-        .filter(|v| !matches!(v, Value::Null))
-        .cloned()
-}
-
 fn string_map(value: &Value, key: &str) -> Result<HashMap<String, String>, String> {
     match value.get(key) {
         None => Ok(HashMap::new()),
@@ -98,32 +81,21 @@ impl FeatureManifest {
             Some(_) => return Err("invalid type for field `id`".to_string()),
             None => return Err("missing field `id`".to_string()),
         };
-        let mounts = match value.get("mounts") {
-            None => vec![],
-            Some(Value::Array(items)) => items
-                .iter()
-                .map(|v| {
-                    FeatureMount::from_value(v)
-                        .ok_or_else(|| "invalid type for field `mounts`".to_string())
-                })
-                .collect::<Result<_, _>>()?,
+        match value.get("mounts") {
+            None => {}
+            Some(Value::Array(items))
+                if items.iter().all(|v| FeatureMount::from_value(v).is_some()) => {}
             Some(_) => return Err("invalid type for field `mounts`".to_string()),
-        };
+        }
+        opt_bool(&value, "privileged")?;
+        opt_bool(&value, "init")?;
+        string_vec(&value, "capAdd")?;
+        string_vec(&value, "securityOpt")?;
         opt_string(&value, "entrypoint")?;
         Ok(FeatureManifest {
             id,
             installs_after: string_vec(&value, "installsAfter")?,
             container_env: string_map(&value, "containerEnv")?,
-            privileged: opt_bool(&value, "privileged")?,
-            init: opt_bool(&value, "init")?,
-            cap_add: string_vec(&value, "capAdd")?,
-            security_opt: string_vec(&value, "securityOpt")?,
-            mounts,
-            on_create_command: opt_value(&value, "onCreateCommand"),
-            update_content_command: opt_value(&value, "updateContentCommand"),
-            post_create_command: opt_value(&value, "postCreateCommand"),
-            post_start_command: opt_value(&value, "postStartCommand"),
-            post_attach_command: opt_value(&value, "postAttachCommand"),
             metadata: Metadata::from(Value::Object(
                 std::iter::once(("id".to_string(), Value::String(user_feature_id.to_string())))
                     .chain(
@@ -144,16 +116,6 @@ pub struct Feature {
     pub options: Value,
     pub installs_after: Vec<String>,
     pub container_env: HashMap<String, String>,
-    pub privileged: Option<bool>,
-    pub init: Option<bool>,
-    pub cap_add: Vec<String>,
-    pub security_opt: Vec<String>,
-    pub mounts: Vec<FeatureMount>,
-    pub on_create_command: Option<Value>,
-    pub update_content_command: Option<Value>,
-    pub post_create_command: Option<Value>,
-    pub post_start_command: Option<Value>,
-    pub post_attach_command: Option<Value>,
 }
 
 #[cfg(test)]
@@ -179,75 +141,57 @@ mod tests {
     }
 
     #[test]
-    fn when_parse_with_privileged_true_then_privileged_is_some_true() {
-        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f","privileged":true}"#).unwrap();
-        assert_eq!(m.privileged, Some(true));
+    fn when_parse_with_non_bool_privileged_then_returns_error() {
+        let content = format!(r#"{{"id":"f","privileged":"{}"}}"#, random_name());
+
+        let result = FeatureManifest::parse(&random_name(), &content);
+
+        assert!(result.is_err());
     }
 
     #[test]
-    fn when_parse_without_privileged_then_privileged_is_none() {
-        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f"}"#).unwrap();
-        assert_eq!(m.privileged, None);
+    fn when_parse_with_non_bool_init_then_returns_error() {
+        let content = format!(r#"{{"id":"f","init":"{}"}}"#, random_name());
+
+        let result = FeatureManifest::parse(&random_name(), &content);
+
+        assert!(result.is_err());
     }
 
     #[test]
-    fn when_parse_with_init_true_then_init_is_some_true() {
-        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f","init":true}"#).unwrap();
-        assert_eq!(m.init, Some(true));
+    fn when_parse_with_non_array_cap_add_then_returns_error() {
+        let content = format!(r#"{{"id":"f","capAdd":"{}"}}"#, random_name());
+
+        let result = FeatureManifest::parse(&random_name(), &content);
+
+        assert!(result.is_err());
     }
 
     #[test]
-    fn when_parse_without_init_then_init_is_none() {
-        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f"}"#).unwrap();
-        assert_eq!(m.init, None);
+    fn when_parse_with_non_string_security_opt_then_returns_error() {
+        let content = r#"{"id":"f","securityOpt":[1]}"#;
+
+        let result = FeatureManifest::parse(&random_name(), content);
+
+        assert!(result.is_err());
     }
 
     #[test]
-    fn when_parse_with_cap_add_then_capabilities_are_parsed() {
-        let cap = random_name();
-        let content = format!(r#"{{"id":"f","capAdd":["{cap}"]}}"#);
-        let m = FeatureManifest::parse(&random_name(), &content).unwrap();
-        assert_eq!(m.cap_add, vec![cap]);
+    fn when_parse_with_non_array_mounts_then_returns_error() {
+        let content = format!(r#"{{"id":"f","mounts":"{}"}}"#, random_name());
+
+        let result = FeatureManifest::parse(&random_name(), &content);
+
+        assert!(result.is_err());
     }
 
     #[test]
-    fn when_parse_without_cap_add_then_cap_add_is_empty() {
-        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f"}"#).unwrap();
-        assert!(m.cap_add.is_empty());
-    }
+    fn when_parse_with_mount_without_target_then_returns_error() {
+        let content = r#"{"id":"f","mounts":[{"type":"bind"}]}"#;
 
-    #[test]
-    fn when_parse_with_security_opt_then_options_are_parsed() {
-        let opt = random_name();
-        let content = format!(r#"{{"id":"f","securityOpt":["{opt}"]}}"#);
-        let m = FeatureManifest::parse(&random_name(), &content).unwrap();
-        assert_eq!(m.security_opt, vec![opt]);
-    }
+        let result = FeatureManifest::parse(&random_name(), content);
 
-    #[test]
-    fn when_parse_without_security_opt_then_security_opt_is_empty() {
-        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f"}"#).unwrap();
-        assert!(m.security_opt.is_empty());
-    }
-
-    #[test]
-    fn when_parse_with_mounts_then_mount_fields_are_parsed() {
-        let source = format!("/var/run/{}", random_name());
-        let target = format!("/var/run/{}", random_name());
-        let content = format!(
-            r#"{{"id":"f","mounts":[{{"type":"bind","source":"{source}","target":"{target}"}}]}}"#
-        );
-        let m = FeatureManifest::parse(&random_name(), &content).unwrap();
-        assert_eq!(m.mounts.len(), 1);
-        assert_eq!(m.mounts[0].mount_type, "bind");
-        assert_eq!(m.mounts[0].source.as_deref(), Some(source.as_str()));
-        assert_eq!(m.mounts[0].target, target);
-    }
-
-    #[test]
-    fn when_parse_without_mounts_then_mounts_is_empty() {
-        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f"}"#).unwrap();
-        assert!(m.mounts.is_empty());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -282,14 +226,6 @@ mod tests {
     #[test]
     fn when_parse_with_non_string_id_then_returns_error() {
         assert!(FeatureManifest::parse(&random_name(), r#"{"id":123}"#).is_err());
-    }
-
-    #[test]
-    fn when_parse_with_post_create_command_string_then_parsed_as_value() {
-        let cmd = random_name();
-        let content = format!(r#"{{"id":"f","postCreateCommand":"{cmd}"}}"#);
-        let m = FeatureManifest::parse(&random_name(), &content).unwrap();
-        assert_eq!(m.post_create_command, Some(Value::String(cmd)));
     }
 
     #[test]
@@ -348,15 +284,5 @@ mod tests {
             METADATA_PROPERTIES.len() + 1
         );
         assert_eq!(m.metadata, Metadata::from(expected));
-    }
-
-    #[test]
-    fn when_parse_without_lifecycle_commands_then_all_are_none() {
-        let m = FeatureManifest::parse(&random_name(), r#"{"id":"f"}"#).unwrap();
-        assert!(m.on_create_command.is_none());
-        assert!(m.update_content_command.is_none());
-        assert!(m.post_create_command.is_none());
-        assert!(m.post_start_command.is_none());
-        assert!(m.post_attach_command.is_none());
     }
 }

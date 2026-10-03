@@ -54,16 +54,6 @@ impl ImageConfig {
     }
 }
 
-pub fn parse_remote_user_from_metadata(metadata: &str) -> Option<String> {
-    let arr = crate::devcontainer::jsonc::parse(metadata).ok()?.value();
-    arr.as_array()?.iter().find_map(|obj| {
-        obj.get("remoteUser")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-    })
-}
-
 pub fn parse_container_id(output: &str) -> Option<String> {
     output
         .lines()
@@ -81,7 +71,6 @@ pub fn parse_container_ids(output: &str) -> Vec<String> {
 
 pub struct Container {
     pub id: String,
-    pub remote_user: Option<String>,
 }
 
 pub fn find_container(
@@ -126,18 +115,7 @@ pub fn find_container(
         if !norm_config.ends_with(&config_suffix) {
             continue;
         }
-        let metadata = labels
-            .get("devcontainer.metadata")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let config_user = c
-            .get("Config")
-            .and_then(|c| c.get("User"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
-        let remote_user = parse_remote_user_from_metadata(metadata).or(config_user);
-        return Some(Container { id, remote_user });
+        return Some(Container { id });
     }
     None
 }
@@ -172,32 +150,6 @@ mod tests {
         format!(
             r#"[{{"Id":"{id}","Config":{{"User":"{user}","Labels":{{"devcontainer.local_folder":"{local_folder}","devcontainer.config_file":"{config_file}","devcontainer.metadata":"{metadata}"}}}}}}]"#,
         )
-    }
-
-    #[test]
-    fn when_parse_remote_user_from_metadata_with_remote_user_then_returns_some() {
-        let metadata = r#"[{"id":"feature:1"},{"remoteUser":"vscode"},{"id":"feature:2"}]"#;
-        assert_eq!(
-            parse_remote_user_from_metadata(metadata),
-            Some("vscode".to_string())
-        );
-    }
-
-    #[test]
-    fn when_parse_remote_user_from_metadata_without_remote_user_then_returns_none() {
-        let metadata = r#"[{"id":"feature:1"},{"id":"feature:2"}]"#;
-        assert_eq!(parse_remote_user_from_metadata(metadata), None);
-    }
-
-    #[test]
-    fn when_parse_remote_user_from_metadata_with_empty_string_then_returns_none() {
-        assert_eq!(parse_remote_user_from_metadata(""), None);
-    }
-
-    #[test]
-    fn when_parse_remote_user_from_metadata_with_empty_remote_user_then_returns_none() {
-        let metadata = r#"[{"id":"feature:1"},{"remoteUser":""},{"id":"feature:2"}]"#;
-        assert_eq!(parse_remote_user_from_metadata(metadata), None);
     }
 
     #[test]
@@ -325,45 +277,6 @@ mod tests {
             Path::new("/cwd/project"),
         );
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn when_find_container_with_remote_user_in_metadata_then_returns_it() {
-        let id = random_id();
-        let json = make_inspect_json(
-            &id,
-            "/host/project",
-            "/host/project/.devcontainer/devcontainer.json",
-            r#"[{\"remoteUser\":\"vscode\"}]"#,
-            "",
-        );
-        let result = find_container(
-            &json,
-            Path::new("/cwd/project/.devcontainer/devcontainer.json"),
-            Path::new("/cwd/project"),
-        );
-        assert_eq!(
-            result.and_then(|c| c.remote_user),
-            Some("vscode".to_string())
-        );
-    }
-
-    #[test]
-    fn when_find_container_with_remote_user_in_config_user_then_returns_it() {
-        let id = random_id();
-        let json = make_inspect_json(
-            &id,
-            "/host/project",
-            "/host/project/.devcontainer/devcontainer.json",
-            "[]",
-            "node",
-        );
-        let result = find_container(
-            &json,
-            Path::new("/cwd/project/.devcontainer/devcontainer.json"),
-            Path::new("/cwd/project"),
-        );
-        assert_eq!(result.and_then(|c| c.remote_user), Some("node".to_string()));
     }
 
     #[test]

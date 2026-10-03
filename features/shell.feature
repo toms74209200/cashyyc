@@ -218,10 +218,10 @@ Feature: cyyc shell
 
   Scenario: Execute postStartCommand as string on container restart
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has postStartCommand "echo started >> /tmp/post-start-restart.log"
     And a stopped container exists for this config
-    And the config has postStartCommand "touch /tmp/post-start-restart-ran"
     When running "cyyc shell"
-    Then the file "/tmp/post-start-restart-ran" exists in the container
+    Then the file "/tmp/post-start-restart.log" in the container has 2 lines
 
   Scenario: Execute postAttachCommand as string on new container
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
@@ -239,17 +239,24 @@ Feature: cyyc shell
 
   Scenario: Execute postAttachCommand on running container
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has postAttachCommand "echo attached >> /tmp/post-attach-running.log"
     And a running container exists for this config
-    And the config has postAttachCommand "touch /tmp/post-attach-running-ran"
     When running "cyyc shell"
-    Then the file "/tmp/post-attach-running-ran" exists in the container
+    Then the file "/tmp/post-attach-running.log" in the container has 2 lines
 
   Scenario: Execute postAttachCommand on container restart
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has postAttachCommand "echo attached >> /tmp/post-attach-restart.log"
     And a stopped container exists for this config
-    And the config has postAttachCommand "touch /tmp/post-attach-restart-ran"
     When running "cyyc shell"
-    Then the file "/tmp/post-attach-restart-ran" exists in the container
+    Then the file "/tmp/post-attach-restart.log" in the container has 2 lines
+
+  Scenario: Lifecycle commands added after the container was created are not run on an existing container
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And a running container exists for this config
+    And the config has postAttachCommand "touch /tmp/post-attach-added-later-ran"
+    When running "cyyc shell"
+    Then the file "/tmp/post-attach-added-later-ran" does not exist in the container
 
   Scenario: waitFor onCreateCommand blocks on onCreateCommand
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
@@ -301,12 +308,13 @@ Feature: cyyc shell
     Then the container user "vscode" UID matches the host UID
 
   Scenario: updateRemoteUserUid syncs host UID when remoteUser is only in image metadata label
-    Given a devcontainer config with Dockerfile:
+    Given an image built from:
       """
       FROM alpine
       RUN adduser -D -u 9999 testuser
       LABEL devcontainer.metadata='[{"remoteUser":"testuser"}]'
       """
+    And a devcontainer config based on that image
     And no container exists for this config
     When running "cyyc shell"
     Then the container user "testuser" UID matches the host UID
@@ -653,8 +661,17 @@ Feature: cyyc shell
     And the file "/tmp/feature-user-vars.log" in the container contains "_CONTAINER_USER=vscode"
     And the file "/tmp/feature-user-vars.log" in the container contains "_REMOTE_USER=vscode"
 
-  Scenario: when neither containerUser nor remoteUser is configured then a feature's install.sh receives the image default user
+  Scenario: when neither containerUser nor remoteUser is configured then a feature's install.sh receives the remoteUser from the image metadata
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature that logs install user variables
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/feature-user-vars.log" in the container contains "_CONTAINER_USER=root"
+    And the file "/tmp/feature-user-vars.log" in the container contains "_REMOTE_USER=vscode"
+
+  Scenario: when no user is configured anywhere then a feature's install.sh receives the image default user
+    Given a devcontainer config with image "debian:bookworm-slim"
     And the config has a local feature that logs install user variables
     And no container exists for this config
     When running "cyyc shell"
@@ -865,3 +882,102 @@ Feature: cyyc shell
     Then the container is running
     And the file "/tmp/feature-entrypoint-ran" eventually exists in the container
     And the file "/tmp/image-entrypoint-ran" eventually exists in the container
+
+  Scenario: when a Compose service image declares containerEnv in its metadata then the container env is set
+    Given an image built from:
+      """
+      FROM mcr.microsoft.com/devcontainers/base:debian
+      LABEL devcontainer.metadata='[{"containerEnv":{"FROM_IMAGE":"1"}}]'
+      """
+    And a devcontainer config using docker-compose service "app" based on that image
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container env "FROM_IMAGE" is "1"
+
+  Scenario: when a Compose config has a feature that sets privileged then the container runs in privileged mode
+    Given a devcontainer config using docker-compose service "app" with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature with manifest:
+      """
+      {"id": "privileged-feature", "version": "1.0.0", "privileged": true}
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the container runs in privileged mode
+
+  Scenario: when the base image metadata sets overrideCommand false then the image entrypoint runs
+    Given an image built from:
+      """
+      FROM mcr.microsoft.com/devcontainers/base:debian
+      LABEL devcontainer.metadata='[{"overrideCommand":false}]'
+      ENTRYPOINT ["/bin/sh", "-c", "touch /tmp/image-entrypoint-ran && exec \"$@\"", "-"]
+      CMD ["sleep", "infinity"]
+      """
+    And a devcontainer config based on that image
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/image-entrypoint-ran" exists in the container
+
+  Scenario: when a Dockerfile FROM uses a build argument then a feature's install.sh receives the remoteUser from the base image metadata
+    Given a devcontainer config with Dockerfile:
+      """
+      ARG VARIANT=debian
+      FROM mcr.microsoft.com/devcontainers/base:${VARIANT}
+      """
+    And the config has a local feature that logs install user variables
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/feature-user-vars.log" in the container contains "_REMOTE_USER=vscode"
+
+  Scenario: when the base image metadata and the config both declare postCreateCommand then both run in order
+    Given an image built from:
+      """
+      FROM mcr.microsoft.com/devcontainers/base:debian
+      LABEL devcontainer.metadata='[{"postCreateCommand":"echo image >> /tmp/lifecycle-order.log"}]'
+      """
+    And a devcontainer config based on that image
+    And the config has postCreateCommand "echo config >> /tmp/lifecycle-order.log"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/lifecycle-order.log" in the container has lines:
+      """
+      image
+      config
+      """
+
+  Scenario: when a feature and the config both declare postCreateCommand then the feature's runs first
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature with manifest:
+      """
+      {"id": "lifecycle-feature", "version": "1.0.0", "postCreateCommand": "echo feature >> /tmp/lifecycle-order.log"}
+      """
+    And the config has postCreateCommand "echo config >> /tmp/lifecycle-order.log"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/lifecycle-order.log" in the container has lines:
+      """
+      feature
+      config
+      """
+
+  Scenario: when a feature declares postStartCommand then it runs on container restart
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature with manifest:
+      """
+      {"id": "lifecycle-feature", "version": "1.0.0", "postStartCommand": "echo started >> /tmp/feature-post-start.log"}
+      """
+    And a stopped container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/feature-post-start.log" in the container has 2 lines
+
+  Scenario: when a feature declares postAttachCommand then it runs on a running container
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature with manifest:
+      """
+      {"id": "lifecycle-feature", "version": "1.0.0", "postAttachCommand": "echo attached >> /tmp/feature-post-attach.log"}
+      """
+    And a running container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/feature-post-attach.log" in the container has 2 lines

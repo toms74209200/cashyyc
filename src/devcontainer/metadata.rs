@@ -20,8 +20,39 @@ impl From<Value> for Metadata {
     }
 }
 
+const UPDATEABLE_PROPERTIES: &[&str] = &["remoteUser", "userEnvProbe", "remoteEnv"];
+
 impl Metadata {
     pub const LABEL: &str = "devcontainer.metadata";
+
+    pub fn from_label(label: &str) -> Self {
+        super::jsonc::parse(label.trim())
+            .map(|document| Self::from(document.value()))
+            .unwrap_or_default()
+    }
+
+    pub fn for_existing_container(label: Metadata, config: &Metadata) -> Self {
+        if label.0.is_empty() {
+            return config.clone();
+        }
+        let updateable = Value::Object(
+            config
+                .0
+                .iter()
+                .filter_map(|entry| entry.as_object())
+                .flatten()
+                .filter(|(key, _)| UPDATEABLE_PROPERTIES.contains(&key.as_str()))
+                .cloned()
+                .collect(),
+        );
+        Self::from(Value::Array(
+            label
+                .0
+                .into_iter()
+                .chain(std::iter::once(updateable))
+                .collect(),
+        ))
+    }
 
     pub fn for_container<'a>(
         image: Metadata,
@@ -393,6 +424,44 @@ mod tests {
     }
 
     #[test]
+    fn when_merge_into_with_privileged_feature_entry_then_returns_privileged() {
+        let metadata = Metadata::from(
+            jsonc::parse(&format!(
+                r#"[{{"id":"{}","privileged":true}}]"#,
+                random_word()
+            ))
+            .unwrap()
+            .value(),
+        );
+        let config = CommonConfig::from_value(&jsonc::parse("{}").unwrap().value()).unwrap();
+
+        let merged = metadata.merge_into(&config);
+
+        assert_eq!(merged.privileged, Some(true));
+    }
+
+    #[test]
+    fn when_merge_into_with_object_mount_in_feature_entry_then_returns_the_mount_as_string() {
+        let (source, target) = (format!("/{}", random_word()), format!("/{}", random_word()));
+        let metadata = Metadata::from(
+            jsonc::parse(&format!(
+                r#"[{{"id":"{}","mounts":[{{"type":"bind","source":"{source}","target":"{target}"}}]}}]"#,
+                random_word()
+            ))
+            .unwrap()
+            .value(),
+        );
+        let config = CommonConfig::from_value(&jsonc::parse("{}").unwrap().value()).unwrap();
+
+        let merged = metadata.merge_into(&config);
+
+        assert_eq!(
+            merged.mounts,
+            vec![format!("type=bind,src={source},dst={target}")]
+        );
+    }
+
+    #[test]
     fn when_merge_into_with_remote_user_only_in_image_then_returns_the_image_user() {
         let user = random_word();
         let merged = Metadata::from(
@@ -718,6 +787,103 @@ mod tests {
             metadata.entrypoints(),
             vec![format!("/{first}"), format!("/{last}")]
         );
+    }
+
+    #[test]
+    fn when_from_label_with_entries_then_returns_the_metadata_of_the_entries() {
+        let user = random_word();
+        let label = format!("[{{\"remoteUser\":\"{user}\"}}]\n");
+
+        let metadata = Metadata::from_label(&label);
+
+        assert_eq!(
+            metadata,
+            Metadata::from(
+                jsonc::parse(&format!(r#"[{{"remoteUser":"{user}"}}]"#))
+                    .unwrap()
+                    .value()
+            )
+        );
+    }
+
+    #[test]
+    fn when_from_label_with_empty_label_then_returns_empty() {
+        let label = "";
+
+        let metadata = Metadata::from_label(label);
+
+        assert_eq!(metadata, Metadata::default());
+    }
+
+    #[test]
+    fn when_from_label_with_invalid_label_then_returns_empty() {
+        let label = "<no value>";
+
+        let metadata = Metadata::from_label(label);
+
+        assert_eq!(metadata, Metadata::default());
+    }
+
+    #[test]
+    fn when_for_existing_container_with_label_then_returns_the_label_followed_by_the_config_remote_user()
+     {
+        let (command, user) = (random_word(), random_word());
+        let label = Metadata::from(
+            jsonc::parse(&format!(r#"[{{"postAttachCommand":"{command}"}}]"#))
+                .unwrap()
+                .value(),
+        );
+        let config = Metadata::from(
+            jsonc::parse(&format!(r#"{{"remoteUser":"{user}"}}"#))
+                .unwrap()
+                .value(),
+        );
+
+        let metadata = Metadata::for_existing_container(label, &config);
+
+        assert_eq!(
+            metadata,
+            Metadata::from(
+                jsonc::parse(&format!(
+                    r#"[{{"postAttachCommand":"{command}"}},{{"remoteUser":"{user}"}}]"#
+                ))
+                .unwrap()
+                .value()
+            )
+        );
+    }
+
+    #[test]
+    fn when_for_existing_container_with_lifecycle_command_in_config_then_returns_the_label_without_it()
+     {
+        let user = random_word();
+        let label = Metadata::from(
+            jsonc::parse(&format!(r#"[{{"remoteUser":"{user}"}}]"#))
+                .unwrap()
+                .value(),
+        );
+        let config = Metadata::from(
+            jsonc::parse(&format!(r#"{{"postAttachCommand":"{}"}}"#, random_word()))
+                .unwrap()
+                .value(),
+        );
+
+        let metadata = Metadata::for_existing_container(label.clone(), &config);
+
+        assert_eq!(metadata, label);
+    }
+
+    #[test]
+    fn when_for_existing_container_with_empty_label_then_returns_the_config() {
+        let config = Metadata::from(
+            jsonc::parse(&format!(r#"{{"postAttachCommand":"{}"}}"#, random_word()))
+                .unwrap()
+                .value(),
+        );
+
+        let metadata = Metadata::for_existing_container(Metadata::default(), &config);
+
+        assert_eq!(metadata, config);
     }
 
     #[test]
