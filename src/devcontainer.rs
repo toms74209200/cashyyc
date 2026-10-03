@@ -1,6 +1,7 @@
 pub mod config;
 pub mod docker_args;
 pub mod docker_compose;
+pub mod dockerfile;
 pub mod jsonc;
 pub mod metadata;
 pub mod parser;
@@ -10,6 +11,7 @@ pub mod variables;
 pub use config::*;
 pub use docker_args::*;
 pub use docker_compose::*;
+pub use dockerfile::*;
 pub use metadata::*;
 pub use parser::*;
 pub use shell::*;

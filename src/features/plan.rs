@@ -202,16 +202,6 @@ mod tests {
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: installs_after.into_iter().map(String::from).collect(),
             container_env: HashMap::new(),
-            privileged: None,
-            init: None,
-            cap_add: vec![],
-            security_opt: vec![],
-            mounts: vec![],
-            on_create_command: None,
-            update_content_command: None,
-            post_create_command: None,
-            post_start_command: None,
-            post_attach_command: None,
         }
     }
 
@@ -314,16 +304,6 @@ mod tests {
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],
             container_env: HashMap::new(),
-            privileged: None,
-            init: None,
-            cap_add: vec![],
-            security_opt: vec![],
-            mounts: vec![],
-            on_create_command: None,
-            update_content_command: None,
-            post_create_command: None,
-            post_start_command: None,
-            post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile(
@@ -346,16 +326,6 @@ mod tests {
             options: jsonc::parse(r#"{"version":"18"}"#).unwrap().value(),
             installs_after: vec![],
             container_env: HashMap::new(),
-            privileged: None,
-            init: None,
-            cap_add: vec![],
-            security_opt: vec![],
-            mounts: vec![],
-            on_create_command: None,
-            update_content_command: None,
-            post_create_command: None,
-            post_start_command: None,
-            post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile(
@@ -375,16 +345,6 @@ mod tests {
             options: jsonc::parse(r#"{"moby":true}"#).unwrap().value(),
             installs_after: vec![],
             container_env: HashMap::new(),
-            privileged: None,
-            init: None,
-            cap_add: vec![],
-            security_opt: vec![],
-            mounts: vec![],
-            on_create_command: None,
-            update_content_command: None,
-            post_create_command: None,
-            post_start_command: None,
-            post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile(
@@ -404,16 +364,6 @@ mod tests {
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],
             container_env: HashMap::new(),
-            privileged: None,
-            init: None,
-            cap_add: vec![],
-            security_opt: vec![],
-            mounts: vec![],
-            on_create_command: None,
-            update_content_command: None,
-            post_create_command: None,
-            post_start_command: None,
-            post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile(
@@ -441,16 +391,6 @@ mod tests {
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],
             container_env: HashMap::new(),
-            privileged: None,
-            init: None,
-            cap_add: vec![],
-            security_opt: vec![],
-            mounts: vec![],
-            on_create_command: None,
-            update_content_command: None,
-            post_create_command: None,
-            post_start_command: None,
-            post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile(
@@ -479,16 +419,6 @@ mod tests {
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],
             container_env: HashMap::new(),
-            privileged: None,
-            init: None,
-            cap_add: vec![],
-            security_opt: vec![],
-            mounts: vec![],
-            on_create_command: None,
-            update_content_command: None,
-            post_create_command: None,
-            post_start_command: None,
-            post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile(
@@ -509,16 +439,6 @@ mod tests {
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],
             container_env: HashMap::new(),
-            privileged: None,
-            init: None,
-            cap_add: vec![],
-            security_opt: vec![],
-            mounts: vec![],
-            on_create_command: None,
-            update_content_command: None,
-            post_create_command: None,
-            post_start_command: None,
-            post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile(
@@ -538,16 +458,6 @@ mod tests {
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],
             container_env: HashMap::from([("NVM_DIR".to_string(), "/usr/local/nvm".to_string())]),
-            privileged: None,
-            init: None,
-            cap_add: vec![],
-            security_opt: vec![],
-            mounts: vec![],
-            on_create_command: None,
-            update_content_command: None,
-            post_create_command: None,
-            post_start_command: None,
-            post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile(
@@ -567,16 +477,6 @@ mod tests {
             options: jsonc::parse("null").unwrap().value(),
             installs_after: vec![],
             container_env: HashMap::new(),
-            privileged: None,
-            init: None,
-            cap_add: vec![],
-            security_opt: vec![],
-            mounts: vec![],
-            on_create_command: None,
-            update_content_command: None,
-            post_create_command: None,
-            post_start_command: None,
-            post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile(
@@ -601,16 +501,6 @@ mod tests {
             options: jsonc::parse("{}").unwrap().value(),
             installs_after: vec![],
             container_env: HashMap::new(),
-            privileged: None,
-            init: None,
-            cap_add: vec![],
-            security_opt: vec![],
-            mounts: vec![],
-            on_create_command: None,
-            update_content_command: None,
-            post_create_command: None,
-            post_start_command: None,
-            post_attach_command: None,
         }];
         let plan = InstallPlan::new(features, &[]).unwrap();
         let df = feature_dockerfile(

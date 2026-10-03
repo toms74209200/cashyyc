@@ -39,6 +39,7 @@ impl ComposeResolved {
 pub struct ServiceResolved {
     pub source: ServiceSource,
     pub command: ServiceCommand,
+    pub user: Option<String>,
 }
 
 pub enum ServiceSource {
@@ -53,6 +54,14 @@ impl ServiceResolved {
             Some(BuildResolved {
                 dockerfile: b.get("dockerfile")?.as_str()?.to_string(),
                 context: b.get("context")?.as_str()?.to_string(),
+                args: b
+                    .get("args")
+                    .and_then(|args| args.as_object())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                    .collect(),
+                target: b.get("target").and_then(|t| t.as_str()).map(str::to_string),
                 image: image.unwrap_or(default_image).to_string(),
             })
         });
@@ -65,6 +74,10 @@ impl ServiceResolved {
         Some(ServiceResolved {
             source,
             command: ServiceCommand::from_value(value),
+            user: value
+                .get("user")
+                .and_then(|u| u.as_str())
+                .map(str::to_string),
         })
     }
 
@@ -79,6 +92,8 @@ impl ServiceResolved {
 pub struct BuildResolved {
     pub dockerfile: String,
     pub context: String,
+    pub args: HashMap<String, String>,
+    pub target: Option<String>,
     pub image: String,
 }
 
@@ -868,6 +883,94 @@ mod tests {
     fn when_service_resolved_with_null_entrypoint_and_command_then_command_is_empty() {
         let svc = service_from(r#"{"image":"a:1","entrypoint":null,"command":null}"#).unwrap();
         assert_eq!(svc.command, ServiceCommand::default());
+    }
+
+    #[test]
+    fn when_from_value_with_user_then_returns_the_user() {
+        let user = random_word();
+        let value = jsonc::parse(&format!(
+            r#"{{"image":"{}","user":"{user}"}}"#,
+            random_word()
+        ))
+        .unwrap()
+        .value();
+
+        let svc = ServiceResolved::from_value(&value, &random_word()).unwrap();
+
+        assert_eq!(svc.user, Some(user));
+    }
+
+    #[test]
+    fn when_from_value_without_user_then_returns_no_user() {
+        let value = jsonc::parse(&format!(r#"{{"image":"{}"}}"#, random_word()))
+            .unwrap()
+            .value();
+
+        let svc = ServiceResolved::from_value(&value, &random_word()).unwrap();
+
+        assert_eq!(svc.user, None);
+    }
+
+    #[test]
+    fn when_from_value_with_build_args_then_returns_the_build_args() {
+        let (key, arg) = (random_word(), random_word());
+        let value = jsonc::parse(&format!(
+            r#"{{"build":{{"dockerfile":"D","context":"/c","args":{{"{key}":"{arg}"}}}}}}"#
+        ))
+        .unwrap()
+        .value();
+
+        let svc = ServiceResolved::from_value(&value, &random_word()).unwrap();
+
+        assert!(matches!(
+            svc.source,
+            ServiceSource::Build { build } if build.args == HashMap::from([(key, arg)])
+        ));
+    }
+
+    #[test]
+    fn when_from_value_without_build_args_then_returns_empty_build_args() {
+        let value = jsonc::parse(r#"{"build":{"dockerfile":"D","context":"/c"}}"#)
+            .unwrap()
+            .value();
+
+        let svc = ServiceResolved::from_value(&value, &random_word()).unwrap();
+
+        assert!(matches!(
+            svc.source,
+            ServiceSource::Build { build } if build.args.is_empty()
+        ));
+    }
+
+    #[test]
+    fn when_from_value_with_build_target_then_returns_the_build_target() {
+        let target = random_word();
+        let value = jsonc::parse(&format!(
+            r#"{{"build":{{"dockerfile":"D","context":"/c","target":"{target}"}}}}"#
+        ))
+        .unwrap()
+        .value();
+
+        let svc = ServiceResolved::from_value(&value, &random_word()).unwrap();
+
+        assert!(matches!(
+            svc.source,
+            ServiceSource::Build { build } if build.target == Some(target)
+        ));
+    }
+
+    #[test]
+    fn when_from_value_without_build_target_then_returns_no_build_target() {
+        let value = jsonc::parse(r#"{"build":{"dockerfile":"D","context":"/c"}}"#)
+            .unwrap()
+            .value();
+
+        let svc = ServiceResolved::from_value(&value, &random_word()).unwrap();
+
+        assert!(matches!(
+            svc.source,
+            ServiceSource::Build { build } if build.target.is_none()
+        ));
     }
 
     const SERVICE_OVERRIDE: &str = "services:\n  'app':\n";
