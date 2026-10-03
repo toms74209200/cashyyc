@@ -198,6 +198,36 @@ def then_file_in_container_contains(workspace, config, path, text):
     )
 
 
+@then(parsers.parse('the file "{path}" in the container has {count:d} lines'))
+def then_file_in_container_has_line_count(workspace, config, path, count):
+    container_id = _container_id(workspace, config)
+    assert container_id, "no running container found"
+    result = subprocess.run(
+        ["docker", "exec", container_id, "cat", path],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"file {path!r} not found in container"
+    lines = result.stdout.splitlines()
+    assert len(lines) == count, f"expected {count} lines in {path!r}, got {lines!r}"
+
+
+@then(parsers.parse('the file "{path}" in the container has lines:'))
+def then_file_in_container_has_lines(workspace, config, path, docstring):
+    container_id = _container_id(workspace, config)
+    assert container_id, "no running container found"
+    result = subprocess.run(
+        ["docker", "exec", container_id, "cat", path],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"file {path!r} not found in container"
+    lines = result.stdout.splitlines()
+    assert lines == docstring.splitlines(), (
+        f"expected {docstring.splitlines()!r} in {path!r}, got {lines!r}"
+    )
+
+
 @then(parsers.parse('the container user "{user}" UID matches the host UID'))
 def then_container_user_uid_matches_host(workspace, config, user):
     if "dockerComposeFile" in config:
