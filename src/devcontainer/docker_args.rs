@@ -138,7 +138,7 @@ pub fn container_run_options(
 
     for mount in &common.mounts {
         let expanded = expand_variables(
-            mount,
+            &mount.spec,
             local_folder,
             &workspace_folder,
             &Default::default(),
@@ -205,6 +205,7 @@ pub fn container_run_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::devcontainer::config::Mount;
     use std::collections::HashMap;
 
     fn empty_common() -> CommonConfig {
@@ -765,7 +766,12 @@ mod tests {
     #[test]
     fn when_container_run_options_with_additional_mounts_then_includes_mount_flags() {
         let mut common = empty_common();
-        common.mounts = vec!["source=/host/data,target=/container/data,type=bind".to_string()];
+        common.mounts = vec![Mount {
+            spec: "source=/host/data,target=/container/data,type=bind".to_string(),
+            kind: Some("bind".to_string()),
+            source: Some("/host/data".to_string()),
+            target: Some("/container/data".to_string()),
+        }];
         let args = container_run_options(
             &common,
             &[],

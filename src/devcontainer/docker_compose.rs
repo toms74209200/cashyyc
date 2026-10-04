@@ -1,7 +1,6 @@
 use super::config::DockerComposeConfig;
 use super::docker_args::container_start_script;
 use super::jsonc::{self, Value};
-use super::metadata::{mount_field, mount_target};
 use super::variables::expand_variables;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -138,12 +137,14 @@ impl ServiceCommand {
         }
     }
 
-    /// Adds the keepalive entrypoint to the service in `content`. It runs `entrypoints` first,
+    /// Adds `label` and the keepalive entrypoint to the service in `content`. It runs `entrypoints` first,
     /// then execs the service's own entrypoint and command unless `override_command` is true.
+    #[allow(clippy::too_many_arguments)]
     pub fn to_compose_override(
         &self,
         content: &str,
         service: &str,
+        label: &str,
         override_command: Option<bool>,
         entrypoints: &[String],
         image_entrypoint: &[String],
@@ -173,10 +174,11 @@ impl ServiceCommand {
         let command_line = command
             .map(|args| format!("    command: {}\n", flow_sequence(args)))
             .unwrap_or_default();
+        let label = label.replace('$', "$$").replace('\'', "''");
         content.replacen(
             &format!("  '{service}':\n"),
             &format!(
-                "  '{service}':\n    entrypoint: {}\n{command_line}",
+                "  '{service}':\n    labels:\n      - '{label}'\n    entrypoint: {}\n{command_line}",
                 flow_sequence(entrypoint)
             ),
             1,
@@ -295,14 +297,15 @@ pub fn compose_args(
             format!("\n    environment:{items}")
         }
     };
-    let mounts: Vec<String> = config.common.mounts.iter().map(|m| expand(m)).collect();
     let volumes_block = {
-        let items: String = mounts
+        let items: String = config
+            .common
+            .mounts
             .iter()
             .filter_map(|mount| {
-                let target = mount_target(mount)?;
-                Some(match mount_field(mount, &["source", "src"]) {
-                    Some(source) => format!("\n      - {source}:{target}"),
+                let target = expand(mount.target.as_ref()?);
+                Some(match &mount.source {
+                    Some(source) => format!("\n      - {}:{target}", expand(source)),
                     None => format!("\n      - {target}"),
                 })
             })
@@ -314,11 +317,13 @@ pub fn compose_args(
         }
     };
     let named_volumes = {
-        let items: String = mounts
+        let items: String = config
+            .common
+            .mounts
             .iter()
-            .filter(|mount| mount_field(mount, &["type"]) == Some("volume"))
-            .filter_map(|mount| mount_field(mount, &["source", "src"]))
-            .map(|name| format!("\n  {name}:"))
+            .filter(|mount| mount.kind.as_deref() == Some("volume"))
+            .filter_map(|mount| mount.source.as_deref())
+            .map(|name| format!("\n  {}:", expand(name)))
             .collect();
         if items.is_empty() {
             String::new()
@@ -353,7 +358,7 @@ pub fn compose_args(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devcontainer::config::CommonConfig;
+    use crate::devcontainer::config::{CommonConfig, Mount};
     use random_string::{CharacterType, generate_random_string};
     use std::collections::HashMap;
     use std::fs::File;
@@ -716,7 +721,12 @@ mod tests {
     fn when_compose_args_with_bind_mount_then_override_content_contains_volume() {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
-        config.common.mounts = vec!["type=bind,source=/tmp,target=/mnt/extra".to_string()];
+        config.common.mounts = vec![Mount {
+            spec: "type=bind,source=/tmp,target=/mnt/extra".to_string(),
+            kind: Some("bind".to_string()),
+            source: Some("/tmp".to_string()),
+            target: Some("/mnt/extra".to_string()),
+        }];
         let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
         assert!(
             args.override_content
@@ -740,7 +750,12 @@ mod tests {
     fn when_compose_args_with_mount_without_source_then_volume_is_the_target_only() {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
-        config.common.mounts = vec!["type=volume,target=/data".to_string()];
+        config.common.mounts = vec![Mount {
+            spec: "type=volume,target=/data".to_string(),
+            kind: Some("volume".to_string()),
+            source: None,
+            target: Some("/data".to_string()),
+        }];
         let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
         assert!(
             args.override_content
@@ -753,7 +768,12 @@ mod tests {
     fn when_compose_args_with_named_volume_mount_then_it_is_declared_at_top_level() {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
-        config.common.mounts = vec!["type=volume,source=myvol,target=/data".to_string()];
+        config.common.mounts = vec![Mount {
+            spec: "type=volume,source=myvol,target=/data".to_string(),
+            kind: Some("volume".to_string()),
+            source: Some("myvol".to_string()),
+            target: Some("/data".to_string()),
+        }];
         let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
         assert!(args.override_content.starts_with("volumes:\n  myvol:\n"));
         assert!(args.override_content.contains("\n      - myvol:/data"));
@@ -763,8 +783,12 @@ mod tests {
     fn when_compose_args_with_mount_variable_then_it_is_expanded() {
         let cwd = Path::new("/home/user/myproject");
         let mut config = compose_config("app");
-        config.common.mounts =
-            vec!["type=bind,source=${localWorkspaceFolder},target=/extra".to_string()];
+        config.common.mounts = vec![Mount {
+            spec: "type=bind,source=${localWorkspaceFolder},target=/extra".to_string(),
+            kind: Some("bind".to_string()),
+            source: Some("${localWorkspaceFolder}".to_string()),
+            target: Some("/extra".to_string()),
+        }];
         let args = compose_args(&config, cwd, &cwd.join(".devcontainer"), &HashMap::new());
         assert!(
             args.override_content
@@ -974,6 +998,7 @@ mod tests {
     }
 
     const SERVICE_OVERRIDE: &str = "services:\n  'app':\n";
+    const LABEL: &str = "devcontainer.metadata=[]";
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| v.to_string()).collect()
@@ -984,14 +1009,61 @@ mod tests {
         let content = ServiceCommand::default().to_compose_override(
             SERVICE_OVERRIDE,
             "app",
+            LABEL,
             None,
             &[],
             &[],
             &[],
         );
-        assert!(content.starts_with("services:\n  'app':\n    entrypoint: [\"/bin/sh\",\"-c\","));
+        assert!(content.starts_with(
+            "services:\n  'app':\n    labels:\n      - 'devcontainer.metadata=[]'\n    entrypoint: [\"/bin/sh\",\"-c\","
+        ));
         assert!(content.contains("exec \\\"$$@\\\""));
         assert!(content.contains("while sleep 1 & wait $$!"));
+    }
+
+    #[test]
+    fn when_label_contains_dollar_then_it_is_escaped_for_compose() {
+        let command = random_word();
+        let content = ServiceCommand::default().to_compose_override(
+            SERVICE_OVERRIDE,
+            "app",
+            &format!(r#"devcontainer.metadata=[{{"postCreateCommand":"{command} ${{X}}"}}]"#),
+            None,
+            &[],
+            &[],
+            &[],
+        );
+        assert!(content.contains(&format!("{command} $${{X}}")));
+    }
+
+    #[test]
+    fn when_label_contains_single_quote_then_it_is_escaped_for_yaml() {
+        let command = random_word();
+        let content = ServiceCommand::default().to_compose_override(
+            SERVICE_OVERRIDE,
+            "app",
+            &format!(r#"devcontainer.metadata=[{{"postCreateCommand":"echo '{command}'"}}]"#),
+            None,
+            &[],
+            &[],
+            &[],
+        );
+        assert!(content.contains(&format!("echo ''{command}''")));
+    }
+
+    #[test]
+    fn when_to_compose_override_for_other_service_then_returns_content_unchanged() {
+        let content = ServiceCommand::default().to_compose_override(
+            SERVICE_OVERRIDE,
+            &random_word(),
+            LABEL,
+            None,
+            &[],
+            &[],
+            &[],
+        );
+        assert_eq!(content, SERVICE_OVERRIDE);
     }
 
     #[test]
@@ -999,6 +1071,7 @@ mod tests {
         let content = ServiceCommand::default().to_compose_override(
             SERVICE_OVERRIDE,
             "app",
+            LABEL,
             None,
             &[],
             &strings(&["/entrypoint.sh"]),
@@ -1017,6 +1090,7 @@ mod tests {
         let content = service.to_compose_override(
             SERVICE_OVERRIDE,
             "app",
+            LABEL,
             Some(false),
             &[],
             &strings(&["/entrypoint.sh"]),
@@ -1035,6 +1109,7 @@ mod tests {
         let content = service.to_compose_override(
             SERVICE_OVERRIDE,
             "app",
+            LABEL,
             None,
             &[],
             &[],
@@ -1052,6 +1127,7 @@ mod tests {
         let content = service.to_compose_override(
             SERVICE_OVERRIDE,
             "app",
+            LABEL,
             Some(true),
             &[],
             &strings(&["/entrypoint.sh"]),
@@ -1068,6 +1144,7 @@ mod tests {
         let content = ServiceCommand::default().to_compose_override(
             SERVICE_OVERRIDE,
             "app",
+            LABEL,
             Some(true),
             &strings(&["/usr/local/share/docker-init.sh"]),
             &[],
@@ -1083,6 +1160,7 @@ mod tests {
         let content = ServiceCommand::default().to_compose_override(
             SERVICE_OVERRIDE,
             "app",
+            LABEL,
             None,
             &[],
             &strings(&["/bin/sh", "-c", "echo $HOME"]),
@@ -1098,7 +1176,8 @@ mod tests {
             entrypoint: Some(strings(&["/bin/sh", "-c", "echo $$HOME"])),
             command: None,
         };
-        let content = service.to_compose_override(SERVICE_OVERRIDE, "app", None, &[], &[], &[]);
+        let content =
+            service.to_compose_override(SERVICE_OVERRIDE, "app", LABEL, None, &[], &[], &[]);
         assert!(content.contains(r#""echo $$HOME""#));
         assert!(!content.contains("$$$$"));
     }

@@ -1,5 +1,3 @@
-use super::mount::FeatureMount;
-use crate::devcontainer::Metadata;
 use crate::devcontainer::jsonc::{self, Value};
 use crate::err;
 use crate::error::Result;
@@ -25,7 +23,7 @@ pub struct FeatureManifest {
     pub id: String,
     pub installs_after: Vec<String>,
     pub container_env: HashMap<String, String>,
-    pub metadata: Metadata,
+    pub metadata: Vec<(String, Value)>,
 }
 
 fn opt_string(value: &Value, key: &str) -> Result<Option<String>, String> {
@@ -84,7 +82,11 @@ impl FeatureManifest {
         match value.get("mounts") {
             None => {}
             Some(Value::Array(items))
-                if items.iter().all(|v| FeatureMount::from_value(v).is_some()) => {}
+                if items.iter().all(|v| {
+                    v.get("type").and_then(Value::as_str).is_some()
+                        && v.get("target").and_then(Value::as_str).is_some()
+                        && matches!(v.get("source"), None | Some(Value::Null | Value::String(_)))
+                }) => {}
             Some(_) => return Err("invalid type for field `mounts`".to_string()),
         }
         opt_bool(&value, "privileged")?;
@@ -96,22 +98,23 @@ impl FeatureManifest {
             id,
             installs_after: string_vec(&value, "installsAfter")?,
             container_env: string_map(&value, "containerEnv")?,
-            metadata: Metadata::from(Value::Object(
-                std::iter::once(("id".to_string(), Value::String(user_feature_id.to_string())))
-                    .chain(
-                        METADATA_PROPERTIES
-                            .iter()
-                            .filter_map(|k| value.get(k).map(|v| (k.to_string(), v.clone()))),
-                    )
-                    .collect(),
-            )),
+            metadata: std::iter::once((
+                "id".to_string(),
+                Value::String(user_feature_id.to_string()),
+            ))
+            .chain(
+                METADATA_PROPERTIES
+                    .iter()
+                    .filter_map(|k| value.get(k).map(|v| (k.to_string(), v.clone()))),
+            )
+            .collect(),
         })
     }
 }
 
 pub struct Feature {
     pub short_id: String,
-    pub metadata: Metadata,
+    pub metadata: Vec<(String, Value)>,
     pub dir: PathBuf,
     pub options: Value,
     pub installs_after: Vec<String>,
@@ -195,11 +198,56 @@ mod tests {
     }
 
     #[test]
+    fn when_parse_with_mount_without_type_then_returns_error() {
+        let content = format!(
+            r#"{{"id":"f","mounts":[{{"target":"/{}"}}]}}"#,
+            random_name()
+        );
+
+        let result = FeatureManifest::parse(&random_name(), &content);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn when_parse_with_mount_of_non_string_source_then_returns_error() {
+        let content = format!(
+            r#"{{"id":"f","mounts":[{{"type":"bind","source":1,"target":"/{}"}}]}}"#,
+            random_name()
+        );
+
+        let result = FeatureManifest::parse(&random_name(), &content);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn when_parse_with_mount_without_source_then_metadata_has_the_mount() {
+        let target = format!("/{}", random_name());
+        let content = format!(r#"{{"id":"f","mounts":[{{"type":"volume","target":"{target}"}}]}}"#);
+
+        let m = FeatureManifest::parse(&random_name(), &content).unwrap();
+
+        assert_eq!(
+            m.metadata.iter().find(|(key, _)| key == "mounts"),
+            Some(&(
+                "mounts".to_string(),
+                jsonc::parse(&format!(r#"[{{"type":"volume","target":"{target}"}}]"#))
+                    .unwrap()
+                    .value()
+            ))
+        );
+    }
+
+    #[test]
     fn when_parse_with_entrypoint_then_metadata_has_the_entrypoint() {
         let ep = format!("/usr/local/share/{}-init.sh", random_name());
         let content = format!(r#"{{"id":"f","entrypoint":"{ep}"}}"#);
         let m = FeatureManifest::parse(&random_name(), &content).unwrap();
-        assert_eq!(m.metadata.entrypoints(), vec![ep]);
+        assert_eq!(
+            m.metadata.iter().find(|(key, _)| key == "entrypoint"),
+            Some(&("entrypoint".to_string(), Value::String(ep)))
+        );
     }
 
     #[test]
@@ -210,7 +258,7 @@ mod tests {
     #[test]
     fn when_parse_without_entrypoint_then_metadata_has_no_entrypoint() {
         let m = FeatureManifest::parse(&random_name(), r#"{"id":"f"}"#).unwrap();
-        assert!(m.metadata.entrypoints().is_empty());
+        assert!(!m.metadata.iter().any(|(key, _)| key == "entrypoint"));
     }
 
     #[test]
@@ -246,13 +294,13 @@ mod tests {
         let m = FeatureManifest::parse(&user_feature_id, &content).unwrap();
         assert_eq!(
             m.metadata,
-            Metadata::from(
-                jsonc::parse(&format!(
-                    r#"{{"id":"{user_feature_id}","postCreateCommand":"{cmd}","privileged":true}}"#
-                ))
-                .unwrap()
-                .value()
-            )
+            jsonc::parse(&format!(
+                r#"{{"id":"{user_feature_id}","postCreateCommand":"{cmd}","privileged":true}}"#
+            ))
+            .unwrap()
+            .value()
+            .as_object()
+            .unwrap()
         );
     }
 
@@ -283,6 +331,6 @@ mod tests {
             expected.as_object().unwrap().len(),
             METADATA_PROPERTIES.len() + 1
         );
-        assert_eq!(m.metadata, Metadata::from(expected));
+        assert_eq!(m.metadata, expected.as_object().unwrap());
     }
 }
