@@ -1,5 +1,4 @@
 use super::jsonc::Value;
-use super::metadata::Metadata;
 use std::collections::HashMap;
 
 const METADATA_PROPERTIES: [&str; 24] = [
@@ -91,6 +90,14 @@ impl WaitFor {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct Mount {
+    pub spec: String,
+    pub kind: Option<String>,
+    pub source: Option<String>,
+    pub target: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct PortAttributes {
     pub label: Option<String>,
     pub on_auto_forward: Option<String>,
@@ -147,7 +154,7 @@ pub struct CommonConfig {
     pub post_attach_command: Option<Value>,
     pub wait_for: Option<WaitFor>,
     pub workspace_folder: Option<String>,
-    pub mounts: Vec<String>,
+    pub mounts: Vec<Mount>,
     pub container_env: HashMap<String, String>,
     pub container_user: Option<String>,
     pub init: Option<bool>,
@@ -162,7 +169,7 @@ pub struct CommonConfig {
     pub override_feature_install_order: Vec<String>,
     pub host_requirements: Option<HostRequirements>,
     pub customizations: HashMap<String, Value>,
-    pub metadata: Metadata,
+    pub metadata: Vec<(String, Value)>,
 }
 
 impl CommonConfig {
@@ -239,12 +246,10 @@ impl CommonConfig {
             override_feature_install_order: string_vec(value, "overrideFeatureInstallOrder")?,
             host_requirements,
             customizations: value_map(value, "customizations")?,
-            metadata: Metadata::from(Value::Object(
-                METADATA_PROPERTIES
-                    .iter()
-                    .filter_map(|k| value.get(k).map(|v| (k.to_string(), v.clone())))
-                    .collect(),
-            )),
+            metadata: METADATA_PROPERTIES
+                .iter()
+                .filter_map(|k| value.get(k).map(|v| (k.to_string(), v.clone())))
+                .collect(),
         })
     }
 }
@@ -532,21 +537,42 @@ fn app_port(value: &Value) -> Option<Vec<AppPort>> {
     }
 }
 
-fn mounts(value: &Value) -> Option<Vec<String>> {
-    fn normalize(v: &Value) -> Option<String> {
+fn mounts(value: &Value) -> Option<Vec<Mount>> {
+    fn normalize(v: &Value) -> Option<Mount> {
         match v {
-            Value::String(s) => Some(s.clone()),
+            Value::String(s) => {
+                let field = |keys: &[&str]| {
+                    s.split(',').find_map(|field| {
+                        let (key, value) = field.split_once('=')?;
+                        keys.contains(&key.trim()).then(|| value.to_string())
+                    })
+                };
+                Some(Mount {
+                    spec: s.clone(),
+                    kind: field(&["type"]),
+                    source: field(&["source", "src"]),
+                    target: field(&["target", "dst", "destination"]),
+                })
+            }
             Value::Object(_) => {
-                let mount_type = v.get("type")?.as_str()?;
+                let kind = v.get("type")?.as_str()?.to_string();
                 let source = match v.get("source") {
-                    None | Some(Value::Null) => String::new(),
+                    None | Some(Value::Null) => None,
                     Some(s) => match s.as_str()? {
-                        "" => String::new(),
-                        s => format!("src={s},"),
+                        "" => None,
+                        s => Some(s.to_string()),
                     },
                 };
-                let target = v.get("target")?.as_str()?;
-                Some(format!("type={mount_type},{source}dst={target}"))
+                let target = v.get("target")?.as_str()?.to_string();
+                Some(Mount {
+                    spec: match &source {
+                        Some(source) => format!("type={kind},src={source},dst={target}"),
+                        None => format!("type={kind},dst={target}"),
+                    },
+                    kind: Some(kind),
+                    source,
+                    target: Some(target),
+                })
             }
             _ => None,
         }
@@ -629,9 +655,11 @@ mod tests {
         .unwrap();
         assert_eq!(
             common.metadata,
-            Metadata::from(value(&format!(
+            value(&format!(
                 r#"{{"postCreateCommand":"{command}","mounts":[{mount}],"remoteUser":"{user}"}}"#
-            )))
+            ))
+            .as_object()
+            .unwrap()
         );
     }
 
@@ -671,7 +699,7 @@ mod tests {
             METADATA_PROPERTIES.len()
         );
         let common = CommonConfig::from_value(&value(&json)).unwrap();
-        assert_eq!(common.metadata, Metadata::from(value(&json)));
+        assert_eq!(common.metadata, value(&json).as_object().unwrap());
     }
 
     #[test]
@@ -679,7 +707,7 @@ mod tests {
         let common =
             CommonConfig::from_value(&value(&format!(r#"{{"image": "{}"}}"#, random_path())))
                 .unwrap();
-        assert_eq!(common.metadata, Metadata::default());
+        assert!(common.metadata.is_empty());
     }
 
     fn random_path() -> String {
@@ -693,11 +721,44 @@ mod tests {
     }
 
     #[test]
-    fn when_mounts_with_string_then_returns_it_as_is() {
+    fn when_mounts_with_string_then_returns_it_as_is_with_its_fields() {
         let (source, target) = (random_path(), random_path());
         let mount = format!("type=bind,source={source},target={target}");
         let result = mounts(&value(&format!(r#"{{"mounts": ["{mount}"]}}"#))).unwrap();
-        assert_eq!(result, vec![mount]);
+        assert_eq!(
+            result,
+            vec![Mount {
+                spec: mount,
+                kind: Some("bind".to_string()),
+                source: Some(source),
+                target: Some(target),
+            }]
+        );
+    }
+
+    #[test]
+    fn when_mounts_with_string_of_short_keys_then_returns_its_fields() {
+        let (source, target) = (random_path(), random_path());
+        for (source_key, target_key) in [("src", "dst"), ("src", "destination")] {
+            let mount = format!("type=volume,{source_key}={source},{target_key}={target}");
+            let result = mounts(&value(&format!(r#"{{"mounts": ["{mount}"]}}"#))).unwrap();
+            assert_eq!(
+                result,
+                vec![Mount {
+                    spec: mount,
+                    kind: Some("volume".to_string()),
+                    source: Some(source.clone()),
+                    target: Some(target.clone()),
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn when_mounts_with_string_without_target_then_returns_no_target() {
+        let mount = format!("type=volume,src={}", random_path());
+        let result = mounts(&value(&format!(r#"{{"mounts": ["{mount}"]}}"#))).unwrap();
+        assert_eq!(result[0].target, None);
     }
 
     #[test]
@@ -707,7 +768,15 @@ mod tests {
             r#"{{"mounts": [{{"type": "bind", "source": "{source}", "target": "{target}"}}]}}"#
         )))
         .unwrap();
-        assert_eq!(result, vec![format!("type=bind,src={source},dst={target}")]);
+        assert_eq!(
+            result,
+            vec![Mount {
+                spec: format!("type=bind,src={source},dst={target}"),
+                kind: Some("bind".to_string()),
+                source: Some(source),
+                target: Some(target),
+            }]
+        );
     }
 
     #[test]
@@ -717,7 +786,15 @@ mod tests {
             r#"{{"mounts": [{{"type": "volume", "target": "{target}"}}]}}"#
         )))
         .unwrap();
-        assert_eq!(result, vec![format!("type=volume,dst={target}")]);
+        assert_eq!(
+            result,
+            vec![Mount {
+                spec: format!("type=volume,dst={target}"),
+                kind: Some("volume".to_string()),
+                source: None,
+                target: Some(target),
+            }]
+        );
     }
 
     #[test]
@@ -727,7 +804,15 @@ mod tests {
             r#"{{"mounts": [{{"type": "volume", "source": "", "target": "{target}"}}]}}"#
         )))
         .unwrap();
-        assert_eq!(result, vec![format!("type=volume,dst={target}")]);
+        assert_eq!(
+            result,
+            vec![Mount {
+                spec: format!("type=volume,dst={target}"),
+                kind: Some("volume".to_string()),
+                source: None,
+                target: Some(target),
+            }]
+        );
     }
 
     #[test]
@@ -757,7 +842,7 @@ mod tests {
         )))
         .unwrap();
         assert_eq!(
-            result,
+            result.into_iter().map(|m| m.spec).collect::<Vec<_>>(),
             vec![format!("type=volume,dst={target}"), string_mount]
         );
     }
@@ -765,7 +850,7 @@ mod tests {
     #[test]
     fn when_mounts_without_key_then_returns_empty() {
         let result = mounts(&value("{}")).unwrap();
-        assert_eq!(result, Vec::<String>::new());
+        assert_eq!(result, vec![]);
     }
 
     #[test]

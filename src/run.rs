@@ -387,16 +387,17 @@ fn shell(
     };
 
     if let Some(id) = container_id {
-        let metadata = devcontainer::Metadata::for_existing_container(
+        let merged = devcontainer::Metadata::for_existing_container(
             docker
                 .inspect_format(&id, "{{index .Config.Labels \"devcontainer.metadata\"}}")
                 .ok()
                 .filter(|o| o.success)
-                .map(|o| devcontainer::Metadata::from_label(&o.stdout))
-                .unwrap_or_default(),
-            &config.common().metadata,
-        );
-        let config = config.with_common(metadata.merge_into(config.common()));
+                .map(|o| o.stdout)
+                .as_deref(),
+            config.common(),
+        )
+        .merge(config.common());
+        let config = config.with_common(merged.config);
         let started_at = match restarted {
             true => Some(
                 docker
@@ -405,28 +406,28 @@ fn shell(
             ),
             false => None,
         };
-        for (name, hook, marker) in started_at
+        for (name, hook, marker, commands) in started_at
             .iter()
             .map(|started_at| {
                 (
                     "postStartCommand",
                     WaitFor::PostStartCommand,
                     LifecycleMarker::Once(started_at),
+                    &merged.post_start_commands,
                 )
             })
             .chain([(
                 "postAttachCommand",
                 WaitFor::PostAttachCommand,
                 LifecycleMarker::Always,
+                &merged.post_attach_commands,
             )])
         {
             let workdir = config.workspace_folder(&cwd, &local_env);
-            let cmds: Vec<LifecycleCmd> = metadata
-                .lifecycle_commands(name)
+            let cmds: Vec<LifecycleCmd> = commands
                 .iter()
-                .filter_map(|value| LifecycleCmd::try_from(value).ok())
                 .map(|cmd| {
-                    expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env)
+                    expand_lifecycle_cmd(cmd, &cwd, &workdir, &Default::default(), &local_env)
                 })
                 .collect();
             if cmds.is_empty() {
@@ -546,57 +547,59 @@ fn shell(
         ),
         _ => (None, Default::default(), None),
     };
-    let metadata = devcontainer::Metadata::for_container(
-        match match (&config, service.as_ref(), dockerfile) {
-            (devcontainer::DevcontainerConfig::Image(c), _, _) => {
-                if !docker.pull_streamed(&c.image)? {
-                    return Err(err!("`docker pull` failed"));
-                }
-                Some(c.image.clone())
+    let image_label = match match (&config, service.as_ref(), dockerfile) {
+        (devcontainer::DevcontainerConfig::Image(c), _, _) => {
+            if !docker.pull_streamed(&c.image)? {
+                return Err(err!("`docker pull` failed"));
             }
-            (
-                _,
-                Some(devcontainer::ServiceResolved {
-                    source: devcontainer::ServiceSource::Image { image },
-                    ..
-                }),
-                _,
-            ) => Some(image.clone()),
-            (_, _, Some(path)) => devcontainer::Dockerfile::parse(
-                &std::fs::read_to_string(&path)
-                    .map_err(|e| err!("failed to read Dockerfile {}: {e}", path.display()))?,
-            )
-            .and_then(|dockerfile| dockerfile.base_image(&build_args, build_target.as_deref())),
-            _ => None,
+            Some(c.image.clone())
         }
-        .filter(|image| image != "scratch")
-        {
-            None => devcontainer::Metadata::default(),
-            Some(image) => match match docker.image_config(&image)? {
-                output if output.success => output,
-                _ if !docker.pull_streamed(&image)? => {
-                    return Err(err!("`docker pull` failed for base image `{image}`"));
-                }
-                _ => docker.image_config(&image)?,
-            } {
-                output if output.success => {
-                    docker::ImageConfig::parse(output.stdout.trim()).metadata
-                }
-                output => {
-                    return Err(err!(
-                        "failed to inspect base image `{image}`: {}",
-                        output.stderr.trim()
-                    ));
-                }
-            },
+        (
+            _,
+            Some(devcontainer::ServiceResolved {
+                source: devcontainer::ServiceSource::Image { image },
+                ..
+            }),
+            _,
+        ) => Some(image.clone()),
+        (_, _, Some(path)) => devcontainer::Dockerfile::parse(
+            &std::fs::read_to_string(&path)
+                .map_err(|e| err!("failed to read Dockerfile {}: {e}", path.display()))?,
+        )
+        .and_then(|dockerfile| dockerfile.base_image(&build_args, build_target.as_deref())),
+        _ => None,
+    }
+    .filter(|image| image != "scratch")
+    {
+        None => None,
+        Some(image) => match match docker.image_config(&image)? {
+            output if output.success => output,
+            _ if !docker.pull_streamed(&image)? => {
+                return Err(err!("`docker pull` failed for base image `{image}`"));
+            }
+            _ => docker.image_config(&image)?,
+        } {
+            output if output.success => {
+                docker::ImageConfig::parse(output.stdout.trim()).metadata_label
+            }
+            output => {
+                return Err(err!(
+                    "failed to inspect base image `{image}`: {}",
+                    output.stderr.trim()
+                ));
+            }
         },
+    };
+    let metadata = devcontainer::Metadata::for_container(
+        image_label.as_deref(),
         features_plan
             .iter()
             .flat_map(|(plan, _)| plan.features())
             .map(|f| &f.metadata),
-        &config.common().metadata,
+        config.common(),
     );
-    let config = config.with_common(metadata.merge_into(config.common()));
+    let merged = metadata.merge(config.common());
+    let config = config.with_common(merged.config);
     let target = setup::from_config(&config, &cwd, &config_path, config_dir, &local_env);
 
     let feature_users = features::FeatureInstallUsers::new(
@@ -760,12 +763,12 @@ fn shell(
                 ""
             });
             let mut run_args = s.run_args;
-            run_args.extend(metadata.to_docker_args());
+            run_args.extend(["--label".to_string(), metadata.label()]);
             run_args.extend(["--entrypoint".to_string(), "/bin/sh".to_string()]);
             run_args.push(image_tag.clone());
             run_args.extend(devcontainer::container_start_args(
                 s.override_command,
-                &metadata.entrypoints(),
+                &merged.entrypoints,
                 &image_config.entrypoint,
                 &image_config.cmd,
             ));
@@ -925,16 +928,14 @@ fn shell(
                         .to_compose_override(
                             &override_content,
                             &c.service,
+                            &metadata.label(),
                             config.common().override_command,
-                            &metadata.entrypoints(),
+                            &merged.entrypoints,
                             &image_config.entrypoint,
                             &image_config.cmd,
                         );
-                    std::fs::write(
-                        &p,
-                        metadata.to_compose_override(&override_content, &c.service),
-                    )
-                    .map_err(|e| err!("Failed to write compose override file: {e}"))?;
+                    std::fs::write(&p, override_content)
+                        .map_err(|e| err!("Failed to write compose override file: {e}"))?;
                 }
                 p
             };
@@ -962,39 +963,42 @@ fn shell(
     let started_at = docker
         .inspect_format(&id, "{{.State.StartedAt}}")
         .map(|o| o.stdout.trim().to_string())?;
-    for (name, hook, marker) in [
+    for (name, hook, marker, commands) in [
         (
             "onCreateCommand",
             WaitFor::OnCreateCommand,
             LifecycleMarker::Once(&created_at),
+            &merged.on_create_commands,
         ),
         (
             "updateContentCommand",
             WaitFor::UpdateContentCommand,
             LifecycleMarker::Once(&created_at),
+            &merged.update_content_commands,
         ),
         (
             "postCreateCommand",
             WaitFor::PostCreateCommand,
             LifecycleMarker::Once(&created_at),
+            &merged.post_create_commands,
         ),
         (
             "postStartCommand",
             WaitFor::PostStartCommand,
             LifecycleMarker::Once(&started_at),
+            &merged.post_start_commands,
         ),
         (
             "postAttachCommand",
             WaitFor::PostAttachCommand,
             LifecycleMarker::Always,
+            &merged.post_attach_commands,
         ),
     ] {
         let workdir = config.workspace_folder(&cwd, &local_env);
-        let cmds: Vec<LifecycleCmd> = metadata
-            .lifecycle_commands(name)
+        let cmds: Vec<LifecycleCmd> = commands
             .iter()
-            .filter_map(|value| LifecycleCmd::try_from(value).ok())
-            .map(|cmd| expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env))
+            .map(|cmd| expand_lifecycle_cmd(cmd, &cwd, &workdir, &Default::default(), &local_env))
             .collect();
         if cmds.is_empty() {
             continue;

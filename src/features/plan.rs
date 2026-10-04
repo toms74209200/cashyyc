@@ -520,10 +520,10 @@ mod tests {
     #[test]
     fn when_feature_dockerfile_with_entrypoint_feature_then_no_entrypoint_directive() {
         let mut feature = make_feature("docker", vec![]);
-        feature.metadata = jsonc::parse(r#"[{"entrypoint":"/usr/local/share/docker-init.sh"}]"#)
-            .unwrap()
-            .value()
-            .into();
+        feature.metadata = vec![(
+            "entrypoint".to_string(),
+            Value::String("/usr/local/share/docker-init.sh".to_string()),
+        )];
         let plan = InstallPlan::new(vec![feature], &[]).unwrap();
         let df = feature_dockerfile(
             "FROM ubuntu:22.04",
