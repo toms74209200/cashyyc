@@ -300,6 +300,7 @@ def given_compose_config(workspace, service, image):
         f"  {service}:\n"
         f"    image: {image}\n"
         f"    command: sleep infinity\n"
+        f"    stop_signal: SIGKILL\n"
         f"    volumes:\n"
         f"      - ..:/workspaces:cached\n"
         f"    working_dir: /workspaces\n"
@@ -348,12 +349,14 @@ def given_compose_config_with_run_service(workspace, service, run_service, image
         f"  {service}:\n"
         f"    image: {image}\n"
         f"    command: sleep infinity\n"
+        f"    stop_signal: SIGKILL\n"
         f"    volumes:\n"
         f"      - ..:/workspaces:cached\n"
         f"    working_dir: /workspaces\n"
         f"  {run_service}:\n"
         f"    image: {image}\n"
         f"    command: sleep infinity\n"
+        f"    stop_signal: SIGKILL\n"
     )
     (workspace / ".devcontainer" / "docker-compose.yml").write_text(compose_yaml)
     config = {
