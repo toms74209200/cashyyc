@@ -523,10 +523,13 @@ def given_local_feature_with_manifest(workspace, config, docstring):
 
 
 @given(
-    "the config has a local feature that logs its options with manifest:",
+    parsers.re(
+        r'the config has a local feature(?: with value "(?P<value>[^"]*)")?'
+        r" that logs its options with manifest:"
+    ),
     target_fixture="config",
 )
-def given_local_feature_logs_options_with_manifest(workspace, config, docstring):
+def given_local_feature_logs_options_with_manifest(workspace, config, docstring, value):
     manifest = json.loads(docstring)
     feature_id = manifest["id"]
     feature_dir = workspace / ".devcontainer" / "features" / feature_id
@@ -539,7 +542,10 @@ def given_local_feature_logs_options_with_manifest(workspace, config, docstring)
             for name in manifest.get("options", {})
         )
     )
-    features = {**config.get("features", {}), f"./features/{feature_id}": {}}
+    features = {
+        **config.get("features", {}),
+        f"./features/{feature_id}": {} if value is None else value,
+    }
     new_config = {**config, "features": features}
     (workspace / ".devcontainer" / "devcontainer.json").write_text(
         json.dumps(new_config)
