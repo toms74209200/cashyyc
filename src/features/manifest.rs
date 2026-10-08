@@ -94,30 +94,34 @@ impl FeatureManifest {
                 }) => {}
             Some(_) => return Err("invalid type for field `mounts`".to_string()),
         }
-        let user_options = match user_options {
-            Value::Object(members) => members.as_slice(),
-            _ => &[],
-        };
-        let options = match value.get("options") {
-            None => Value::Object(user_options.to_vec()),
+        let declared_options = match value.get("options") {
+            None => &[][..],
             Some(Value::Object(options))
                 if options
                     .iter()
                     .all(|(_, option)| matches!(option, Value::Object(_))) =>
             {
-                Value::Object(
-                    options
-                        .iter()
-                        .filter(|(name, _)| user_options.iter().all(|(k, _)| k != name))
-                        .filter_map(|(name, option)| {
-                            option.get("default").map(|d| (name.clone(), d.clone()))
-                        })
-                        .chain(user_options.iter().cloned())
-                        .collect(),
-                )
+                options.as_slice()
             }
             Some(_) => return Err("invalid type for field `options`".to_string()),
         };
+        let user_options = match user_options {
+            Value::Object(members) => members.clone(),
+            shorthand if declared_options.iter().any(|(name, _)| name == "version") => {
+                vec![("version".to_string(), shorthand.clone())]
+            }
+            _ => vec![],
+        };
+        let options = Value::Object(
+            declared_options
+                .iter()
+                .filter(|(name, _)| user_options.iter().all(|(k, _)| k != name))
+                .filter_map(|(name, option)| {
+                    option.get("default").map(|d| (name.clone(), d.clone()))
+                })
+                .chain(user_options.iter().cloned())
+                .collect(),
+        );
         opt_bool(&value, "privileged")?;
         opt_bool(&value, "init")?;
         string_vec(&value, "capAdd")?;
@@ -412,7 +416,8 @@ mod tests {
     }
 
     #[test]
-    fn when_parse_with_non_object_user_value_then_options_have_the_defaults() {
+    fn when_parse_with_non_object_user_value_and_no_declared_version_then_options_have_the_defaults()
+     {
         let (name, default) = (random_name(), random_name());
         let content = format!(
             r#"{{"id":"f","options":{{"{name}":{{"type":"string","default":"{default}"}}}}}}"#
@@ -426,6 +431,30 @@ mod tests {
             jsonc::parse(&format!(r#"{{"{name}":"{default}"}}"#))
                 .unwrap()
                 .value()
+        );
+    }
+
+    #[test]
+    fn when_parse_with_string_user_value_and_declared_version_then_options_have_it_as_the_version()
+    {
+        let (name, default, version) = (random_name(), random_name(), random_name());
+        let content = format!(
+            r#"{{"id":"f","options":{{
+                "version":{{"type":"string","default":"{default}"}},
+                "{name}":{{"type":"string","default":"{default}"}}
+            }}}}"#
+        );
+
+        let m = FeatureManifest::parse(&random_name(), &Value::String(version.clone()), &content)
+            .unwrap();
+
+        assert_eq!(
+            m.options,
+            jsonc::parse(&format!(
+                r#"{{"{name}":"{default}","version":"{version}"}}"#
+            ))
+            .unwrap()
+            .value()
         );
     }
 
