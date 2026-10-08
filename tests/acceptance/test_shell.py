@@ -523,6 +523,31 @@ def given_local_feature_with_manifest(workspace, config, docstring):
 
 
 @given(
+    "the config has a local feature that logs its options with manifest:",
+    target_fixture="config",
+)
+def given_local_feature_logs_options_with_manifest(workspace, config, docstring):
+    manifest = json.loads(docstring)
+    feature_id = manifest["id"]
+    feature_dir = workspace / ".devcontainer" / "features" / feature_id
+    feature_dir.mkdir(parents=True, exist_ok=True)
+    (feature_dir / "devcontainer-feature.json").write_text(docstring)
+    (feature_dir / "install.sh").write_text(
+        "#!/bin/sh\n"
+        + "".join(
+            f'echo "{name.upper()}=${name.upper()}" >> /tmp/feature-options.log\n'
+            for name in manifest.get("options", {})
+        )
+    )
+    features = {**config.get("features", {}), f"./features/{feature_id}": {}}
+    new_config = {**config, "features": features}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
     parsers.parse('the config has a local feature whose entrypoint creates "{path}"'),
     target_fixture="config",
 )
