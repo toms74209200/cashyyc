@@ -83,7 +83,7 @@ fn parse_template_options(json: &str) -> Vec<TemplateOption> {
     options
         .iter()
         .filter_map(|(id, spec)| {
-            let default = spec.get("default").and_then(&scalar);
+            let default = spec.get("default").and_then(scalar);
             let proposals: Vec<String> = match spec.get("type").and_then(|v| v.as_str()) {
                 Some("boolean") => vec!["true".to_string(), "false".to_string()],
                 _ => spec
