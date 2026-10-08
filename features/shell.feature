@@ -628,6 +628,17 @@ Feature: cyyc shell
     Then the container is running
     And the file "/tmp/feature-post-create-ran" exists in the container
 
+  Scenario: when a feature option has a default value then the feature's install.sh receives the default
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature that logs its options with manifest:
+      """
+      {"id": "myfeature", "version": "1.0.0", "options": {"greeting": {"type": "string", "default": "hello"}}}
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/feature-options.log" in the container contains "GREETING=hello"
+
   Scenario: a feature's install.sh receives _REMOTE_USER and related variables
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
     And the config has remoteUser "vscode"

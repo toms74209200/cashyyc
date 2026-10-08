@@ -1343,12 +1343,12 @@ fn download_features(
         let manifest_content =
             std::fs::read_to_string(feature_dir.join("devcontainer-feature.json"))
                 .map_err(|e| err!("devcontainer-feature.json not found in feature {id}: {e}"))?;
-        let manifest = features::FeatureManifest::parse(id, &manifest_content)?;
+        let manifest = features::FeatureManifest::parse(id, options, &manifest_content)?;
         resolved.push(features::Feature {
             short_id: manifest.id,
             metadata: manifest.metadata,
             dir: feature_dir,
-            options: (*options).clone(),
+            options: manifest.options,
             installs_after: manifest.installs_after,
             container_env: manifest.container_env,
         });

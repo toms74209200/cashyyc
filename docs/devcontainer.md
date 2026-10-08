@@ -176,6 +176,14 @@ RUN chmod -R 0755 /tmp/dev-container-features/<feature-id> \
 
 features ファイルの COPY は `features_dir` をビルドコンテキストとして使用する。ユーザの Dockerfile と同一コンテキストには置かない。
 
+#### オプションの値
+
+`install.sh` に環境変数として渡すオプションの値は、`devcontainer-feature.json` の `options` に宣言された `default` に、devcontainer.json の features に書いた値を上書きしたもの。`default` を持たないオプションは、devcontainer.json に書かれていなければ渡さない。
+
+devcontainer.json の features の値がオブジェクトでない場合（文字列の短縮形など）は、`default` の値だけを渡す。
+
+定義: `devcontainers/cli` `src/spec-configuration/containerFeaturesConfiguration.ts` `getFeatureValueObject`、`getFeatureValueDefaults`
+
 #### Compose の override ファイル
 
 features を適用する場合、compose override の `build:` セクションに以下を追加する:
