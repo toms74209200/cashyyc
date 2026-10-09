@@ -180,9 +180,9 @@ features ファイルの COPY は `features_dir` をビルドコンテキスト�
 
 `install.sh` に環境変数として渡すオプションの値は、`devcontainer-feature.json` の `options` に宣言された `default` に、devcontainer.json の features に書いた値を上書きしたもの。`default` を持たないオプションは、devcontainer.json に書かれていなければ渡さない。
 
-devcontainer.json の features の値がオブジェクトでない場合（文字列の短縮形など）は、`default` の値だけを渡す。
+devcontainer.json の features の値がオブジェクトでない場合（`"ghcr.io/devcontainers/features/node:1": "18"` のような短縮形）は、その値を `version` オプションの値として扱う。`devcontainer-feature.json` が `version` オプションを宣言していなければ、`default` の値だけを渡す。
 
-定義: `devcontainers/cli` `src/spec-configuration/containerFeaturesConfiguration.ts` `getFeatureValueObject`、`getFeatureValueDefaults`
+定義: `devcontainers/cli` `src/spec-configuration/containerFeaturesConfiguration.ts` `getFeatureValueObject`、`getFeatureValueDefaults`、`getFeatureMainProperty`
 
 #### Compose の override ファイル
 

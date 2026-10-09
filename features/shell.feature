@@ -639,6 +639,17 @@ Feature: cyyc shell
     Then the container is running
     And the file "/tmp/feature-options.log" in the container contains "GREETING=hello"
 
+  Scenario: when a feature is given a string value then the feature's install.sh receives it as the version option
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has a local feature with value "18" that logs its options with manifest:
+      """
+      {"id": "myfeature", "version": "1.0.0", "options": {"version": {"type": "string", "default": "lts"}}}
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/feature-options.log" in the container contains "VERSION=18"
+
   Scenario: a feature's install.sh receives _REMOTE_USER and related variables
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
     And the config has remoteUser "vscode"
