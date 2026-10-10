@@ -506,6 +506,37 @@ def then_install_log_beta_before_alpha(workspace, config):
     )
 
 
+@given(
+    parsers.parse('the config has build arg "{key}" with value "{value}"'),
+    target_fixture="config",
+)
+def given_build_arg(workspace, config, key, value):
+    build = config.get("build", {})
+    args = {**build.get("args", {}), key: value}
+    new_config = {**config, "build": {**build, "args": args}}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(
+    parsers.parse('the config has build target "{target}"'),
+    target_fixture="config",
+)
+def given_build_target(workspace, config, target):
+    new_config = {**config, "build": {**config.get("build", {}), "target": target}}
+    (workspace / ".devcontainer" / "devcontainer.json").write_text(
+        json.dumps(new_config)
+    )
+    return new_config
+
+
+@given(parsers.parse('the build context has file "{name}"'))
+def given_build_context_file(workspace, name):
+    (workspace / ".devcontainer" / name).write_text(name)
+
+
 @given("the config has a local feature with manifest:", target_fixture="config")
 def given_local_feature_with_manifest(workspace, config, docstring):
     manifest = json.loads(docstring)
