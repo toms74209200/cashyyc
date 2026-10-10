@@ -94,6 +94,8 @@ impl InstallPlan {
     }
 }
 
+pub const FEATURE_CONTENT_SOURCE: &str = "dev_containers_feature_content_source";
+pub const FEATURE_TARGET_STAGE: &str = "dev_containers_target_stage";
 const FEATURE_IMAGE_USER_FILE: &str = "/tmp/dev-container-features-image-user";
 const CONTAINER_USER_HOME_LOOKUP: &str = r#""$(getent passwd "$_CONTAINER_USER" 2>/dev/null | cut -d: -f6 || grep -E "^$_CONTAINER_USER:|^[^:]*:[^:]*:$_CONTAINER_USER:" /etc/passwd | cut -d: -f6 || true)""#;
 const REMOTE_USER_HOME_LOOKUP: &str = r#""$(getent passwd "$_REMOTE_USER" 2>/dev/null | cut -d: -f6 || grep -E "^$_REMOTE_USER:|^[^:]*:[^:]*:$_REMOTE_USER:" /etc/passwd | cut -d: -f6 || true)""#;
@@ -146,7 +148,7 @@ pub fn feature_dockerfile(
             .unwrap_or_default()
             .to_string_lossy();
         let dest = format!("/tmp/dev-container-features/{}", feature.short_id);
-        let copy = format!("COPY ./{dir_name}/ {dest}/");
+        let copy = format!("COPY --from={FEATURE_CONTENT_SOURCE} ./{dir_name}/ {dest}/");
         let option_exports = match &feature.options {
             Value::Object(members) => {
                 let mut sorted: Vec<&(String, Value)> = members.iter().collect();
@@ -311,7 +313,9 @@ mod tests {
             &plan,
             &FeatureInstallUsers::new(Some("vscode"), Some("vscode")),
         );
-        assert!(df.contains("COPY ./0/ /tmp/dev-container-features/git/"));
+        assert!(df.contains(
+            "COPY --from=dev_containers_feature_content_source ./0/ /tmp/dev-container-features/git/"
+        ));
         assert!(df.contains(
             "&& chmod -R 0755 /tmp/dev-container-features/git && cd /tmp/dev-container-features/git && chmod +x ./install.sh && ./install.sh"
         ));

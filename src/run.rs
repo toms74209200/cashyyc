@@ -610,13 +610,29 @@ fn shell(
             .or(service.as_ref().and_then(|s| s.user.as_deref())),
         config.common().remote_user.as_deref(),
     );
+    let build_config = match &config {
+        devcontainer::DevcontainerConfig::Dockerfile(c) => {
+            Some(devcontainer::normalize_dockerfile_config(c))
+        }
+        devcontainer::DevcontainerConfig::DockerfileBuild(c) => Some(c.build.clone()),
+        devcontainer::DevcontainerConfig::Image(_)
+        | devcontainer::DevcontainerConfig::DockerCompose(_) => None,
+    };
     let target = if let Some((ref plan, ref fdir)) = features_plan {
         match target {
             ContainerTarget::Single(s) => {
                 let base = match &s.dockerfile {
                     None => format!("FROM {}", s.image_tag),
-                    Some(p) => std::fs::read_to_string(p)
-                        .map_err(|e| err!("failed to read Dockerfile: {e}"))?,
+                    Some(p) => {
+                        let content = std::fs::read_to_string(p)
+                            .map_err(|e| err!("failed to read Dockerfile: {e}"))?;
+                        match build_config.as_ref().and_then(|b| b.target.as_deref()) {
+                            Some(t) => {
+                                format!("{content}\nFROM {t} AS {}", features::FEATURE_TARGET_STAGE)
+                            }
+                            None => content,
+                        }
+                    }
                 };
                 let content = features::feature_dockerfile(&base, plan, &feature_users);
                 let dockerfile_path = fdir.join("Dockerfile.features");
@@ -644,9 +660,11 @@ fn shell(
                 std::fs::write(&dockerfile_path, &content)
                     .map_err(|e| err!("failed to write feature Dockerfile: {e}"))?;
                 let override_content = format!(
-                    "{}    build:\n      dockerfile: {}\n      context: {}\n",
+                    "{}    build:\n      dockerfile: {}\n      context: {}\n      additional_contexts:\n        {}: {}\n",
                     c.override_content,
                     dockerfile_path.display(),
+                    fdir.display(),
+                    features::FEATURE_CONTENT_SOURCE,
                     fdir.display()
                 );
                 ContainerTarget::Compose(devcontainer::ComposeArgs {
@@ -662,36 +680,41 @@ fn shell(
     let id: String = match target {
         ContainerTarget::Single(s) => {
             if let Some((_, ref fdir)) = features_plan {
-                let build_args = [
-                    "-f",
-                    &s.dockerfile.as_ref().unwrap().display().to_string(),
-                    "-t",
-                    &s.image_tag,
-                    &fdir.display().to_string(),
-                ]
-                .map(String::from);
+                let base = build_config.unwrap_or(devcontainer::BuildConfig {
+                    dockerfile: None,
+                    context: Some(fdir.display().to_string()),
+                    target: None,
+                    args: Default::default(),
+                    cache_from: None,
+                    options: vec![],
+                });
+                let build = devcontainer::BuildConfig {
+                    dockerfile: s.dockerfile.as_ref().map(|p| p.display().to_string()),
+                    target: base
+                        .target
+                        .as_ref()
+                        .map(|_| features::FEATURE_TARGET_STAGE.to_string()),
+                    options: base
+                        .options
+                        .iter()
+                        .cloned()
+                        .chain([
+                            "--build-context".to_string(),
+                            format!("{}={}", features::FEATURE_CONTENT_SOURCE, fdir.display()),
+                        ])
+                        .collect(),
+                    ..base
+                };
+                let build_args =
+                    devcontainer::container_build_args(&build, config_dir, &s.image_tag);
                 if !docker.build_streamed(&build_args)? {
                     return Err(err!("`docker build` for features failed"));
                 }
-            } else {
-                match &config {
-                    devcontainer::DevcontainerConfig::Image(_) => {}
-                    devcontainer::DevcontainerConfig::Dockerfile(c) => {
-                        let build = devcontainer::normalize_dockerfile_config(c);
-                        let build_args =
-                            devcontainer::container_build_args(&build, config_dir, &s.image_tag);
-                        if !docker.build_streamed(&build_args)? {
-                            return Err(err!("`docker build` failed"));
-                        }
-                    }
-                    devcontainer::DevcontainerConfig::DockerfileBuild(c) => {
-                        let build_args =
-                            devcontainer::container_build_args(&c.build, config_dir, &s.image_tag);
-                        if !docker.build_streamed(&build_args)? {
-                            return Err(err!("`docker build` failed"));
-                        }
-                    }
-                    devcontainer::DevcontainerConfig::DockerCompose(_) => unreachable!(),
+            } else if let Some(build) = build_config {
+                let build_args =
+                    devcontainer::container_build_args(&build, config_dir, &s.image_tag);
+                if !docker.build_streamed(&build_args)? {
+                    return Err(err!("`docker build` failed"));
                 }
             }
             #[cfg(target_os = "linux")]
