@@ -953,6 +953,58 @@ Feature: cyyc shell
     Then the container is running
     And the file "/tmp/feature-user-vars.log" in the container contains "_REMOTE_USER=vscode"
 
+  Scenario: when a DockerfileBuild config with a feature has build args then the image is built with the build args
+    Given a devcontainer config with build using Dockerfile:
+      """
+      FROM mcr.microsoft.com/devcontainers/base:debian
+      ARG GREETING
+      RUN echo "$GREETING" > /tmp/build-arg.txt
+      """
+    And the config has build arg "GREETING" with value "hello"
+    And the config has a local feature with manifest:
+      """
+      {"id": "myfeature", "version": "1.0.0"}
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/build-arg.txt" in the container contains "hello"
+
+  Scenario: when a DockerfileBuild config with a feature has a build target then the image is built from the target stage
+    Given a devcontainer config with build using Dockerfile:
+      """
+      FROM mcr.microsoft.com/devcontainers/base:debian AS dev
+      RUN touch /tmp/dev-stage
+      FROM dev AS release
+      RUN touch /tmp/release-stage
+      """
+    And the config has build target "dev"
+    And the config has a local feature with manifest:
+      """
+      {"id": "myfeature", "version": "1.0.0"}
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/dev-stage" exists in the container
+    And the file "/tmp/release-stage" does not exist in the container
+
+  Scenario: when a DockerfileBuild config with a feature copies from the build context then the image is built with the build context
+    Given a devcontainer config with build using Dockerfile:
+      """
+      FROM mcr.microsoft.com/devcontainers/base:debian
+      COPY context-file.txt /tmp/context-file.txt
+      """
+    And the build context has file "context-file.txt"
+    And the config has a local feature with manifest:
+      """
+      {"id": "myfeature", "version": "1.0.0"}
+      """
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the container is running
+    And the file "/tmp/context-file.txt" exists in the container
+
   Scenario: when the base image metadata and the config both declare postCreateCommand then both run in order
     Given an image built from:
       """
