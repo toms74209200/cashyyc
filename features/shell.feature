@@ -145,12 +145,19 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the file ".init-array-ran" exists in the workspace
 
-  Scenario: initializeCommand is not run when container already exists
+  Scenario: Execute initializeCommand on running container
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
     And a running container exists for this config
     And the config has initializeCommand "touch .init-reuse-ran"
     When running "cyyc shell"
-    Then the file ".init-reuse-ran" does not exist in the workspace
+    Then the file ".init-reuse-ran" exists in the workspace
+
+  Scenario: Execute initializeCommand on container restart
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And a stopped container exists for this config
+    And the config has initializeCommand "touch .init-restart-ran"
+    When running "cyyc shell"
+    Then the file ".init-restart-ran" exists in the workspace
 
   Scenario: Execute onCreateCommand as string on new container
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"

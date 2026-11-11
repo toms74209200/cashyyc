@@ -377,6 +377,28 @@ fn shell(
 
     let target = setup::from_config(&config, &cwd, &config_path, config_dir, &local_env);
 
+    if let Some(value) = config.common().initialize_command.as_ref()
+        && let Ok(cmd) = LifecycleCmd::try_from(value)
+    {
+        let workdir = config.workspace_folder(&cwd, &local_env);
+        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
+        let cmds: Vec<HostCmd> = match &cmd {
+            LifecycleCmd::Shell(s) => vec![HostCmd::Shell(s.clone())],
+            LifecycleCmd::Exec(args) => vec![HostCmd::Exec(args.clone())],
+            LifecycleCmd::Parallel(cmds) => cmds
+                .iter()
+                .map(|c| match c {
+                    LifecycleCmd::Shell(s) => HostCmd::Shell(s.clone()),
+                    LifecycleCmd::Exec(args) => HostCmd::Exec(args.clone()),
+                    LifecycleCmd::Parallel(_) => unreachable!(),
+                })
+                .collect(),
+        };
+        if !host.run_group(&cmds, "initializeCommand")? {
+            return Err(err!("initializeCommand failed"));
+        }
+    }
+
     let (container_id, restarted) = match lookup_existing(docker, &target, &config_path, &cwd)? {
         Existing::Running { id, .. } => (Some(id), false),
         Existing::Stopped { id, .. } => {
@@ -473,28 +495,6 @@ fn shell(
             }
         }
         return exec_in_container(docker, id, &config, &cwd);
-    }
-
-    if let Some(value) = config.common().initialize_command.as_ref()
-        && let Ok(cmd) = LifecycleCmd::try_from(value)
-    {
-        let workdir = config.workspace_folder(&cwd, &local_env);
-        let cmd = expand_lifecycle_cmd(&cmd, &cwd, &workdir, &Default::default(), &local_env);
-        let cmds: Vec<HostCmd> = match &cmd {
-            LifecycleCmd::Shell(s) => vec![HostCmd::Shell(s.clone())],
-            LifecycleCmd::Exec(args) => vec![HostCmd::Exec(args.clone())],
-            LifecycleCmd::Parallel(cmds) => cmds
-                .iter()
-                .map(|c| match c {
-                    LifecycleCmd::Shell(s) => HostCmd::Shell(s.clone()),
-                    LifecycleCmd::Exec(args) => HostCmd::Exec(args.clone()),
-                    LifecycleCmd::Parallel(_) => unreachable!(),
-                })
-                .collect(),
-        };
-        if !host.run_group(&cmds, "initializeCommand")? {
-            return Err(err!("initializeCommand failed"));
-        }
     }
 
     let features_plan: Option<(features::InstallPlan, std::path::PathBuf)> =
