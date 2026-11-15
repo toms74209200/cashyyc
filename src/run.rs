@@ -420,6 +420,27 @@ fn shell(
         )
         .merge(config.common());
         let config = config.with_common(merged.config);
+        let container_env: std::collections::HashMap<String, String> = docker
+            .inspect_format(&id, "{{json .Config.Env}}")
+            .ok()
+            .filter(|o| o.success)
+            .and_then(|o| devcontainer::jsonc::parse(o.stdout.trim()).ok())
+            .and_then(|document| {
+                document.value().as_array().map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|entry| entry.as_str()?.split_once('='))
+                        .map(|(key, value)| (key.to_string(), value.to_string()))
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+        let remote_env_args = config.common().remote_env.exec_args(
+            &cwd,
+            &config.workspace_folder(&cwd, &local_env),
+            &container_env,
+            &local_env,
+        )?;
         let started_at = match restarted {
             true => Some(
                 docker
@@ -490,11 +511,12 @@ fn shell(
                     &workdir,
                     name,
                     remote_user.as_deref(),
+                    &remote_env_args,
                     wait,
                 )?;
             }
         }
-        return exec_in_container(docker, id, &config, &cwd);
+        return exec_in_container(docker, id, &config, &cwd, &remote_env_args);
     }
 
     let features_plan: Option<(features::InstallPlan, std::path::PathBuf)> =
@@ -986,6 +1008,27 @@ fn shell(
     let started_at = docker
         .inspect_format(&id, "{{.State.StartedAt}}")
         .map(|o| o.stdout.trim().to_string())?;
+    let container_env: std::collections::HashMap<String, String> = docker
+        .inspect_format(&id, "{{json .Config.Env}}")
+        .ok()
+        .filter(|o| o.success)
+        .and_then(|o| devcontainer::jsonc::parse(o.stdout.trim()).ok())
+        .and_then(|document| {
+            document.value().as_array().map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry.as_str()?.split_once('='))
+                    .map(|(key, value)| (key.to_string(), value.to_string()))
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+    let remote_env_args = config.common().remote_env.exec_args(
+        &cwd,
+        &config.workspace_folder(&cwd, &local_env),
+        &container_env,
+        &local_env,
+    )?;
     for (name, hook, marker, commands) in [
         (
             "onCreateCommand",
@@ -1061,11 +1104,12 @@ fn shell(
                 &workdir,
                 name,
                 remote_user.as_deref(),
+                &remote_env_args,
                 wait,
             )?;
         }
     }
-    exec_in_container(docker, id, &config, &cwd)
+    exec_in_container(docker, id, &config, &cwd, &remote_env_args)
 }
 
 fn stop(docker: &mut impl Docker, name: Option<String>) -> Result<()> {
@@ -1178,6 +1222,7 @@ fn exec_in_container(
     id: String,
     config: &devcontainer::DevcontainerConfig,
     cwd: &std::path::Path,
+    remote_env_args: &[String],
 ) -> Result<()> {
     let local_env = local_env_snapshot();
     let container_workspace_folder = config.workspace_folder(cwd, &local_env);
@@ -1228,29 +1273,12 @@ fn exec_in_container(
             })
         })
         .unwrap_or_else(|| "/bin/sh".to_string());
-    let remote_env = config.common().remote_env.as_ref();
     let mut exec_args = vec!["-it".to_string()];
     if let Some(user) = remote_user {
         exec_args.extend(["--user".to_string(), user]);
     }
     exec_args.extend(["--workdir".to_string(), container_workspace_folder.clone()]);
-    if let Some(env) = remote_env {
-        let mut pairs: Vec<(&String, &String)> = env
-            .iter()
-            .filter_map(|(k, v)| v.as_ref().map(|val| (k, val)))
-            .collect();
-        pairs.sort_by_key(|(k, _)| k.as_str());
-        for (key, value) in pairs {
-            let expanded = devcontainer::expand_variables(
-                value,
-                cwd,
-                &container_workspace_folder,
-                &container_env,
-                &local_env,
-            );
-            exec_args.extend(["--env".to_string(), format!("{}={}", key, expanded)]);
-        }
-    }
+    exec_args.extend(remote_env_args.iter().cloned());
     exec_args.extend([id, shell]);
     if !d.exec_interactive(&exec_args)? {
         return Err(err!("`docker exec` failed"));
@@ -1548,6 +1576,7 @@ enum LifecycleMarker<'a> {
     Once(&'a str),
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_lifecycle_in_container(
     d: &mut impl Docker,
     cmd: &LifecycleCmd,
@@ -1555,6 +1584,7 @@ fn run_lifecycle_in_container(
     workdir: &str,
     name: &str,
     remote_user: Option<&str>,
+    env_args: &[String],
     wait: bool,
 ) -> Result<()> {
     let user_args: Vec<String> = if let Some(user) = remote_user {
@@ -1564,6 +1594,7 @@ fn run_lifecycle_in_container(
     };
     let exec_prefix = || {
         let mut a = user_args.clone();
+        a.extend(env_args.iter().cloned());
         a.extend([
             "--workdir".to_string(),
             workdir.to_string(),

@@ -5,6 +5,7 @@ pub mod dockerfile;
 pub mod jsonc;
 pub mod metadata;
 pub mod parser;
+pub mod remote_env;
 pub mod shell;
 pub mod variables;
 
@@ -14,5 +15,6 @@ pub use docker_compose::*;
 pub use dockerfile::*;
 pub use metadata::*;
 pub use parser::*;
+pub use remote_env::*;
 pub use shell::*;
 pub use variables::*;

@@ -400,7 +400,7 @@ mod tests {
                 privileged: None,
                 cap_add: vec![],
                 security_opt: vec![],
-                remote_env: None,
+                remote_env: Default::default(),
                 remote_user: None,
                 update_remote_user_uid: None,
                 user_env_probe: None,
