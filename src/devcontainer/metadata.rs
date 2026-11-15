@@ -1,5 +1,6 @@
 use super::config::CommonConfig;
 use super::jsonc::Value;
+use super::remote_env::RemoteEnv;
 use crate::lifecycle::LifecycleCmd;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,7 +94,7 @@ impl Metadata {
                     security_opt: vec![],
                     mounts: vec![],
                     container_env: Default::default(),
-                    remote_env: None,
+                    remote_env: Default::default(),
                     container_user: None,
                     remote_user: None,
                     update_remote_user_uid: None,
@@ -142,17 +143,15 @@ impl Metadata {
                         .chain(&later.container_env)
                         .map(|(key, value)| (key.clone(), value.clone()))
                         .collect(),
-                    remote_env: match (&earlier.remote_env, &later.remote_env) {
-                        (None, None) => None,
-                        (earlier_env, later_env) => Some(
-                            earlier_env
-                                .iter()
-                                .chain(later_env)
-                                .flatten()
-                                .map(|(key, value)| (key.clone(), value.clone()))
-                                .collect(),
-                        ),
-                    },
+                    remote_env: RemoteEnv(
+                        earlier
+                            .remote_env
+                            .0
+                            .iter()
+                            .chain(&later.remote_env.0)
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect(),
+                    ),
                     container_user: later
                         .container_user
                         .clone()
@@ -646,25 +645,87 @@ mod tests {
     }
 
     #[test]
-    fn when_merge_with_remote_env_in_both_then_returns_them_merged() {
-        let (image_key, config_key, value) = (random_word(), random_word(), random_word());
+    fn when_merge_with_remote_env_in_both_then_returns_them_merged_by_key() {
+        let (shared_key, image_key, config_key) = (random_word(), random_word(), random_word());
+        let (image_value, config_value) = (random_word(), random_word());
         let config = CommonConfig::from_value(
-            &jsonc::parse(&format!(r#"{{"remoteEnv":{{"{config_key}":"{value}"}}}}"#))
+            &jsonc::parse(&format!(
+                r#"{{"remoteEnv":{{"{shared_key}":"{config_value}","{config_key}":null}}}}"#
+            ))
+            .unwrap()
+            .value(),
+        )
+        .unwrap();
+
+        let merged = Metadata::for_container(
+            Some(&format!(
+                r#"[{{"remoteEnv":{{"{shared_key}":"{image_value}","{image_key}":"{image_value}"}}}}]"#
+            )),
+            [],
+            &config,
+        )
+        .merge(&config);
+
+        assert_eq!(
+            merged.config.remote_env,
+            RemoteEnv(std::collections::HashMap::from([
+                (shared_key, Value::String(config_value)),
+                (image_key, Value::String(image_value)),
+                (config_key, Value::Null),
+            ]))
+        );
+    }
+
+    #[test]
+    fn when_merge_with_later_null_remote_env_value_then_returns_null() {
+        let key = random_word();
+        let config = CommonConfig::from_value(
+            &jsonc::parse(&format!(r#"{{"remoteEnv":{{"{key}":null}}}}"#))
                 .unwrap()
                 .value(),
         )
         .unwrap();
 
         let merged = Metadata::for_container(
-            Some(&format!(r#"[{{"remoteEnv":{{"{image_key}":"{value}"}}}}]"#)),
+            Some(&format!(
+                r#"[{{"remoteEnv":{{"{key}":"{}"}}}}]"#,
+                random_word()
+            )),
             [],
             &config,
         )
         .merge(&config);
 
-        let remote_env = merged.config.remote_env.unwrap();
-        assert_eq!(remote_env.get(&image_key), Some(&Some(value.clone())));
-        assert_eq!(remote_env.get(&config_key), Some(&Some(value)));
+        assert_eq!(
+            merged.config.remote_env,
+            RemoteEnv(std::collections::HashMap::from([(key, Value::Null)]))
+        );
+    }
+
+    #[test]
+    fn when_merge_with_non_object_remote_env_in_config_then_returns_the_image_remote_env() {
+        let (key, value) = (random_word(), random_word());
+        let config = CommonConfig::from_value(
+            &jsonc::parse(&format!(r#"{{"remoteEnv":"{}"}}"#, random_word()))
+                .unwrap()
+                .value(),
+        )
+        .unwrap();
+
+        let merged = Metadata::for_container(
+            Some(&format!(r#"[{{"remoteEnv":{{"{key}":"{value}"}}}}]"#)),
+            [],
+            &config,
+        )
+        .merge(&config);
+
+        assert_eq!(
+            merged.config.remote_env,
+            RemoteEnv(std::collections::HashMap::from([(
+                key,
+                Value::String(value)
+            )]))
+        );
     }
 
     #[test]

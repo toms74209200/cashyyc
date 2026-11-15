@@ -381,15 +381,20 @@ mod tests {
     }
 
     #[test]
-    fn when_parse_config_with_remote_env_null_value_then_parses_correctly() {
-        assert!(matches!(
-            parse_config(r#"{"image": "rust:latest", "remoteEnv": {"UNSET_VAR": null, "SET_VAR": "value"}}"#),
-            Some(DevcontainerConfig::Image(ImageConfig {
-                common: CommonConfig { remote_env: Some(ref e), .. },
-                ..
-            })) if e.get("UNSET_VAR") == Some(&None)
-                && e.get("SET_VAR") == Some(&Some("value".to_string()))
-        ));
+    fn when_parse_config_with_remote_env_of_any_type_then_parses() {
+        for remote_env in [
+            r#"{"NULL_VAR": null, "SET_VAR": "value", "NUMBER": 1, "OBJECT": {}}"#,
+            r#""value""#,
+            "1",
+        ] {
+            assert!(
+                parse_config(&format!(
+                    r#"{{"image": "rust:latest", "remoteEnv": {remote_env}}}"#
+                ))
+                .is_some(),
+                "remoteEnv: {remote_env}"
+            );
+        }
     }
 
     #[test]

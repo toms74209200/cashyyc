@@ -110,6 +110,8 @@ vsc-{basename(cwd)}-{fnv1a(cwd)}
 
 `waitFor` で同期ポイントを制御する（デフォルト: `updateContentCommand`）。
 
+2〜5 のコンテナ内コマンドには、対話シェルと同じく `remoteEnv` を `docker exec --env` で渡す。`remoteEnv` は後述のメタデータの各要素から取り出し、キーごとに後勝ちでマージする（`null` も値として後勝ちに加わる）。オブジェクトでない `remoteEnv` は宣言なしとして扱う。値の `${containerEnv:VAR}` はコンテナの `Config.Env`（`docker inspect`）から展開する。値は `devcontainers/cli` と同じく JavaScript の文字列変換で渡す（数値・真偽値・`null` はその文字列、配列は要素を `,` で連結し `null` 要素は空文字）。値がオブジェクトのときは変換できずエラーになる。
+
 2〜5 の各フックは、後述のメタデータに含まれるコマンドを、ベースイメージ → features → devcontainer.json の順にすべて実行する。初回のみ実行するフックは、実行済みマーカー（`$HOME/.devcontainer/.<フック名>Marker`）をフックごとに 1 回だけ確認する。
 
 ### メタデータのマージ

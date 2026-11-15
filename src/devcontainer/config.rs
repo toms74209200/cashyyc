@@ -1,4 +1,5 @@
 use super::jsonc::Value;
+use super::remote_env::RemoteEnv;
 use std::collections::HashMap;
 
 const METADATA_PROPERTIES: [&str; 24] = [
@@ -161,7 +162,7 @@ pub struct CommonConfig {
     pub privileged: Option<bool>,
     pub cap_add: Vec<String>,
     pub security_opt: Vec<String>,
-    pub remote_env: Option<HashMap<String, Option<String>>>,
+    pub remote_env: RemoteEnv,
     pub remote_user: Option<String>,
     pub update_remote_user_uid: Option<bool>,
     pub user_env_probe: Option<UserEnvProbe>,
@@ -197,22 +198,6 @@ impl CommonConfig {
             None => None,
             Some(s) => Some(UserEnvProbe::from_name(&s)?),
         };
-        let remote_env = match value.get("remoteEnv") {
-            None | Some(Value::Null) => None,
-            Some(v) => {
-                let members = v.as_object()?;
-                let mut map = HashMap::new();
-                for (k, entry) in members {
-                    let entry = match entry {
-                        Value::Null => None,
-                        Value::String(s) => Some(s.clone()),
-                        _ => return None,
-                    };
-                    map.insert(k.clone(), entry);
-                }
-                Some(map)
-            }
-        };
         let host_requirements = match value.get("hostRequirements") {
             None | Some(Value::Null) => None,
             Some(v) => Some(HostRequirements::from_value(v)?),
@@ -238,7 +223,15 @@ impl CommonConfig {
             privileged: opt_bool(value, "privileged")?,
             cap_add: string_vec(value, "capAdd")?,
             security_opt: string_vec(value, "securityOpt")?,
-            remote_env,
+            remote_env: RemoteEnv(
+                value
+                    .get("remoteEnv")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+                    .collect(),
+            ),
             remote_user: opt_string(value, "remoteUser")?,
             update_remote_user_uid: opt_bool(value, "updateRemoteUserUID")?,
             user_env_probe,
@@ -703,6 +696,53 @@ mod tests {
     }
 
     #[test]
+    fn when_common_from_value_with_remote_env_then_keeps_values_of_any_type() {
+        let key = random_path();
+        let common = CommonConfig::from_value(&value(&format!(
+            r#"{{"remoteEnv": {{"{key}": "x", "N": 1, "Z": null, "A": [1], "O": {{}}}}}}"#
+        )))
+        .unwrap();
+        assert_eq!(
+            common.remote_env,
+            RemoteEnv(HashMap::from([
+                (key, Value::String("x".to_string())),
+                ("N".to_string(), value("1")),
+                ("Z".to_string(), Value::Null),
+                ("A".to_string(), value("[1]")),
+                ("O".to_string(), value("{}")),
+            ]))
+        );
+    }
+
+    #[test]
+    fn when_common_from_value_with_duplicate_remote_env_key_then_keeps_the_last_value() {
+        let (key, last) = (random_path(), random_path());
+        let common = CommonConfig::from_value(&value(&format!(
+            r#"{{"remoteEnv": {{"{key}": "{}", "{key}": "{last}"}}}}"#,
+            random_path()
+        )))
+        .unwrap();
+        assert_eq!(
+            common.remote_env,
+            RemoteEnv(HashMap::from([(key, Value::String(last))]))
+        );
+    }
+
+    #[test]
+    fn when_common_from_value_with_non_object_remote_env_then_remote_env_is_empty() {
+        for remote_env in [r#""ab""#, "1", "true", "null", r#"["p","q"]"#] {
+            let common =
+                CommonConfig::from_value(&value(&format!(r#"{{"remoteEnv": {remote_env}}}"#)))
+                    .unwrap();
+            assert_eq!(
+                common.remote_env,
+                RemoteEnv::default(),
+                "remoteEnv: {remote_env}"
+            );
+        }
+    }
+
+    #[test]
     fn when_common_from_value_without_metadata_properties_then_metadata_is_empty() {
         let common =
             CommonConfig::from_value(&value(&format!(r#"{{"image": "{}"}}"#, random_path())))
@@ -893,7 +933,7 @@ mod tests {
             privileged: None,
             cap_add: vec![],
             security_opt: vec![],
-            remote_env: None,
+            remote_env: Default::default(),
             remote_user: None,
             update_remote_user_uid: None,
             user_env_probe: None,
