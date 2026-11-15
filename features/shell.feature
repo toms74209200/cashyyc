@@ -560,6 +560,31 @@ Feature: cyyc shell
     When running "cyyc shell"
     Then the file "/tmp/remote-user-result" in the container contains the expansion of "${localEnv:USER}"
 
+  Scenario: when remoteEnv is set then it is passed to postCreateCommand
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has remoteEnv "CYYC_REMOTE_ENV" set to "from-remote-env"
+    And the config has postCreateCommand "printf %s $CYYC_REMOTE_ENV > /tmp/remote-env-result"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/remote-env-result" in the container contains "from-remote-env"
+
+  Scenario: when remoteEnv is set then it is passed to postAttachCommand on a running container
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has remoteEnv "CYYC_REMOTE_ENV" set to "from-remote-env"
+    And the config has postAttachCommand "printf %s $CYYC_REMOTE_ENV > /tmp/remote-env-attach-result"
+    And a running container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/remote-env-attach-result" in the container contains "from-remote-env"
+
+  Scenario: when remoteEnv value contains ${containerEnv:VAR} then it is expanded in lifecycle commands
+    Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
+    And the config has containerEnv "CYYC_BASE" set to "from-container-env"
+    And the config has remoteEnv "CYYC_REMOTE_ENV" set to "${containerEnv:CYYC_BASE}-remote"
+    And the config has postCreateCommand "printf %s $CYYC_REMOTE_ENV > /tmp/remote-env-expanded-result"
+    And no container exists for this config
+    When running "cyyc shell"
+    Then the file "/tmp/remote-env-expanded-result" in the container contains "from-container-env-remote"
+
   Scenario: when a feature sets privileged then the container runs in privileged mode
     Given a devcontainer config with image "mcr.microsoft.com/devcontainers/base:debian"
     And the config has a local feature with manifest:
